@@ -34,7 +34,7 @@ DATA_FILE = Path("budget_data.json")
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -4185,40 +4185,64 @@ class PDFTransactionImporter:
     MONEY_RE = re.compile(r"-?\$?[\d,]+\.\d{2}")
 
     def read_pdf_text(self, path: Path) -> str:
-        # Lazy-import pypdf — split so we can tell install failures from parse failures.
+        """Extract text from a PDF, trying pypdf first then pdfminer.six.
+
+        Many bank PDFs have malformed cross-reference tables that pypdf
+        refuses even in lenient mode. pdfminer.six is slower but far more
+        tolerant of broken structure, so it's the fallback of last resort."""
+        pypdf_err = None
         try:
             from pypdf import PdfReader  # type: ignore
         except ImportError:
+            pypdf_err = "not installed"
+        else:
+            for strict in (False, True):
+                try:
+                    reader = PdfReader(str(path), strict=strict)
+                    if getattr(reader, "is_encrypted", False):
+                        try:
+                            reader.decrypt("")
+                        except Exception:
+                            raise RuntimeError(
+                                "This PDF is password-protected. Remove the "
+                                "password first (re-save without encryption "
+                                "from your bank's site or a PDF tool) and "
+                                "try again."
+                            )
+                    return "\n".join(page.extract_text() or "" for page in reader.pages)
+                except RuntimeError:
+                    raise  # password message — don't fall through
+                except Exception as exc:
+                    pypdf_err = exc
+
+        # Fallback — pdfminer.six. More tolerant of broken xref/trailer.
+        try:
+            from pdfminer.high_level import extract_text  # type: ignore
+        except ImportError:
             raise RuntimeError(
-                "PDF import needs the 'pypdf' library.\n"
-                "Install it with:  pip install pypdf"
+                "Couldn't read this PDF with pypdf"
+                + (f" ({pypdf_err})" if pypdf_err else "")
+                + ".\n\nInstall the fallback parser:\n"
+                "  pip install pdfminer.six\n\n"
+                "Then try again."
             )
-        # Try lenient mode first — many bank PDFs have minor structural issues
-        # (missing /Type on trailer, non-standard xref, etc.) that strict mode
-        # rejects but lenient mode handles fine.
-        last_exc = None
-        for strict in (False, True):
-            try:
-                reader = PdfReader(str(path), strict=strict)
-                if getattr(reader, "is_encrypted", False):
-                    try:
-                        reader.decrypt("")
-                    except Exception:
-                        raise RuntimeError(
-                            "This PDF is password-protected. Remove the password "
-                            "first (re-save without encryption from your bank's site "
-                            "or a PDF tool) and try again."
-                        )
-                return "\n".join(page.extract_text() or "" for page in reader.pages)
-            except Exception as exc:
-                last_exc = exc
-        raise RuntimeError(
-            "Couldn't read this PDF. It may be scanned (image-only), "
-            "malformed, or in a format pypdf doesn't support.\n\n"
-            f"Details: {last_exc}\n\n"
-            "Try: re-download the statement from your bank, or open it in a "
-            "PDF viewer and 'Save As' / 'Print to PDF' to produce a clean copy."
-        )
+        try:
+            text = extract_text(str(path)) or ""
+            if text.strip():
+                return text
+            raise RuntimeError("empty text")
+        except Exception as exc:
+            raise RuntimeError(
+                "Couldn't read this PDF with either pypdf or pdfminer.\n\n"
+                f"pypdf: {pypdf_err}\n"
+                f"pdfminer: {exc}\n\n"
+                "This usually means the PDF is scanned (image-only — no "
+                "text layer), heavily malformed, or uses an unusual "
+                "format.\n\n"
+                "Try: re-download the statement from your bank, or open it "
+                "in a PDF viewer and use 'Print to PDF' (Microsoft Print "
+                "to PDF works well) to produce a clean copy."
+            )
 
     def parse_amount(self, text: str) -> float:
         return float(text.replace("$", "").replace(",", "").strip())
