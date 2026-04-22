@@ -1,10 +1,15 @@
 {
-  "version": "1.0.2",
+  "version": "1.0.3",
   "date": "2026-04-22",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.2/BudgetPlanner.exe",
-  "sha256": "b5d946f01bb41967386389b7038ea740a27ffad7318cf2fa7563ea1087c33793",
-  "notes": "wider onboarding card, scrollable bank-accounts step",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.3/BudgetPlanner.exe",
+  "sha256": "250a182cb19e7ba4f6bfde33f4a51fae8da3f77007bf72849026f5e3a320d663",
+  "notes": "perf: debounce resize redraws, smoother scroll",
   "history": [
+    {
+      "version": "1.0.3",
+      "date": "2026-04-22",
+      "notes": "perf: debounce resize redraws, smoother scroll"
+    },
     {
       "version": "1.0.2",
       "date": "2026-04-22",

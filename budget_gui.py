@@ -34,7 +34,7 @@ DATA_FILE = Path("budget_data.json")
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -8674,6 +8674,27 @@ class BudgetApp(tk.Tk):
         text.configure(yscrollcommand=self._autohide_scrollbar(scroll, "grid", row=0, column=1, sticky="ns"))
         return text
 
+    def _debounce_after(self, key: str, ms: int, callback):
+        """Coalesce rapid events (resize, etc.) — schedule `callback` only after
+        `ms` of quiet time. Subsequent calls with the same `key` cancel the
+        pending call. Used to avoid redrawing gradients/charts on every pixel
+        of a window-resize drag."""
+        if not hasattr(self, "_debounce_jobs"):
+            self._debounce_jobs = {}
+        job = self._debounce_jobs.get(key)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        def _run():
+            self._debounce_jobs.pop(key, None)
+            try:
+                callback()
+            except Exception:
+                pass
+        self._debounce_jobs[key] = self.after(ms, _run)
+
     @staticmethod
     def _draw_gradient(canvas, color_top, color_bot, width=800, height=200):
         """Draw a vertical gradient on a canvas using thin horizontal lines."""
@@ -8698,18 +8719,38 @@ class BudgetApp(tk.Tk):
         canvas = tk.Canvas(parent, height=height, bg=tc, highlightthickness=0)
         content = tk.Frame(canvas, bg=tc)
         win = canvas.create_window(0, 0, window=content, anchor="nw")
+        last_size = {"w": 0, "h": 0}
         def _on_canvas_resize(e):
-            self._draw_gradient(canvas, tc, bc, e.width, e.height)
+            # Keep the inner content sized to match canvas immediately so
+            # the layout doesn't visibly jump during drag.
             canvas.itemconfigure(win, width=e.width)
-            canvas.tag_lower("gradient")
+            w, h = e.width, e.height
+            # Skip redraw if dimensions haven't actually changed (Configure
+            # can fire for unrelated reasons like parent repaints).
+            if w == last_size["w"] and h == last_size["h"]:
+                return
+            last_size["w"], last_size["h"] = w, h
+            # Debounce the gradient repaint so we don't redraw ~70 canvas
+            # lines on every pixel of a resize drag.
+            def _redraw():
+                self._draw_gradient(canvas, tc, bc, w, h)
+                canvas.tag_lower("gradient")
+            self._debounce_after(f"gradient_{id(canvas)}", 60, _redraw)
         def _on_content_resize(_e=None):
             # Let content dictate canvas height
-            content.update_idletasks()
             req_h = content.winfo_reqheight()
             if req_h > 0 and req_h != canvas.winfo_height():
                 canvas.configure(height=req_h)
         canvas.bind("<Configure>", _on_canvas_resize)
         content.bind("<Configure>", _on_content_resize)
+        # Paint an initial gradient once the canvas is laid out, so there's
+        # never a bare-color frame before the first Configure fires.
+        canvas.after_idle(lambda: (
+            self._draw_gradient(canvas, tc, bc,
+                                max(canvas.winfo_width(), 1),
+                                max(canvas.winfo_height(), 1)),
+            canvas.tag_lower("gradient"),
+        ))
         return canvas, content
 
     def _apply_zebra(self, tree):
@@ -8864,20 +8905,28 @@ class BudgetApp(tk.Tk):
         container.columnconfigure(0, weight=1)
         container.rowconfigure(0, weight=1)
 
-        canvas = tk.Canvas(container, bg=UI_BG, highlightthickness=0)
+        canvas = tk.Canvas(container, bg=UI_BG, highlightthickness=0,
+                           yscrollincrement=24, confine=True)
         vbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
         canvas.grid(row=0, column=0, sticky="nsew")
         vbar.grid(row=0, column=1, sticky="ns")
         canvas.configure(yscrollcommand=self._autohide_scrollbar(vbar, "grid", row=0, column=1, sticky="ns"))
 
-        inner = ttk.Frame(canvas)
+        inner = tk.Frame(canvas, bg=UI_BG)
         win = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        last_width = {"w": 0}
 
         def _on_inner_config(_e=None):
             canvas.configure(scrollregion=canvas.bbox("all"))
 
         def _on_canvas_config(e):
-            canvas.itemconfigure(win, width=e.width)
+            # Only restretch inner when the width actually changes — Configure
+            # also fires on vertical resize, and rerunning itemconfigure
+            # forces a needless layout pass.
+            if e.width != last_width["w"]:
+                last_width["w"] = e.width
+                canvas.itemconfigure(win, width=e.width)
 
         inner.bind("<Configure>", _on_inner_config)
         canvas.bind("<Configure>", _on_canvas_config)
@@ -9593,14 +9642,22 @@ class BudgetApp(tk.Tk):
         self.score_last_month_canvas = tk.Canvas(lm, height=320, bg=UI_SURFACE,
                                                   highlightthickness=1, highlightbackground=UI_BORDER)
         self.score_last_month_canvas.pack(fill="both", expand=True)
-        self.score_last_month_canvas.bind("<Configure>", self.refresh_score_last_month_pie)
+        self.score_last_month_canvas.bind(
+            "<Configure>",
+            lambda e: self._debounce_after("pie_score_last", 80,
+                                           lambda: self.refresh_score_last_month_pie(None)),
+        )
         tgt_inner = ttk.Frame(tgt)
         tgt_inner.pack(fill="both", expand=True)
         tgt_inner.columnconfigure(0, weight=1)
         self.score_target_canvas = tk.Canvas(tgt_inner, height=260, bg=UI_SURFACE,
                                               highlightthickness=1, highlightbackground=UI_BORDER)
         self.score_target_canvas.grid(row=0, column=0, columnspan=3, sticky="nsew")
-        self.score_target_canvas.bind("<Configure>", self.refresh_score_target_pie)
+        self.score_target_canvas.bind(
+            "<Configure>",
+            lambda e: self._debounce_after("pie_score_target", 80,
+                                           lambda: self.refresh_score_target_pie(None)),
+        )
         self.score_target_canvas.bind("<ButtonPress-1>", self._score_target_mouse_down)
         self.score_target_canvas.bind("<B1-Motion>", self._score_target_mouse_drag)
         self.score_target_canvas.bind("<ButtonRelease-1>", self._score_target_mouse_up)
@@ -10817,7 +10874,10 @@ class BudgetApp(tk.Tk):
                                     highlightbackground=UI_BORDER,
                                     takefocus=1)
         self._dr_canvas.grid(row=1, column=0, sticky="nsew", pady=(0, SP_SM))
-        self._dr_canvas.bind("<Configure>", lambda _e: self._dr_redraw())
+        self._dr_canvas.bind(
+            "<Configure>",
+            lambda _e: self._debounce_after("dr_redraw", 80, self._dr_redraw),
+        )
         self._dr_canvas.bind("<Button-1>", lambda _e: self._dr_canvas.focus_set())
         for seq in ("<KeyPress-space>", "<KeyPress-Up>", "<KeyPress-w>", "<KeyPress-W>"):
             self._dr_canvas.bind(seq, lambda _e: self._dr_jump())
@@ -12187,7 +12247,8 @@ class BudgetApp(tk.Tk):
         self.review_mix_canvas.grid(row=0, column=0, sticky="nsew")
         # Redraw on resize so bars always fit the panel width
         self.review_mix_canvas.bind("<Configure>",
-            lambda e: self._draw_review_mix_bars(getattr(self, "_last_mix_rows", [])))
+            lambda e: self._debounce_after("review_mix_bars", 80,
+                lambda: self._draw_review_mix_bars(getattr(self, "_last_mix_rows", []))))
 
         right_bottom = tk.Frame(frame, bg=UI_SURFACE, highlightthickness=1, highlightbackground=UI_BORDER)
         right_bottom.grid(row=3, column=1, sticky="nsew", padx=(SP_SM, SP_XL), pady=(0, SP_MD))
@@ -12221,7 +12282,8 @@ class BudgetApp(tk.Tk):
         self.review_trend_canvas.grid(row=2, column=0, sticky="nsew",
                                        padx=SP_LG, pady=(0, SP_LG))
         self.review_trend_canvas.bind("<Configure>",
-            lambda e: self._draw_monthly_trend_chart(getattr(self, "_last_trend_rows", [])))
+            lambda e: self._debounce_after("review_trend_chart", 80,
+                lambda: self._draw_monthly_trend_chart(getattr(self, "_last_trend_rows", []))))
 
     def _draw_review_mix_bars(self, rows):
         """Render side-by-side Actual vs Target bars per category."""
@@ -14455,7 +14517,11 @@ class BudgetApp(tk.Tk):
         self.expense_pie_canvas = tk.Canvas(pie_outer, height=300, bg=UI_SURFACE,
                                              highlightthickness=0)
         self.expense_pie_canvas.grid(row=1, column=0, sticky="ew", padx=SP_MD, pady=(0, SP_MD))
-        self.expense_pie_canvas.bind("<Configure>", self.refresh_expense_pie_chart)
+        self.expense_pie_canvas.bind(
+            "<Configure>",
+            lambda e: self._debounce_after("pie_expense", 80,
+                                           lambda: self.refresh_expense_pie_chart(None)),
+        )
 
     def _build_rules_tab(self):
         frame = self.rules_tab
