@@ -34,7 +34,7 @@ DATA_FILE = Path("budget_data.json")
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -8126,8 +8126,16 @@ class BudgetApp(tk.Tk):
         notes_frame = tk.Frame(card, bg=UI_SURFACE2,
                                highlightthickness=1, highlightbackground=UI_BORDER)
         notes_frame.pack(fill="both", expand=True, pady=(0, SP_MD))
-        tk.Label(notes_frame, text="What's new", bg=UI_SURFACE2, fg=UI_MUTED,
-                 font=FONT_CAPTION_BOLD).pack(anchor="w", padx=SP_MD, pady=(SP_SM, 0))
+        header_row = tk.Frame(notes_frame, bg=UI_SURFACE2)
+        header_row.pack(fill="x", padx=SP_MD, pady=(SP_SM, 0))
+        tk.Label(header_row, text="What's new", bg=UI_SURFACE2, fg=UI_MUTED,
+                 font=FONT_CAPTION_BOLD).pack(side="left")
+        history = manifest.get("history") or []
+        if len(history) > 1:
+            def _open_history():
+                self._show_changelog_dialog(history, current=remote, parent=dlg)
+            ttk.Button(header_row, text="Previous updates…",
+                       command=_open_history).pack(side="right")
         notes_lbl = tk.Label(notes_frame, text=notes, bg=UI_SURFACE2, fg=UI_TEXT,
                              font=FONT_SMALL, justify="left", wraplength=440, anchor="nw")
         notes_lbl.pack(anchor="nw", padx=SP_MD, pady=(2, SP_SM), fill="both", expand=True)
@@ -8185,6 +8193,110 @@ class BudgetApp(tk.Tk):
             self.updater.download_async(url, sha, _on_progress, _on_done)
 
         install_btn.configure(command=_start)
+
+    def _show_changelog_dialog(self, history: list, current: str = "", parent=None):
+        """Scrollable list of past releases. `history` is manifest['history']."""
+        owner = parent if parent is not None else self
+        dlg = tk.Toplevel(owner)
+        dlg.title("Changelog")
+        dlg.transient(owner)
+        dlg.configure(bg=UI_BG)
+        dlg.geometry("560x480")
+        dlg.minsize(440, 320)
+
+        card = tk.Frame(dlg, bg=UI_SURFACE, padx=SP_LG, pady=SP_LG)
+        card.pack(fill="both", expand=True, padx=SP_MD, pady=SP_MD)
+
+        tk.Label(card, text="What's changed",
+                 bg=UI_SURFACE, fg=UI_TEXT,
+                 font=FONT_DISPLAY_SM).pack(anchor="w")
+        sub = f"You're on v{APP_VERSION}."
+        if current and current != APP_VERSION:
+            sub = f"You're on v{APP_VERSION}. Latest: v{current}."
+        tk.Label(card, text=sub, bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_SMALL).pack(anchor="w", pady=(2, SP_MD))
+
+        body = tk.Frame(card, bg=UI_SURFACE2,
+                        highlightthickness=1, highlightbackground=UI_BORDER)
+        body.pack(fill="both", expand=True)
+        canvas = tk.Canvas(body, bg=UI_SURFACE2, highlightthickness=0, bd=0)
+        vbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vbar.pack(side="right", fill="y")
+        inner = tk.Frame(canvas, bg=UI_SURFACE2)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _resize(_e=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        inner.bind("<Configure>", _resize)
+        def _wheel(ev):
+            canvas.yview_scroll(int(-1 * (ev.delta / 120)), "units")
+        canvas.bind("<MouseWheel>", _wheel)
+        inner.bind("<MouseWheel>", _wheel)
+
+        if not history:
+            tk.Label(inner, text="No release history available.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL,
+                     padx=SP_MD, pady=SP_MD).pack(anchor="w")
+        else:
+            for i, entry in enumerate(history):
+                ver = str(entry.get("version", "?")).strip()
+                date = str(entry.get("date", "")).strip()
+                notes = str(entry.get("notes", "")).strip() or "(no notes)"
+                is_current = (ver == APP_VERSION)
+
+                row = tk.Frame(inner, bg=UI_SURFACE2)
+                row.pack(fill="x", padx=SP_MD, pady=(SP_SM if i == 0 else 0, SP_SM))
+
+                head = tk.Frame(row, bg=UI_SURFACE2)
+                head.pack(fill="x")
+                tag_fg = UI_GOLD if is_current else UI_TEXT
+                tk.Label(head, text=f"v{ver}", bg=UI_SURFACE2, fg=tag_fg,
+                         font=FONT_BODY_BOLD).pack(side="left")
+                if is_current:
+                    tk.Label(head, text="  ← you are here", bg=UI_SURFACE2,
+                             fg=UI_GOLD, font=FONT_CAPTION).pack(side="left")
+                if date:
+                    tk.Label(head, text=date, bg=UI_SURFACE2, fg=UI_MUTED,
+                             font=FONT_CAPTION).pack(side="right")
+
+                tk.Label(row, text=notes, bg=UI_SURFACE2, fg=UI_TEXT,
+                         font=FONT_SMALL, justify="left", wraplength=480,
+                         anchor="nw").pack(anchor="w", pady=(2, 0))
+
+                if i < len(history) - 1:
+                    tk.Frame(inner, bg=UI_BORDER, height=1).pack(
+                        fill="x", padx=SP_MD, pady=SP_XS)
+
+        btn_row = tk.Frame(card, bg=UI_SURFACE)
+        btn_row.pack(fill="x", pady=(SP_MD, 0))
+        ttk.Button(btn_row, text="Close", command=dlg.destroy).pack(side="right")
+
+    def view_changelog(self):
+        """Command-palette entry point: fetch manifest, show changelog dialog."""
+        if not self.updater.enabled():
+            # Offline/source mode — show just the current version.
+            self._show_changelog_dialog(
+                [{"version": APP_VERSION, "date": "", "notes": "(running from source — no release history available)"}],
+                current=APP_VERSION,
+            )
+            return
+        self._show_toast("Fetching changelog…", "info", 2000)
+        def on_result(manifest, err):
+            if err or not manifest:
+                self._show_toast(f"Couldn't load changelog: {err or 'no response'}",
+                                 "warning", 4000)
+                return
+            history = list(manifest.get("history") or [])
+            if not history:
+                history = [{
+                    "version": str(manifest.get("version", "?")),
+                    "date": str(manifest.get("date", "")),
+                    "notes": str(manifest.get("notes", "")),
+                }]
+            self._show_changelog_dialog(history, current=str(manifest.get("version", "")))
+        self.updater.check_async(on_result)
 
     def _gerald_startup_alert(self):
         """Fire one proactive alert + reminder scan after app launch."""
@@ -15672,6 +15784,7 @@ class BudgetApp(tk.Tk):
              (lambda: (self.save_state(),
                        self._show_toast("Saved.", "success", 1600)))),
             ("Check for updates", "action", self.check_for_updates_now),
+            ("View changelog", "action", self.view_changelog),
         ]
         # Bills — jump + quick actions
         for idx, b in enumerate(getattr(self.state, "bills", [])):
@@ -17454,7 +17567,7 @@ class BudgetApp(tk.Tk):
         # ── Centered card — use grid so nav stays pinned at bottom
         card = tk.Frame(overlay, bg=UI_BG, highlightthickness=1,
                         highlightbackground=UI_BORDER)
-        card.place(relx=0.5, rely=0.5, anchor="center", width=620, height=620)
+        card.place(relx=0.5, rely=0.5, anchor="center", width=720, height=660)
         card.grid_rowconfigure(1, weight=1)  # content row stretches
         card.grid_columnconfigure(0, weight=1)
 
@@ -17560,20 +17673,40 @@ class BudgetApp(tk.Tk):
                  bg=UI_INFO_SOFT, fg=UI_ACCENT,
                  font=FONT_SMALL, justify="left", wraplength=520).pack(anchor="w", pady=(4, 0), fill="x")
 
-        # ── Step 2: Required bank accounts ──────────────────────────────────
+        # ── Step 2: Required bank accounts (scrollable) ─────────────────────
         s_accts = tk.Frame(content, bg=UI_BG)
         step_frames.append(s_accts)
 
-        tk.Label(s_accts,
+        sa_canvas = tk.Canvas(s_accts, bg=UI_BG, highlightthickness=0)
+        sa_vbar = ttk.Scrollbar(s_accts, orient="vertical", command=sa_canvas.yview)
+        sa_canvas.pack(side="left", fill="both", expand=True)
+        sa_vbar.pack(side="right", fill="y")
+        sa_canvas.configure(yscrollcommand=self._autohide_scrollbar(sa_vbar, "pack", side="right", fill="y"))
+        sa_inner = tk.Frame(sa_canvas, bg=UI_BG)
+        sa_win = sa_canvas.create_window((0, 0), window=sa_inner, anchor="nw")
+        def _sa_inner_cfg(_e=None):
+            sa_canvas.configure(scrollregion=sa_canvas.bbox("all"))
+        def _sa_canvas_cfg(e):
+            sa_canvas.itemconfigure(sa_win, width=e.width)
+        sa_inner.bind("<Configure>", _sa_inner_cfg)
+        sa_canvas.bind("<Configure>", _sa_canvas_cfg)
+        def _sa_wheel(e):
+            d = -1 * (int(e.delta / 120) if e.delta else 0)
+            if d:
+                sa_canvas.yview_scroll(d, "units")
+        sa_canvas.bind("<MouseWheel>", _sa_wheel)
+        sa_inner.bind("<MouseWheel>", _sa_wheel)
+
+        tk.Label(sa_inner,
                  text="This app only works if you keep four separate accounts.",
                  bg=UI_BG, fg=UI_TEXT, font=FONT_SUBHEADING,
-                 wraplength=480, justify="left").pack(anchor="w", pady=(0, 4))
-        tk.Label(s_accts,
+                 wraplength=620, justify="left").pack(anchor="w", pady=(0, 4), fill="x")
+        tk.Label(sa_inner,
                  text="Open these four accounts with your bank (or use ones you already have). "
                       "Every pay, this app will tell you exactly how much to move into each. "
                       "Follow the plan — that's the whole system.",
                  bg=UI_BG, fg=UI_MUTED, font=FONT_SMALL,
-                 wraplength=480, justify="left").pack(anchor="w", pady=(0, SP_MD))
+                 wraplength=620, justify="left").pack(anchor="w", pady=(0, SP_MD), fill="x")
 
         # 4-row editable list. Each row: coloured bar + purpose + editable name.
         acct_rows = [
@@ -17583,9 +17716,9 @@ class BudgetApp(tk.Tk):
             ("spending", "Everyday",  "What's left. This is your safe-to-spend.",       UI_SAPPHIRE),
         ]
         for key, label, hint, color in acct_rows:
-            row = tk.Frame(s_accts, bg=UI_SURFACE,
+            row = tk.Frame(sa_inner, bg=UI_SURFACE,
                            highlightthickness=1, highlightbackground=UI_BORDER)
-            row.pack(fill="x", pady=(0, 6))
+            row.pack(fill="x", pady=(0, 8))
             bar = tk.Frame(row, bg=color, width=3)
             bar.pack(side="left", fill="y")
             inner = tk.Frame(row, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
@@ -17594,12 +17727,17 @@ class BudgetApp(tk.Tk):
                      font=FONT_CAPTION_BOLD, anchor="w").pack(fill="x")
             tk.Label(inner, text=hint, bg=UI_SURFACE, fg=UI_MUTED,
                      font=FONT_CAPTION, anchor="w", justify="left",
-                     wraplength=520).pack(fill="x")
-            ttk.Entry(inner, textvariable=acct_vars[key]).pack(fill="x", pady=(4, 0))
+                     wraplength=580).pack(fill="x")
+            e = ttk.Entry(inner, textvariable=acct_vars[key])
+            e.pack(fill="x", pady=(6, 2))
+            e.bind("<MouseWheel>", _sa_wheel)
+            for w in (row, inner):
+                w.bind("<MouseWheel>", _sa_wheel)
 
-        tk.Label(s_accts,
+        tk.Label(sa_inner,
                  text="Name each one whatever your bank calls it (e.g. \"Savings Maximiser\").",
-                 bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(SP_SM, 0))
+                 bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION,
+                 wraplength=620, justify="left").pack(anchor="w", pady=(SP_SM, SP_MD), fill="x")
 
         # ── Step 3: Scrollable toggle cards ──────────────────────────────────
         s2 = tk.Frame(content, bg=UI_BG)
