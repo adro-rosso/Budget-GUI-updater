@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller build artifacts (exe is uploaded to GitHub Releases, not committed)
+build/
+dist/
+*.spec
+
+# Data files (personal financial data - do NOT commit)
+budget_data.json
+budget_data.bak
+*.tmp
+
+# Claude Code
+.claude/
+
+# Archives
+*.zip
+
+# Misc
+.sixth/
