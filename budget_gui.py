@@ -34,7 +34,7 @@ DATA_FILE = Path("budget_data.json")
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -4185,12 +4185,40 @@ class PDFTransactionImporter:
     MONEY_RE = re.compile(r"-?\$?[\d,]+\.\d{2}")
 
     def read_pdf_text(self, path: Path) -> str:
+        # Lazy-import pypdf — split so we can tell install failures from parse failures.
         try:
             from pypdf import PdfReader  # type: ignore
-            reader = PdfReader(str(path))
-            return "\n".join(page.extract_text() or "" for page in reader.pages)
-        except Exception as exc:
-            raise RuntimeError(f"Could not read PDF text. Install pypdf. {exc}")
+        except ImportError:
+            raise RuntimeError(
+                "PDF import needs the 'pypdf' library.\n"
+                "Install it with:  pip install pypdf"
+            )
+        # Try lenient mode first — many bank PDFs have minor structural issues
+        # (missing /Type on trailer, non-standard xref, etc.) that strict mode
+        # rejects but lenient mode handles fine.
+        last_exc = None
+        for strict in (False, True):
+            try:
+                reader = PdfReader(str(path), strict=strict)
+                if getattr(reader, "is_encrypted", False):
+                    try:
+                        reader.decrypt("")
+                    except Exception:
+                        raise RuntimeError(
+                            "This PDF is password-protected. Remove the password "
+                            "first (re-save without encryption from your bank's site "
+                            "or a PDF tool) and try again."
+                        )
+                return "\n".join(page.extract_text() or "" for page in reader.pages)
+            except Exception as exc:
+                last_exc = exc
+        raise RuntimeError(
+            "Couldn't read this PDF. It may be scanned (image-only), "
+            "malformed, or in a format pypdf doesn't support.\n\n"
+            f"Details: {last_exc}\n\n"
+            "Try: re-download the statement from your bank, or open it in a "
+            "PDF viewer and 'Save As' / 'Print to PDF' to produce a clean copy."
+        )
 
     def parse_amount(self, text: str) -> float:
         return float(text.replace("$", "").replace(",", "").strip())

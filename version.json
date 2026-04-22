@@ -1,10 +1,15 @@
 {
-  "version": "1.0.3",
+  "version": "1.0.4",
   "date": "2026-04-22",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.3/BudgetPlanner.exe",
-  "sha256": "250a182cb19e7ba4f6bfde33f4a51fae8da3f77007bf72849026f5e3a320d663",
-  "notes": "perf: debounce resize redraws, smoother scroll",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.4/BudgetPlanner.exe",
+  "sha256": "2a89d39b0214615cc616d7f7b34d7413e19f1e3418c4d74450928bfc54a1e20f",
+  "notes": "pdf import: handle lenient parsing + better errors",
   "history": [
+    {
+      "version": "1.0.4",
+      "date": "2026-04-22",
+      "notes": "pdf import: handle lenient parsing + better errors"
+    },
     {
       "version": "1.0.3",
       "date": "2026-04-22",
