@@ -12417,8 +12417,14 @@ class BudgetApp(tk.Tk):
             lambda e: self._debounce_after("review_mix_bars", 80,
                 lambda: self._draw_review_mix_bars(getattr(self, "_last_mix_rows", []))))
 
-        right_bottom = tk.Frame(frame, bg=UI_SURFACE, highlightthickness=1, highlightbackground=UI_BORDER)
-        right_bottom.grid(row=3, column=1, sticky="nsew", padx=(SP_SM, SP_XL), pady=(0, SP_MD))
+        self.review_anomalies_summary_var = tk.StringVar(value="")
+        anomalies_wrap, anomalies_content = self._collapsible_section(
+            frame, "Spending Anomalies", "review.anomalies",
+            summary_var=self.review_anomalies_summary_var)
+        anomalies_wrap.grid(row=3, column=1, sticky="nsew", padx=(SP_SM, SP_XL), pady=(0, SP_MD))
+        anomalies_content.rowconfigure(0, weight=1)
+        right_bottom = tk.Frame(anomalies_content, bg=UI_SURFACE, highlightthickness=1, highlightbackground=UI_BORDER)
+        right_bottom.grid(row=0, column=0, sticky="nsew")
         right_bottom.rowconfigure(1, weight=1)
         right_bottom.columnconfigure(0, weight=1)
         tk.Frame(right_bottom, bg=UI_RUBY, height=3).grid(row=0, column=0, sticky="ew")
@@ -12430,11 +12436,18 @@ class BudgetApp(tk.Tk):
         self._review_anomalies_frame = tk.Frame(anomaly_inner, bg=UI_SURFACE)
         self._review_anomalies_frame.grid(row=0, column=0, sticky="nsew")
 
-        # ── 6-month trend chart (spans both columns) ────────────────────────
-        trend_panel = tk.Frame(frame, bg=UI_SURFACE, highlightthickness=1,
+        # ── 6-month trend chart (spans both columns, collapsible) ───────────
+        self.review_trend_summary_var = tk.StringVar(value="")
+        trend_wrap, trend_content = self._collapsible_section(
+            frame, "6-Month Trend", "review.trend",
+            summary_var=self.review_trend_summary_var,
+            on_expand=lambda: self._draw_monthly_trend_chart(
+                getattr(self, "_last_trend_rows", [])))
+        trend_wrap.grid(row=4, column=0, columnspan=2, sticky="nsew",
+                        padx=SP_XL, pady=(0, SP_XL))
+        trend_panel = tk.Frame(trend_content, bg=UI_SURFACE, highlightthickness=1,
                                 highlightbackground=UI_BORDER)
-        trend_panel.grid(row=4, column=0, columnspan=2, sticky="nsew",
-                         padx=SP_XL, pady=(0, SP_XL))
+        trend_panel.grid(row=0, column=0, sticky="nsew")
         trend_panel.columnconfigure(0, weight=1)
         tk.Frame(trend_panel, bg=UI_EMERALD, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(trend_panel, text="6-Month Trend  —  Income vs Outgoing",
@@ -12770,6 +12783,9 @@ class BudgetApp(tk.Tk):
             w.destroy()
 
         pr = data["pending_review"]
+        # Savings Rate / Pending Review / Health Score rows removed — the
+        # first two are already in the hero cards and nav badge, and Today's
+        # summary gauge owns the health score.
         stats = [
             ("Income",         f"${data['income_total']:,.0f}",
                 UI_EMERALD,
@@ -12780,15 +12796,6 @@ class BudgetApp(tk.Tk):
             ("Verified",       f"{data['verified']} / {data['committed']}",
                 UI_SAPPHIRE,
                 "committed transactions"),
-            ("Pending Review", str(pr),
-                UI_GOLD if pr > 0 else UI_MUTED,
-                "awaiting classification"),
-            ("Savings Rate",   f"{data['savings_rate']:.1f}%",
-                UI_EMERALD if data['savings_rate'] > 0 else UI_MUTED,
-                "of logged income"),
-            ("Health Score",   f"{health['score']:.0f} / 100",
-                self._health_color(health['status']),
-                health['status']),
         ]
         for label, value, color, sub in stats:
             row = tk.Frame(stats_frame, bg=UI_SURFACE)
@@ -14325,11 +14332,21 @@ class BudgetApp(tk.Tk):
         self._draw_review_mix_bars(self._last_mix_rows)
 
         self._render_review_anomalies(data["anomalies"])
+        n_anom = len(data["anomalies"])
+        self.review_anomalies_summary_var.set(
+            f"{n_anom} flagged" if n_anom else "none flagged")
 
         # 6-month trend chart — cache rows so resize events can redraw
         self._last_trend_rows = self._compute_monthly_trend_data(num_months=6)
         self._draw_monthly_trend_chart(self._last_trend_rows)
         self._render_review_nudges(self._compute_review_nudges(self._last_trend_rows))
+        if self._last_trend_rows:
+            _yr, _mo, _lbl, t_income, t_outgoing = self._last_trend_rows[-1]
+            net = t_income - t_outgoing
+            self.review_trend_summary_var.set(
+                f"Latest month net {'+' if net >= 0 else '−'}${abs(net):,.0f}")
+        else:
+            self.review_trend_summary_var.set("No trend data yet")
 
     def _refresh_personality_panel(self):
         if not hasattr(self, "_personality_attr_vars"):
@@ -14806,10 +14823,18 @@ class BudgetApp(tk.Tk):
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(1, weight=1)
 
-        # ── Guide card ───────────────────────────────────────────────────────
-        guide = tk.Frame(frame, bg=UI_SURFACE, padx=SP_XL, pady=SP_LG,
+        # ── Guide card (collapsible — open for new users, tucked away after
+        # onboarding) ────────────────────────────────────────────────────────
+        self._accounts_guide_summary_var = tk.StringVar(
+            value="How the 4-account structure works")
+        guide_wrap, guide_content = self._collapsible_section(
+            frame, "Banking Setup Guide", "setup.accounts_guide",
+            default_open=not self.state.onboarding_complete,
+            summary_var=self._accounts_guide_summary_var)
+        guide_wrap.grid(row=0, column=0, sticky="ew", padx=SP_XL, pady=(SP_XL, SP_MD))
+        guide = tk.Frame(guide_content, bg=UI_SURFACE, padx=SP_XL, pady=SP_LG,
                          highlightthickness=1, highlightbackground=UI_BORDER)
-        guide.grid(row=0, column=0, sticky="ew", padx=SP_XL, pady=(SP_XL, SP_MD))
+        guide.grid(row=0, column=0, sticky="ew")
         guide.columnconfigure(0, weight=1)
         tk.Frame(guide, bg=UI_ACCENT, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(guide, text="How Banking Setup Works", bg=UI_SURFACE, fg=UI_TEXT,
