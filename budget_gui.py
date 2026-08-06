@@ -9634,10 +9634,6 @@ class BudgetApp(tk.Tk):
         self.level_var = tk.StringVar(value="1")
         self.total_gold_var = tk.StringVar(value="0")
         self.last_gain_var = tk.StringVar(value="0")
-        # Also preserved for backwards-compat with setters that still write them.
-        self.streak_var = tk.StringVar(value="0")
-        self.best_streak_var = tk.StringVar(value="0")
-        self.prestige_var = tk.StringVar(value="—")
 
         def _inline_stat(parent, label, var, color, first=False):
             if not first:
@@ -9670,8 +9666,14 @@ class BudgetApp(tk.Tk):
 
         tk.Frame(right_hero, bg=UI_BORDER, height=1).pack(fill="x", pady=(0, SP_MD))
 
-        tk.Label(right_hero, text="GEMS", bg=UI_SURFACE, fg=UI_MUTED,
-                 font=FONT_BODY_BOLD).pack(anchor="center")
+        gems_hdr = tk.Frame(right_hero, bg=UI_SURFACE)
+        gems_hdr.pack(anchor="center")
+        tk.Label(gems_hdr, text="GEMS", bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_BODY_BOLD).pack(side="left")
+        self._info_icon(gems_hdr,
+                        "Gems are earned from pay streaks and Fortune Cards. "
+                        "Spend them in the Perk Shop for permanent bonuses.",
+                        bg=UI_SURFACE).pack(side="left", padx=(SP_XS, 0))
         tk.Label(right_hero, textvariable=self.gems_hero_var, bg=UI_SURFACE, fg=UI_SAPPHIRE,
                  font=FONT_STAT_NUM).pack(anchor="center")
         tk.Label(right_hero, text="spend in Perk Shop", bg=UI_SURFACE, fg=UI_MUTED,
@@ -9684,22 +9686,6 @@ class BudgetApp(tk.Tk):
         self.prestige_btn.pack(fill="x", pady=(0, SP_SM))
         ttk.Button(right_hero, text="\U0001f4cb  Share Score", style="TButton",
                    command=self._share_score_card).pack(fill="x")
-
-        # Gems info strip — accent-bordered
-        gem_glow = tk.Frame(frame, bg=UI_SAPPHIRE, padx=1, pady=1)
-        gem_glow.grid(row=1, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(SP_SM, 0))
-        gem_info = tk.Frame(gem_glow, bg=UI_INFO_SOFT, padx=SP_LG, pady=SP_SM)
-        gem_info.pack(fill="both", expand=True)
-        gem_info.columnconfigure(1, weight=1)
-        self.gems_strip_var = tk.StringVar(value="◆ 0 Gems")
-        tk.Label(gem_info, textvariable=self.gems_strip_var, bg=UI_INFO_SOFT, fg=UI_SAPPHIRE,
-                 font=FONT_SUBHEADING).grid(row=0, column=0, sticky="w")
-        tk.Label(gem_info,
-                 text="Gems are earned from pay streaks and Fortune Cards. Spend them in the Perk Shop for permanent bonuses.",
-                 bg=UI_INFO_SOFT, fg=UI_ACCENT, font=FONT_SMALL, wraplength=700).grid(
-                 row=0, column=1, sticky="w", padx=(SP_XL, 0))
-        ttk.Button(gem_info, text="Open Perk Shop  \u2192", style="Gem.TButton",
-                   command=self._open_perk_shop).grid(row=0, column=2, sticky="e", padx=(SP_XL, 0))
 
         # ── Daily Challenges + Season Pass ───────────────────────────────────
         grind_row = ttk.Frame(frame, padding=(SP_MD, 2))
@@ -9776,9 +9762,17 @@ class BudgetApp(tk.Tk):
             btn.pack(anchor="center", pady=(3, 0))
             self._season_tier_btns.append(btn)
 
-        # ── Pie charts ───────────────────────────────────────────────────────
-        pies = ttk.Frame(frame, padding=(SP_MD, SP_SM))
-        pies.grid(row=3, column=0, columnspan=2, sticky="ew", padx=SP_XL)
+        # ── Pie charts (collapsible) ─────────────────────────────────────────
+        self.score_charts_summary_var = tk.StringVar(value="")
+        charts_wrap, charts_content = self._collapsible_section(
+            frame, "Spending Charts & Target Mix", "score.charts",
+            summary_var=self.score_charts_summary_var,
+            on_expand=lambda: (self.refresh_score_last_month_pie(None),
+                               self.refresh_score_target_pie(None)))
+        charts_wrap.grid(row=3, column=0, columnspan=2, sticky="ew",
+                         padx=SP_XL, pady=(SP_MD, 0))
+        pies = ttk.Frame(charts_content, padding=(SP_MD, SP_SM))
+        pies.grid(row=0, column=0, sticky="ew")
         pies.columnconfigure(0, weight=1)
         pies.columnconfigure(1, weight=1)
         lm = ttk.LabelFrame(pies, text="Last calendar month \u2014 actual spending", padding=SP_MD)
@@ -9827,8 +9821,6 @@ class BudgetApp(tk.Tk):
         self.target_category_combo.grid(row=3, column=0, sticky="w")
         ttk.Button(tgt_inner, text="Add to target",
                    command=self.add_category_to_target).grid(row=3, column=1, sticky="w", padx=(SP_SM, 0))
-        ttk.Button(tgt_inner, text="Remove selected",
-                   command=self.remove_category_from_target).grid(row=3, column=2, sticky="w", padx=(SP_SM, 0))
         self.target_category_list = tk.Listbox(tgt_inner, height=6, exportselection=False,
                                                 bg=UI_SURFACE2, fg=UI_TEXT, selectbackground=UI_ACCENT,
                                                 selectforeground="#ffffff", relief="flat",
@@ -9849,9 +9841,15 @@ class BudgetApp(tk.Tk):
         # (Budget Sprint widgets + banks + state live in _build_budget_sprint_game,
         #  built inside the Arcade section below.)
 
-        breakdown_outer = tk.Frame(frame, bg=UI_SURFACE,
+        self.score_breakdown_summary_var = tk.StringVar(value="")
+        bd_wrap, bd_content = self._collapsible_section(
+            frame, "Score Breakdown", "score.breakdown",
+            summary_var=self.score_breakdown_summary_var)
+        bd_wrap.grid(row=4, column=0, sticky="nsew", padx=(SP_XL, SP_SM), pady=(SP_MD, SP_XL))
+        bd_content.rowconfigure(0, weight=1)
+        breakdown_outer = tk.Frame(bd_content, bg=UI_SURFACE,
                                     highlightthickness=1, highlightbackground=UI_BORDER)
-        breakdown_outer.grid(row=4, column=0, sticky="nsew", padx=(SP_XL, SP_SM), pady=(SP_MD, SP_XL))
+        breakdown_outer.grid(row=0, column=0, sticky="nsew")
         breakdown_outer.rowconfigure(1, weight=1)
         breakdown_outer.columnconfigure(0, weight=1)
         tk.Frame(breakdown_outer, bg=UI_GOLD, height=3).grid(row=0, column=0, sticky="ew")
@@ -9867,9 +9865,15 @@ class BudgetApp(tk.Tk):
         self._score_last_pay_frame = tk.Frame(bd_inner, bg=UI_SURFACE)
         self._score_last_pay_frame.grid(row=1, column=0, sticky="nsew", pady=(SP_MD, 0))
 
-        ach_outer = tk.Frame(frame, bg=UI_SURFACE,
+        self._achievements_summary_var = tk.StringVar(value="0 / 0 unlocked")
+        ach_wrap, ach_content = self._collapsible_section(
+            frame, "Achievements", "score.achievements",
+            summary_var=self._achievements_summary_var)
+        ach_wrap.grid(row=4, column=1, sticky="nsew", padx=(SP_SM, SP_XL), pady=(SP_MD, SP_XL))
+        ach_content.rowconfigure(0, weight=1)
+        ach_outer = tk.Frame(ach_content, bg=UI_SURFACE,
                               highlightthickness=1, highlightbackground=UI_BORDER)
-        ach_outer.grid(row=4, column=1, sticky="nsew", padx=(SP_SM, SP_XL), pady=(SP_MD, SP_XL))
+        ach_outer.grid(row=0, column=0, sticky="nsew")
         ach_outer.rowconfigure(1, weight=1)
         ach_outer.columnconfigure(0, weight=1)
         tk.Frame(ach_outer, bg=UI_AMETHYST, height=3).grid(row=0, column=0, sticky="ew")
@@ -9878,8 +9882,7 @@ class BudgetApp(tk.Tk):
         ach_inner = tk.Frame(ach_outer, bg=UI_SURFACE)
         ach_inner.grid(row=1, column=0, sticky="nsew", padx=SP_LG, pady=(0, SP_LG))
         ach_inner.columnconfigure(0, weight=1)
-        # Summary header (populated by refresh_game_text)
-        self._achievements_summary_var = tk.StringVar(value="0 / 0 unlocked")
+        # Summary header (var created above, shared with the collapsed header)
         self._achievements_progress_bar_canvas = tk.Canvas(ach_inner, bg=UI_SURFACE,
                                                             height=10, bd=0,
                                                             highlightthickness=0)
@@ -19965,53 +19968,19 @@ class BudgetApp(tk.Tk):
                         pady=(SP_SM, 0))
 
     def _render_score_breakdown_cards(self, g, rank_name: str):
-        """Render the Score tab's breakdown panel as labeled stat cards
-        instead of a monospace text block."""
-        # Stat cards grid
+        """Render the Score tab's breakdown panel: active buffs + last-pay
+        detail. (Gold/level/gems/streak stat cards were removed — the hero
+        already shows all of them.)"""
         host = self._score_stats_frame
         for w in host.winfo_children():
             w.destroy()
-        cols = 3
-        for c in range(cols):
-            host.columnconfigure(c, weight=1, uniform="score_stats")
+        host.columnconfigure(0, weight=1)
 
-        prestige_text = (f"★ × {g.prestige_level}" if g.prestige_level else "—")
-        prestige_sub = (f"+{round((g.score_multiplier - 1.0) * 100)}% per pay"
-                        if g.prestige_level else "Unlock at Level 10")
-        buffs_text = ", ".join(g.active_buffs) if g.active_buffs else "none"
-
-        cards = [
-            ("TOTAL GOLD", f"{g.total_score:,}",
-             f"×{g.score_multiplier:.1f} multiplier", UI_GOLD),
-            ("LEVEL", str(g.level), rank_name, UI_EMERALD),
-            ("PRESTIGE", prestige_text, prestige_sub, UI_AMETHYST),
-            ("GEMS", f"◆ {g.gems}",
-             f"{g.lifetime_gems_earned:,} lifetime", UI_SAPPHIRE),
-            ("STREAK", str(g.streak_pays),
-             f"best {g.best_streak} · {g.streak_shields} shields", UI_RUBY),
-            ("PAYS PROCESSED", str(g.total_pays_processed),
-             f"last gain +{g.last_score_gain} Gold", UI_ACCENT),
-        ]
-        for i, (title, value, sub, color) in enumerate(cards):
-            r, c = divmod(i, cols)
-            glow = tk.Frame(host, bg=color, padx=1, pady=1)
-            glow.grid(row=r, column=c, sticky="nsew", padx=2, pady=2)
-            box = tk.Frame(glow, bg=UI_SURFACE2, padx=SP_SM, pady=SP_SM)
-            box.pack(fill="both", expand=True)
-            tk.Frame(box, bg=color, height=2).pack(fill="x", pady=(0, 4))
-            tk.Label(box, text=title, bg=UI_SURFACE2, fg=color,
-                     font=FONT_MICRO).pack(anchor="w")
-            tk.Label(box, text=value, bg=UI_SURFACE2, fg=UI_TEXT,
-                     font=FONT_HEADING).pack(anchor="w")
-            tk.Label(box, text=sub, bg=UI_SURFACE2, fg=UI_MUTED,
-                     font=FONT_MICRO, wraplength=180, justify="left",
-                     anchor="w").pack(anchor="w")
-
-        # Active buffs callout (if any) spans the grid below the cards
+        # Active buffs callout (if any)
         if g.active_buffs:
+            buffs_text = ", ".join(g.active_buffs)
             buff_row = tk.Frame(host, bg=UI_SURFACE2, padx=SP_SM, pady=4)
-            buff_row.grid(row=(len(cards) + cols - 1) // cols, column=0,
-                          columnspan=cols, sticky="ew", pady=(SP_SM, 0))
+            buff_row.grid(row=0, column=0, sticky="ew", pady=(SP_SM, 0))
             tk.Label(buff_row, text="ACTIVE BUFFS", bg=UI_SURFACE2, fg=UI_GOLD,
                      font=FONT_MICRO).pack(side="left", padx=(0, SP_SM))
             tk.Label(buff_row, text=buffs_text, bg=UI_SURFACE2, fg=UI_TEXT,
@@ -20098,11 +20067,8 @@ class BudgetApp(tk.Tk):
         g = self.state.game
         # Stats cards
         self.level_var.set(str(g.level))
-        self.streak_var.set(str(g.streak_pays))
-        self.best_streak_var.set(str(g.best_streak))
         self.last_gain_var.set(f"+{g.last_score_gain}" if g.last_score_gain else "0")
         self.total_gold_var.set(str(g.total_score))
-        self.prestige_var.set(f"{'★' * g.prestige_level} P{g.prestige_level}" if g.prestige_level else "—")
         # Hero streak panel
         self.streak_hero_var.set(str(g.streak_pays))
         self.best_streak_hero_var.set(f"Best: {g.best_streak}")
@@ -20129,14 +20095,20 @@ class BudgetApp(tk.Tk):
             self.prestige_stars_var.set("No Prestige yet")
             self.prestige_goal_var.set("Unlock at Level 10")
         self.gems_hero_var.set(f"◆ {g.gems}")
-        self.gems_strip_var.set(f"◆ {g.gems} Gems")
         self.prestige_btn.configure(state="normal" if g.level >= 10 else "disabled")
         # Topbar live badge
         streak_icon = "\U0001f525" if g.streak_pays >= 3 else "\u25cb"
         self.topbar_rank_var.set(f"{rank_name}")
         self.topbar_gold_var.set(f"{g.total_score:,}")
         self.topbar_gem_var.set(f"{g.gems}")
-        # Score breakdown — stat card grid + last-pay breakdown
+        # Collapsed-header summaries
+        lock_part = "locked" if self.state.target_is_locked else "editable"
+        self.score_charts_summary_var.set(
+            f"Target mix {lock_part} · {len(self.state.expense_target_order)} categories")
+        self.score_breakdown_summary_var.set(
+            f"Last pay: +{g.last_score_gain} gold" if g.last_score_gain
+            else "No pay scored yet")
+        # Score breakdown — buffs + last-pay breakdown
         self._render_score_breakdown_cards(g, rank_name)
         # Achievements — card grid with earned / locked state
         self._render_achievement_cards(g)
