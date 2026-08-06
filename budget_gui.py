@@ -11924,9 +11924,14 @@ class BudgetApp(tk.Tk):
                  fg=UI_MUTED, font=FONT_CAPTION, justify="left", wraplength=760).pack(
                  anchor="w", pady=(SP_SM, 0))
 
-        # ── Row 1.5: Gerald commentator ──────────────────────────────────────
-        gerald_glow = tk.Frame(frame, bg=UI_EMERALD, padx=1, pady=1)
-        gerald_glow.grid(row=2, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
+        # ── Row 1.5: Gerald commentator (collapsible) ────────────────────────
+        self.today_gerald_summary_var = tk.StringVar(value="")
+        gerald_wrap, gerald_content = self._collapsible_section(
+            frame, "Gerald's Take", "today.gerald",
+            summary_var=self.today_gerald_summary_var)
+        gerald_wrap.grid(row=2, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
+        gerald_glow = tk.Frame(gerald_content, bg=UI_EMERALD, padx=1, pady=1)
+        gerald_glow.grid(row=0, column=0, sticky="ew")
         gerald_card = tk.Frame(gerald_glow, bg=UI_SURFACE)
         gerald_card.pack(fill="both", expand=True)
         tk.Frame(gerald_card, bg=UI_EMERALD, height=2).pack(fill="x")
@@ -11954,12 +11959,24 @@ class BudgetApp(tk.Tk):
         self.dash_invest_var = tk.StringVar(value="$0.00")
         self.dash_gold_var = tk.StringVar(value="0")
 
-        # ── Row 3: Setup health + At-Risk cards (built via helper) ───────────
-        self._build_today_health_row(frame, row=3)
+        # ── Row 3: Setup health + At-Risk cards (collapsible) ────────────────
+        self.today_health_summary_var = tk.StringVar(value="")
+        health_wrap, health_content = self._collapsible_section(
+            frame, "Setup & At Risk", "today.health",
+            summary_var=self.today_health_summary_var)
+        health_wrap.grid(row=3, column=0, columnspan=2, sticky="ew",
+                         padx=SP_XL, pady=(0, SP_MD))
+        self._build_today_health_row(health_content, row=0)
 
-        metrics_glow = tk.Frame(frame, bg=UI_BORDER, padx=1, pady=1)
-        metrics_glow.grid(row=4, column=0, columnspan=2, sticky="ew",
+        # ── Row 4: Compact metrics strip (collapsible) ───────────────────────
+        self.today_metrics_summary_var = tk.StringVar(value="")
+        metrics_wrap, metrics_content = self._collapsible_section(
+            frame, "Totals & Streak", "today.metrics",
+            summary_var=self.today_metrics_summary_var)
+        metrics_wrap.grid(row=4, column=0, columnspan=2, sticky="ew",
                           padx=SP_XL, pady=(0, SP_MD))
+        metrics_glow = tk.Frame(metrics_content, bg=UI_BORDER, padx=1, pady=1)
+        metrics_glow.grid(row=0, column=0, sticky="ew")
         metrics = tk.Frame(metrics_glow, bg=UI_SURFACE)
         metrics.pack(fill="x")
         row = tk.Frame(metrics, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
@@ -12070,8 +12087,7 @@ class BudgetApp(tk.Tk):
     def _build_today_health_row(self, parent, row: int):
         """Two side-by-side cards: setup completeness (left) and at-risk (right)."""
         host = tk.Frame(parent, bg=UI_BG)
-        host.grid(row=row, column=0, columnspan=2, sticky="ew",
-                   padx=SP_XL, pady=(0, SP_MD))
+        host.grid(row=row, column=0, columnspan=2, sticky="ew")
         host.columnconfigure(0, weight=1, uniform="health")
         host.columnconfigure(1, weight=1, uniform="health")
 
@@ -13952,6 +13968,12 @@ class BudgetApp(tk.Tk):
         self._render_income_confirmations()
         self._refresh_setup_completeness()
         self._refresh_at_risk()
+        # Collapsed-header summary: setup completeness + at-risk count
+        steps = self._setup_completeness_steps()
+        done = sum(1 for _, d in steps if d)
+        risk_count = len(self._at_risk_items())
+        risk_part = f"{risk_count} at risk" if risk_count else "nothing at risk"
+        self.today_health_summary_var.set(f"Setup {done}/{len(steps)} · {risk_part}")
         snapshot = self._next_actions_snapshot()
         pending_review = snapshot["pending_review"]
         pace = snapshot["pace"]
@@ -14000,6 +14022,13 @@ class BudgetApp(tk.Tk):
         self.dash_invest_var.set(f"${self.state.last_invest_total:,.2f}")
         self.dash_gold_var.set(str(self.state.game.total_score))
         self._draw_streak_chain(self._today_streak_canvas, self.state.game.streak_history, self.state.game.streak_pays, max_dots=10)
+        # Collapsed-header summary: one-line totals
+        self.today_metrics_summary_var.set(
+            f"Bills ${self.state.last_reserved_total:,.0f} · "
+            f"Funds ${self.state.last_fund_total:,.0f} · "
+            f"Goals ${self.state.last_goal_total:,.0f} · "
+            f"Invest ${self.state.last_invest_total:,.0f} · "
+            f"Streak {self.state.game.streak_pays}")
 
         # ── Allocation plan cards ────────────────────────────────────────────
         if self.last_allocation:
@@ -14133,6 +14162,9 @@ class BudgetApp(tk.Tk):
         quips.sort(key=lambda q: -q[0])
         _, quip_text, expression = quips[0]
         self._gerald_quip_var.set(quip_text)
+        # Collapsed-header summary: truncated quip
+        short = quip_text if len(quip_text) <= 70 else quip_text[:67].rstrip() + "…"
+        self.today_gerald_summary_var.set(short)
         # Update expression
         _draw_gerald(self._gerald_canvas, w=60, h=80, expression=expression)
 
