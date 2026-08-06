@@ -14369,6 +14369,8 @@ class BudgetApp(tk.Tk):
             self._personality_tier_lbl.configure(fg=p["tier_color"])
 
         if p["analyzing"]:
+            self._personality_summary_var.set(
+                f"Analyzing — {p['data_points']} signal(s) so far")
             self._personality_archetype_var.set("Analyzing…")
             self._personality_glyph_var.set("◆")
             self._personality_desc_var.set(f"Need more data. Log pays, verify transactions, import statements. ({p['data_points']} signals so far)")
@@ -14378,6 +14380,7 @@ class BudgetApp(tk.Tk):
             self._personality_top_var.set("")
             self._personality_runner_var.set("")
         else:
+            self._personality_summary_var.set(p["archetype_name"])
             self._personality_archetype_var.set(p["archetype_name"])
             self._personality_glyph_var.set(p["archetype_glyph"])
             self._personality_desc_var.set(p["archetype_desc"])
@@ -16286,14 +16289,12 @@ class BudgetApp(tk.Tk):
         tk.Label(title_row, textvariable=self.coll_progress_var, bg=_hbg, fg=UI_ACCENT,
                  font=FONT_BODY_BOLD).pack(side="left", padx=(14, 0))
 
-        # Currency display
+        # Currency display — gold only (packs cost gold; gems live in the
+        # topbar pill like everywhere else)
         self.coll_gold_var = tk.StringVar(value="0 Gold")
-        self.coll_gem_var = tk.StringVar(value="◆ 0 Gems")
         currency_f = tk.Frame(hero, bg=_hbg)
         currency_f.grid(row=0, column=2, rowspan=2, sticky="e")
         tk.Label(currency_f, textvariable=self.coll_gold_var, bg=_hbg, fg=UI_GOLD,
-                 font=FONT_SUBHEADING).pack(anchor="e")
-        tk.Label(currency_f, textvariable=self.coll_gem_var, bg=_hbg, fg=UI_SAPPHIRE,
                  font=FONT_SUBHEADING).pack(anchor="e")
 
         # ── Body ──────────────────────────────────────────────────────────────
@@ -16301,9 +16302,14 @@ class BudgetApp(tk.Tk):
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
 
-        # ── Set Progress Tracker ──────────────────────────────────────────────
-        sets_row = tk.Frame(body, bg=UI_BG)
-        sets_row.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        # ── Set Progress Tracker (collapsible) ────────────────────────────────
+        self._coll_sets_summary_var = tk.StringVar(value="0 / 4 sets complete")
+        sets_wrap, sets_content = self._collapsible_section(
+            body, "Set Progress", "collection.sets",
+            summary_var=self._coll_sets_summary_var)
+        sets_wrap.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        sets_row = tk.Frame(sets_content, bg=UI_BG)
+        sets_row.grid(row=0, column=0, sticky="ew")
         for i in range(4):
             sets_row.columnconfigure(i, weight=1)
 
@@ -16355,15 +16361,17 @@ class BudgetApp(tk.Tk):
             tk.Label(pcard, text=psub, bg=UI_SURFACE, fg=accent,
                      font=FONT_SMALL).pack(anchor="w", pady=(2, 0))
 
-            # Rarity odds as colored dots
+            # Rarity odds — tucked behind a hover info icon instead of a
+            # permanent dot row
             _, _, _, _, _, _, rw, _ = PACK_TYPES[col_i]
+            odds_text = "Drop odds:  " + "  ·  ".join(
+                f"{pct}% {rarity.title()}" for rarity, pct in rw.items() if pct > 0)
             odds_f = tk.Frame(pcard, bg=UI_SURFACE)
             odds_f.pack(anchor="w", pady=(6, 8))
-            for rarity, pct in rw.items():
-                if pct > 0:
-                    _, _, rfg, _ = RARITY_CONFIG[rarity]
-                    tk.Label(odds_f, text=f"● {pct}% {rarity.title()}", bg=UI_SURFACE, fg=rfg,
-                             font=FONT_MICRO).pack(side="left", padx=(0, 8))
+            tk.Label(odds_f, text=f"{ncard} cards per pack", bg=UI_SURFACE,
+                     fg=UI_MUTED, font=FONT_MICRO).pack(side="left")
+            self._info_icon(odds_f, odds_text, bg=UI_SURFACE).pack(
+                side="left", padx=(SP_XS, 0))
 
             btn_style = "Gem.TButton" if cost_type == "gems" else "Gold.TButton"
             btn = ttk.Button(pcard, text=f"Open  —  {cost} {cost_icon}", style=btn_style,
@@ -16412,10 +16420,10 @@ class BudgetApp(tk.Tk):
         self.refresh_collection()
 
     def _build_personality_panel(self, parent):
-        """Full money-personality panel for the Avatar tab (row=1, columnspan=3)."""
+        """Full money-personality panel for the Avatar tab (lives inside the
+        avatar.personality collapsible content frame)."""
         self._personality_accent = tk.Frame(parent, bg=UI_AMETHYST)
-        self._personality_accent.grid(row=1, column=0, columnspan=3, sticky="ew",
-                                       padx=SP_XL, pady=(0, SP_MD))
+        self._personality_accent.grid(row=0, column=0, sticky="ew")
         personality = tk.Frame(self._personality_accent, bg=UI_SURFACE)
         personality.pack(fill="both", expand=True, padx=2, pady=(2, 2))
         personality.columnconfigure(2, weight=1)
@@ -16518,12 +16526,17 @@ class BudgetApp(tk.Tk):
                  font=FONT_CAPTION_BOLD).grid(row=0, column=0, sticky="sw")
         tk.Label(hero, text="Avatar & Equipment", bg=_hbg, fg=UI_TEXT,
                  font=FONT_DISPLAY_MD).grid(row=1, column=0, sticky="w")
-        self._char_currency_var = tk.StringVar(value="")
-        tk.Label(hero, textvariable=self._char_currency_var, bg=_hbg, fg=UI_MUTED,
-                 font=FONT_BODY).grid(row=0, column=1, rowspan=2, sticky="e", padx=(SP_XL, 0))
+        # (Gold/gems display removed — the topbar pill already shows both.)
 
-        # ── Money Personality panel (row 1, columnspan 3) ────────────────────
-        self._build_personality_panel(frame)
+        # ── Money Personality panel (row 1, columnspan 3, collapsible) ───────
+        self._personality_summary_var = tk.StringVar(value="Analyzing…")
+        pers_wrap, pers_content = self._collapsible_section(
+            frame, "Money Personality", "avatar.personality",
+            summary_var=self._personality_summary_var,
+            on_expand=self._refresh_personality_panel)
+        pers_wrap.grid(row=1, column=0, columnspan=3, sticky="ew",
+                       padx=SP_XL, pady=(0, SP_MD))
+        self._build_personality_panel(pers_content)
 
         # ── Left: Avatar preview + Profile Card ──────────────────────────────
         left_col = tk.Frame(frame, bg=UI_BG)
@@ -16538,10 +16551,15 @@ class BudgetApp(tk.Tk):
                                         bg=UI_SURFACE2, highlightthickness=0)
         self.avatar_canvas.pack(padx=8, pady=8)
 
-        # Profile card below avatar — shows rank, sets, stats
-        profile = tk.Frame(left_col, bg=UI_SURFACE, highlightthickness=1,
+        # Profile card + set rewards below avatar (collapsible)
+        self._profile_sets_var = tk.StringVar(value="Sets: 0 / 4")
+        prof_wrap, prof_content = self._collapsible_section(
+            left_col, "Profile & Sets", "avatar.profile",
+            summary_var=self._profile_sets_var)
+        prof_wrap.pack(fill="x", pady=(8, 0))
+        profile = tk.Frame(prof_content, bg=UI_SURFACE, highlightthickness=1,
                            highlightbackground=UI_BORDER)
-        profile.pack(fill="x", pady=(8, 0))
+        profile.grid(row=0, column=0, sticky="ew")
         tk.Frame(profile, bg=UI_GOLD, height=2).pack(fill="x")
         profile_inner = tk.Frame(profile, bg=UI_SURFACE, padx=SP_MD, pady=10)
         profile_inner.pack(fill="x")
@@ -16549,7 +16567,6 @@ class BudgetApp(tk.Tk):
         self._profile_rank_var = tk.StringVar(value="The Recruit")
         self._profile_items_var = tk.StringVar(value="Items: 4 / 52")
         self._profile_cards_var = tk.StringVar(value="Cards: 0 / 35")
-        self._profile_sets_var = tk.StringVar(value="Sets: 0 / 4")
 
         tk.Label(profile_inner, textvariable=self._profile_rank_var, bg=UI_SURFACE, fg=UI_GOLD,
                  font=FONT_SUBHEADING).pack(anchor="w")
@@ -16561,33 +16578,17 @@ class BudgetApp(tk.Tk):
 
 
         # Set reward badges below profile
-        sets_badge = tk.Frame(left_col, bg=UI_SURFACE, highlightthickness=1,
+        sets_badge = tk.Frame(prof_content, bg=UI_SURFACE, highlightthickness=1,
                               highlightbackground=UI_BORDER)
-        sets_badge.pack(fill="x", pady=(6, 0))
+        sets_badge.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         tk.Frame(sets_badge, bg=UI_AMETHYST, height=2).pack(fill="x")
         tk.Label(sets_badge, text="SET REWARDS", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_MICRO).pack(anchor="w", padx=10, pady=(6, 2))
         self._char_set_badges_frame = tk.Frame(sets_badge, bg=UI_SURFACE, padx=10, pady=6)
         self._char_set_badges_frame.pack(fill="x")
 
-        # Equipped slot summary
-        equip_summary = tk.Frame(left_col, bg=UI_SURFACE, highlightthickness=1,
-                                  highlightbackground=UI_BORDER)
-        equip_summary.pack(fill="x", pady=(6, 0))
-        tk.Frame(equip_summary, bg=UI_SAPPHIRE, height=2).pack(fill="x")
-        self._char_slot_labels: dict[str, tk.StringVar] = {}
-        slots_inner = tk.Frame(equip_summary, bg=UI_SURFACE, padx=10, pady=8)
-        slots_inner.pack(fill="x")
-        for slot in AVATAR_SLOT_ORDER:
-            row = tk.Frame(slots_inner, bg=UI_SURFACE)
-            row.pack(fill="x", pady=1)
-            icon = AVATAR_SLOT_ICONS.get(slot, "·")
-            tk.Label(row, text=f"{icon} {slot.title()}", bg=UI_SURFACE, fg=UI_MUTED,
-                     font=FONT_CAPTION_BOLD, width=14, anchor="w").pack(side="left")
-            sv = tk.StringVar(value="(none)")
-            self._char_slot_labels[slot] = sv
-            tk.Label(row, textvariable=sv, bg=UI_SURFACE, fg=UI_TEXT,
-                     font=FONT_CAPTION, anchor="w").pack(side="left", fill="x")
+        # (Equipped-slot summary removed — the EQUIPMENT panel on the right
+        # lists the same six slots and owns the interaction.)
 
         # ── Center: Item browser ──────────────────────────────────────────────
         browser = tk.Frame(frame, bg=UI_BG)
@@ -17138,19 +17139,9 @@ class BudgetApp(tk.Tk):
         equipped = dict(g.character_equipped or {})
         owned = set(g.character_items_owned or [])
 
-        # Currency display
-        self._char_currency_var.set(f"◆ {g.total_score} Gold    ◇ {g.gems} Gems")
-
         # Draw avatar (bigger canvas) + start animation loop
         draw_avatar(self.avatar_canvas, equipped, 280, 360)
         self._start_avatar_anim()
-
-        # Update slot summary labels under preview
-        for slot in AVATAR_SLOT_ORDER:
-            item_id = equipped.get(slot, "")
-            item = AVATAR_ITEMS.get(item_id)
-            name = item["name"] if item else "(none)"
-            self._char_slot_labels[slot].set(name)
 
         # Update equipment panel with rarity colors
         for slot, row_data in self._char_equip_rows.items():
@@ -20766,7 +20757,6 @@ class BudgetApp(tk.Tk):
         """Rebuild the collection card grid and update header currency display."""
         g = self.state.game
         self.coll_gold_var.set(f"{g.total_score} Gold")
-        self.coll_gem_var.set(f"◆ {g.gems} Gems")
         unique_owned = set(g.cards_owned)
         self.coll_progress_var.set(f"{len(unique_owned)} / {len(CARD_POOL)}")
 
@@ -20782,6 +20772,9 @@ class BudgetApp(tk.Tk):
                 prog_var.set(f"✓ COMPLETE")
             else:
                 prog_var.set(f"{owned} / {total}")
+        completed_sets = sum(1 for v in set_progress.values() if v[2])
+        self._coll_sets_summary_var.set(
+            f"{completed_sets} / {len(CARD_SETS)} sets complete")
 
         # Update pack buy buttons affordability
         for pid, btn in self._pack_buy_btns.items():
