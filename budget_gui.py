@@ -3443,6 +3443,10 @@ class AppState:
     gerald_aliases: Dict[str, str] = field(default_factory=dict)
     # Gerald reminders: [{"id": int, "text": str, "due_date": "YYYY-MM-DD", "created": "YYYY-MM-DD", "dismissed": bool}]
     gerald_reminders: List[Dict] = field(default_factory=list)
+    # Collapsible-section open/closed state, keyed "<tab>.<section>".
+    # True = open. Missing key => the section's call-site default.
+    # NOTE: must stay the LAST field — from_dict passes args positionally.
+    ui_prefs: Dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self):
         return {
@@ -3476,6 +3480,7 @@ class AppState:
             "pending_income_confirmations": list(self.pending_income_confirmations),
             "gerald_aliases": dict(self.gerald_aliases),
             "gerald_reminders": list(self.gerald_reminders),
+            "ui_prefs": dict(self.ui_prefs),
         }
 
     @classmethod
@@ -3544,6 +3549,7 @@ class AppState:
             list(data.get("pending_income_confirmations", [])),
             dict(data.get("gerald_aliases", {})),
             list(data.get("gerald_reminders", [])),
+            dict(data.get("ui_prefs", {}) or {}),
         )
 
 
@@ -8861,6 +8867,94 @@ class BudgetApp(tk.Tk):
         """A surface card with subtle border."""
         return tk.Frame(parent, bg=UI_SURFACE, padx=padx, pady=pady,
                         highlightthickness=1, highlightbackground=UI_BORDER, **kwargs)
+
+    def _collapsible_section(self, parent, title: str, key: str, *,
+                             default_open: bool = False,
+                             summary_var=None,
+                             on_expand=None):
+        """Chevron header + content frame toggled with grid/grid_remove.
+        Open state persisted in state.ui_prefs[key]. Returns (wrapper, content):
+        caller places `wrapper` and builds the section body into `content`.
+        `summary_var` (tk.StringVar) is shown at the right of the header ONLY
+        while collapsed, so key info stays glanceable. `on_expand` runs via
+        after_idle when the section opens — needed by canvas charts that size
+        themselves from winfo_width() (unmapped widgets report 1px)."""
+        if not hasattr(self, "_collapsible_sections"):
+            self._collapsible_sections = {}
+        wrapper = tk.Frame(parent, bg=UI_BG)
+        wrapper.columnconfigure(0, weight=1)
+        wrapper.rowconfigure(1, weight=1)
+
+        header = tk.Frame(wrapper, bg=UI_BG, cursor="hand2")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, SP_XS))
+        chevron = tk.Label(header, text="▸", bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION_BOLD)
+        chevron.pack(side="left")
+        title_lbl = tk.Label(header, text=title.upper(), bg=UI_BG, fg=UI_MUTED,
+                             font=FONT_CAPTION_BOLD)
+        title_lbl.pack(side="left", padx=(SP_XS, 0))
+        summary_lbl = None
+        if summary_var is not None:
+            summary_lbl = tk.Label(header, textvariable=summary_var, bg=UI_BG,
+                                   fg=UI_MUTED, font=FONT_CAPTION, anchor="e")
+        hairline = tk.Frame(header, bg=UI_BORDER, height=1)
+        hairline.pack(side="left", fill="x", expand=True, padx=(SP_MD, SP_MD))
+
+        content = tk.Frame(wrapper, bg=UI_BG)
+        content.columnconfigure(0, weight=1)
+        content.grid(row=1, column=0, sticky="nsew")
+
+        state = {"open": bool(self.state.ui_prefs.get(key, default_open))}
+
+        def _apply(initial=False):
+            if state["open"]:
+                content.grid()
+                chevron.configure(text="▾")
+                if summary_lbl is not None:
+                    summary_lbl.pack_forget()
+                if not initial and on_expand is not None:
+                    self.after_idle(on_expand)
+            else:
+                content.grid_remove()
+                chevron.configure(text="▸")
+                if summary_lbl is not None:
+                    summary_lbl.pack(side="right", padx=(SP_SM, 0))
+
+        def _toggle(_e=None):
+            state["open"] = not state["open"]
+            _apply()
+            self.state.ui_prefs[key] = state["open"]
+            self._debounce_after("ui_prefs_save", 600, self.save_state)
+            self._refresh_page_scrollregion()
+
+        for w in (header, chevron, title_lbl, hairline) + ((summary_lbl,) if summary_lbl is not None else ()):
+            w.bind("<Button-1>", _toggle)
+        def _hover(entered):
+            title_lbl.configure(fg=UI_TEXT if entered else UI_MUTED)
+            chevron.configure(fg=UI_TEXT if entered else UI_MUTED)
+        header.bind("<Enter>", lambda _e: _hover(True))
+        header.bind("<Leave>", lambda _e: _hover(False))
+
+        _apply(initial=True)
+        self._collapsible_sections[key] = {
+            "wrapper": wrapper, "content": content,
+            "toggle": _toggle, "is_open": lambda: state["open"],
+        }
+        return wrapper, content
+
+    def _expand_section(self, key: str):
+        """Open a collapsible section if it exists and is closed."""
+        meta = getattr(self, "_collapsible_sections", {}).get(key)
+        if meta and not meta["is_open"]():
+            meta["toggle"]()
+
+    def _refresh_page_scrollregion(self):
+        """Recompute the current page's scrollregion after a section
+        expands/collapses (same logic as _show_page, deferred one idle cycle)."""
+        def _do():
+            for c in self._scroll_canvases:
+                if self._scroll_canvas_page.get(id(c)) == self.current_page_key:
+                    c.configure(scrollregion=c.bbox("all") or "0 0 0 0")
+        self.after_idle(_do)
 
     def _attach_info_tooltip(self, widget, text: str, *, wraplength: int = 280):
         """Hover-tooltip: show a small borderless Toplevel near `widget`
