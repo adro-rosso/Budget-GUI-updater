@@ -8871,7 +8871,8 @@ class BudgetApp(tk.Tk):
     def _collapsible_section(self, parent, title: str, key: str, *,
                              default_open: bool = False,
                              summary_var=None,
-                             on_expand=None):
+                             on_expand=None,
+                             bg=None):
         """Chevron header + content frame toggled with grid/grid_remove.
         Open state persisted in state.ui_prefs[key]. Returns (wrapper, content):
         caller places `wrapper` and builds the section body into `content`.
@@ -8881,25 +8882,26 @@ class BudgetApp(tk.Tk):
         themselves from winfo_width() (unmapped widgets report 1px)."""
         if not hasattr(self, "_collapsible_sections"):
             self._collapsible_sections = {}
-        wrapper = tk.Frame(parent, bg=UI_BG)
+        bg = bg or UI_BG
+        wrapper = tk.Frame(parent, bg=bg)
         wrapper.columnconfigure(0, weight=1)
         wrapper.rowconfigure(1, weight=1)
 
-        header = tk.Frame(wrapper, bg=UI_BG, cursor="hand2")
+        header = tk.Frame(wrapper, bg=bg, cursor="hand2")
         header.grid(row=0, column=0, sticky="ew", pady=(0, SP_XS))
-        chevron = tk.Label(header, text="▸", bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION_BOLD)
+        chevron = tk.Label(header, text="▸", bg=bg, fg=UI_MUTED, font=FONT_CAPTION_BOLD)
         chevron.pack(side="left")
-        title_lbl = tk.Label(header, text=title.upper(), bg=UI_BG, fg=UI_MUTED,
+        title_lbl = tk.Label(header, text=title.upper(), bg=bg, fg=UI_MUTED,
                              font=FONT_CAPTION_BOLD)
         title_lbl.pack(side="left", padx=(SP_XS, 0))
         summary_lbl = None
         if summary_var is not None:
-            summary_lbl = tk.Label(header, textvariable=summary_var, bg=UI_BG,
+            summary_lbl = tk.Label(header, textvariable=summary_var, bg=bg,
                                    fg=UI_MUTED, font=FONT_CAPTION, anchor="e")
         hairline = tk.Frame(header, bg=UI_BORDER, height=1)
         hairline.pack(side="left", fill="x", expand=True, padx=(SP_MD, SP_MD))
 
-        content = tk.Frame(wrapper, bg=UI_BG)
+        content = tk.Frame(wrapper, bg=bg)
         content.columnconfigure(0, weight=1)
         content.grid(row=1, column=0, sticky="nsew")
 
@@ -14520,52 +14522,53 @@ class BudgetApp(tk.Tk):
         ttk.Button(controls, text="Clear Import", style="Ghost.TButton",
                    command=self.clear_current_import).grid(row=7, column=0, sticky="ew")
 
-        # Classify section
-        tk.Frame(controls, bg=UI_BORDER, height=1).grid(row=8, column=0, sticky="ew", pady=(SP_LG, SP_SM))
-        tk.Label(controls, text="CLASSIFY SELECTED", bg=UI_SURFACE, fg=UI_MUTED,
-                 font=FONT_BODY_BOLD).grid(row=9, column=0, sticky="w", pady=(0, SP_XS))
+        # Classify section (collapsible — auto-expands when a preview row is
+        # selected, which is exactly when the toolbox is needed)
+        classify_wrap, classify = self._collapsible_section(
+            controls, "Classify Selected", "tx.classify", bg=UI_SURFACE)
+        classify_wrap.grid(row=8, column=0, sticky="ew", pady=(SP_LG, 0))
 
-        tk.Label(controls, text="Match Type", bg=UI_SURFACE, fg=UI_MUTED,
-                 font=FONT_SMALL_BOLD).grid(row=10, column=0, sticky="w", pady=(SP_XS, 1))
+        tk.Label(classify, text="Match Type", bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_SMALL_BOLD).grid(row=0, column=0, sticky="w", pady=(SP_XS, 1))
         self.tx_match_type = ttk.Combobox(
-            controls, values=["discretionary", "linked_bill", "linked_fund", "income", "transfer", "ignore"],
+            classify, values=["discretionary", "linked_bill", "linked_fund", "income", "transfer", "ignore"],
             state="readonly", width=20)
         self.tx_match_type.set("discretionary")
-        self.tx_match_type.grid(row=11, column=0, sticky="ew", pady=(0, SP_XS))
+        self.tx_match_type.grid(row=1, column=0, sticky="ew", pady=(0, SP_XS))
 
-        tk.Label(controls, text="Target (bill/fund name)", bg=UI_SURFACE, fg=UI_MUTED,
-                 font=FONT_SMALL_BOLD).grid(row=12, column=0, sticky="w", pady=(SP_XS, 1))
-        self.tx_target = ttk.Entry(controls, width=22)
-        self.tx_target.grid(row=13, column=0, sticky="ew", pady=(0, SP_XS))
+        tk.Label(classify, text="Target (bill/fund name)", bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_SMALL_BOLD).grid(row=2, column=0, sticky="w", pady=(SP_XS, 1))
+        self.tx_target = ttk.Entry(classify, width=22)
+        self.tx_target.grid(row=3, column=0, sticky="ew", pady=(0, SP_XS))
 
-        tk.Label(controls, text="Category", bg=UI_SURFACE, fg=UI_MUTED,
-                 font=FONT_SMALL_BOLD).grid(row=14, column=0, sticky="w", pady=(SP_XS, 1))
-        self.tx_category = ttk.Combobox(controls, values=tuple(self.state.expense_categories), width=20)
-        self.tx_category.grid(row=15, column=0, sticky="ew", pady=(0, 2))
-        ttk.Button(controls, text="+ New Category",
-                   command=self.prompt_add_expense_category).grid(row=16, column=0, sticky="w", pady=(2, SP_XS))
+        tk.Label(classify, text="Category", bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_SMALL_BOLD).grid(row=4, column=0, sticky="w", pady=(SP_XS, 1))
+        self.tx_category = ttk.Combobox(classify, values=tuple(self.state.expense_categories), width=20)
+        self.tx_category.grid(row=5, column=0, sticky="ew", pady=(0, 2))
+        ttk.Button(classify, text="+ New Category",
+                   command=self.prompt_add_expense_category).grid(row=6, column=0, sticky="w", pady=(2, SP_XS))
 
-        tk.Label(controls, text="Rule Keyword (optional)", bg=UI_SURFACE, fg=UI_MUTED,
-                 font=FONT_SMALL_BOLD).grid(row=17, column=0, sticky="w", pady=(SP_XS, 1))
-        self.tx_rule_keyword = ttk.Entry(controls, width=22)
-        self.tx_rule_keyword.grid(row=18, column=0, sticky="ew", pady=(0, SP_MD))
+        tk.Label(classify, text="Rule Keyword (optional)", bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_SMALL_BOLD).grid(row=7, column=0, sticky="w", pady=(SP_XS, 1))
+        self.tx_rule_keyword = ttk.Entry(classify, width=22)
+        self.tx_rule_keyword.grid(row=8, column=0, sticky="ew", pady=(0, SP_MD))
 
-        tk.Frame(controls, bg=UI_BORDER, height=1).grid(row=19, column=0, sticky="ew", pady=(0, SP_MD))
-        ttk.Button(controls, text="Verify + Save Rule", style="Accent.TButton",
-                   command=self.apply_transaction_match_and_save_rule).grid(row=20, column=0, sticky="ew", pady=(0, SP_XS))
-        ttk.Button(controls, text="Apply (no rule)",
-                   command=self.apply_transaction_match).grid(row=21, column=0, sticky="ew", pady=(0, SP_XS))
-        ttk.Button(controls, text="Verify ALL Matched", style="Primary.TButton",
-                   command=self.verify_all_matched_transactions).grid(row=22, column=0, sticky="ew", pady=(0, SP_XS))
-        ttk.Button(controls, text="Bulk Verify Selected",
-                   command=self.bulk_verify_selected_transactions).grid(row=23, column=0, sticky="ew", pady=(0, SP_XS))
-        ttk.Button(controls, text="Bulk Apply To Selected",
-                   command=self.bulk_apply_selected_transactions).grid(row=24, column=0, sticky="ew", pady=(0, SP_XS))
-        ttk.Button(controls, text="Clear",
-                   command=self.clear_transaction_match).grid(row=25, column=0, sticky="ew")
-        tip_box = tk.Frame(controls, bg=UI_INFO_SOFT, padx=SP_MD, pady=SP_SM,
+        tk.Frame(classify, bg=UI_BORDER, height=1).grid(row=9, column=0, sticky="ew", pady=(0, SP_MD))
+        ttk.Button(classify, text="Verify + Save Rule", style="Accent.TButton",
+                   command=self.apply_transaction_match_and_save_rule).grid(row=10, column=0, sticky="ew", pady=(0, SP_XS))
+        ttk.Button(classify, text="Apply (no rule)",
+                   command=self.apply_transaction_match).grid(row=11, column=0, sticky="ew", pady=(0, SP_XS))
+        ttk.Button(classify, text="Verify ALL Matched", style="Primary.TButton",
+                   command=self.verify_all_matched_transactions).grid(row=12, column=0, sticky="ew", pady=(0, SP_XS))
+        ttk.Button(classify, text="Bulk Verify Selected",
+                   command=self.bulk_verify_selected_transactions).grid(row=13, column=0, sticky="ew", pady=(0, SP_XS))
+        ttk.Button(classify, text="Bulk Apply To Selected",
+                   command=self.bulk_apply_selected_transactions).grid(row=14, column=0, sticky="ew", pady=(0, SP_XS))
+        ttk.Button(classify, text="Clear",
+                   command=self.clear_transaction_match).grid(row=15, column=0, sticky="ew")
+        tip_box = tk.Frame(classify, bg=UI_INFO_SOFT, padx=SP_MD, pady=SP_SM,
                            highlightthickness=1, highlightbackground=UI_ACCENT)
-        tip_box.grid(row=26, column=0, sticky="ew", pady=(SP_MD, 0))
+        tip_box.grid(row=16, column=0, sticky="ew", pady=(SP_MD, 0))
         tk.Label(tip_box, text="Workflow", bg=UI_INFO_SOFT, fg=UI_ACCENT,
                  font=FONT_CAPTION_BOLD).pack(anchor="w")
         tk.Label(tip_box, text="1. Import PDF\n2. Suggest Matches\n3. Verify outgoing rows\n4. Commit Reviewed",
@@ -14600,6 +14603,9 @@ class BudgetApp(tk.Tk):
         self._apply_tree_tags(self.transaction_tree)
         self._apply_zebra(self.transaction_tree)
         self.transaction_tree.bind("<<TreeviewSelect>>", self.on_transaction_select)
+        self.transaction_tree.bind("<<TreeviewSelect>>",
+                                   lambda _e: self._expand_section("tx.classify"),
+                                   add="+")
         self.transaction_tree.configure(selectmode="extended")
         self._attach_tree_empty_state(
             self.transaction_tree, preview_inner, "📄",
@@ -14608,8 +14614,16 @@ class BudgetApp(tk.Tk):
             cta_label="Import PDF",
             cta_cb=lambda: self.import_pdf_transactions())
 
-        insights_outer = tk.Frame(frame, bg=UI_SURFACE, highlightthickness=1, highlightbackground=UI_BORDER)
-        insights_outer.grid(row=2, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(0, SP_SM))
+        # Workflow Insights + expense pie live together in one collapsible.
+        self.tx_insights_summary_var = tk.StringVar(value="")
+        insights_wrap, insights_content = self._collapsible_section(
+            frame, "Insights & Spending Chart", "tx.insights",
+            summary_var=self.tx_insights_summary_var,
+            on_expand=lambda: self.refresh_expense_pie_chart(None))
+        insights_wrap.grid(row=2, column=0, columnspan=2, sticky="ew",
+                           padx=SP_XL, pady=(0, SP_SM))
+        insights_outer = tk.Frame(insights_content, bg=UI_SURFACE, highlightthickness=1, highlightbackground=UI_BORDER)
+        insights_outer.grid(row=0, column=0, sticky="ew")
         insights_outer.columnconfigure(0, weight=1)
         tk.Frame(insights_outer, bg=UI_GOLD, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(insights_outer, text="Workflow Insights", bg=UI_SURFACE, fg=UI_TEXT,
@@ -14642,7 +14656,13 @@ class BudgetApp(tk.Tk):
             inner.grid(row=1, column=0, sticky="nsew", padx=SP_MD, pady=(0, SP_MD))
             return inner
 
-        committed_inner = _tx_panel(bottom, "Committed Transactions", UI_EMERALD, 0)
+        self.tx_committed_summary_var = tk.StringVar(value="")
+        committed_wrap, committed_host = self._collapsible_section(
+            bottom, "Committed Transactions", "tx.committed",
+            summary_var=self.tx_committed_summary_var)
+        committed_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, SP_SM))
+        committed_host.rowconfigure(0, weight=1)
+        committed_inner = _tx_panel(committed_host, "Committed Transactions", UI_EMERALD, 0)
         committed_inner.rowconfigure(1, weight=1)
         committed_inner.columnconfigure(0, weight=1)
 
@@ -14685,11 +14705,17 @@ class BudgetApp(tk.Tk):
         self.tx_history_tree.configure(yscrollcommand=self._autohide_scrollbar(s2, "grid", row=1, column=1, sticky="ns"))
         self._apply_zebra(self.tx_history_tree)
 
-        qa_inner = _tx_panel(bottom, "Import Log", UI_SAPPHIRE, 1)
+        self.tx_log_summary_var = tk.StringVar(value="")
+        log_wrap, log_host = self._collapsible_section(
+            bottom, "Import Log", "tx.log",
+            summary_var=self.tx_log_summary_var)
+        log_wrap.grid(row=0, column=1, sticky="nsew", padx=(SP_SM, 0))
+        log_host.rowconfigure(0, weight=1)
+        qa_inner = _tx_panel(log_host, "Import Log", UI_SAPPHIRE, 0)
         self.transaction_log_text = self._make_scrolled_text(qa_inner, 16)
 
-        pie_outer = tk.Frame(frame, bg=UI_SURFACE, highlightthickness=1, highlightbackground=UI_BORDER)
-        pie_outer.grid(row=4, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(0, SP_XL))
+        pie_outer = tk.Frame(insights_content, bg=UI_SURFACE, highlightthickness=1, highlightbackground=UI_BORDER)
+        pie_outer.grid(row=1, column=0, sticky="ew", pady=(SP_SM, 0))
         pie_outer.columnconfigure(0, weight=1)
         tk.Frame(pie_outer, bg=UI_SAPPHIRE, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(pie_outer, text="Committed Outgoing — Spending by Category",
@@ -19678,6 +19704,7 @@ class BudgetApp(tk.Tk):
                 self.tx_filter_count_var.set(f"{shown} of {total}")
             else:
                 self.tx_filter_count_var.set(f"{total} total")
+        self.tx_committed_summary_var.set(f"{total} committed")
         self.transaction_log_text.delete("1.0", tk.END)
         verified = sum(1 for t in self.latest_import if t.user_verified)
         needs_review = sum(1 for t in self.latest_import if t.direction() == "out" and not t.user_verified)
@@ -19708,6 +19735,19 @@ class BudgetApp(tk.Tk):
         else:
             self.transaction_workflow_state_var.set("Step 4: all outgoing preview rows are verified — commit this batch when ready.")
         self.transaction_insights_var.set("\n".join(insight_lines))
+        # Collapsed-header summaries
+        self.tx_log_summary_var.set(
+            f"Preview {len(self.latest_import)} · verified {verified} · review {needs_review}")
+        cat_totals = {}
+        for t in self.state.transactions:
+            if t.direction() == "out":
+                cat = t.category or "Uncategorized"
+                cat_totals[cat] = cat_totals.get(cat, 0.0) + t.amount()
+        if cat_totals:
+            top_cat, top_amt = max(cat_totals.items(), key=lambda kv: kv[1])
+            self.tx_insights_summary_var.set(f"Top category: {top_cat} ${top_amt:,.0f}")
+        else:
+            self.tx_insights_summary_var.set("No committed outgoing yet")
         self.refresh_expense_pie_chart()
 
     def refresh_rules_tab(self):
