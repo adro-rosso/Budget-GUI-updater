@@ -9356,9 +9356,17 @@ class BudgetApp(tk.Tk):
             self._reposition_toasts()
 
     def _reposition_toasts(self):
-        """Stack active toasts from bottom-right, going upward."""
+        """Stack active toasts from bottom-right, going upward. The stack
+        starts above the Gerald launcher pill so toasts never cover it."""
         margin_right = 20
-        margin_bottom = 20
+        launcher = getattr(self, "_gerald_launcher", None)
+        pill_h = 0
+        if launcher is not None:
+            try:
+                pill_h = launcher.winfo_height() or 34
+            except tk.TclError:
+                pill_h = 34
+        margin_bottom = 20 + (pill_h + SP_SM if pill_h else 0)
         gap = 6
         y_offset = margin_bottom
         for toast in reversed(self._toast_stack):
@@ -15796,10 +15804,10 @@ class BudgetApp(tk.Tk):
         """Floating Ask-Gerald pill pinned bottom-right of the root window."""
         if getattr(self, "_gerald_launcher", None) is not None:
             return
-        glow = tk.Frame(self, bg=UI_EMERALD, padx=1, pady=1, cursor="hand2")
+        glow = tk.Frame(self, bg=UI_BORDER, padx=1, pady=1, cursor="hand2")
         inner = tk.Frame(glow, bg=UI_SURFACE, padx=SP_MD, pady=SP_XS, cursor="hand2")
         inner.pack()
-        tk.Label(inner, text="💬  Ask Gerald   (Ctrl+G)",
+        tk.Label(inner, text="💬  Gerald",
                  bg=UI_SURFACE, fg=UI_EMERALD, font=FONT_CAPTION_BOLD,
                  cursor="hand2").pack()
         for w in (glow, inner, *inner.winfo_children()):
@@ -15811,10 +15819,10 @@ class BudgetApp(tk.Tk):
         """Floating quick-add button, bottom-left. Pops a small action menu."""
         if getattr(self, "_quick_add_fab", None) is not None:
             return
-        glow = tk.Frame(self, bg=UI_GOLD, padx=1, pady=1, cursor="hand2")
+        glow = tk.Frame(self, bg=UI_BORDER, padx=1, pady=1, cursor="hand2")
         inner = tk.Frame(glow, bg=UI_SURFACE, padx=SP_MD, pady=SP_XS, cursor="hand2")
         inner.pack()
-        tk.Label(inner, text="\u2795  Quick Add", bg=UI_SURFACE, fg=UI_GOLD,
+        tk.Label(inner, text="\u2795  Add", bg=UI_SURFACE, fg=UI_GOLD,
                  font=FONT_CAPTION_BOLD, cursor="hand2").pack()
         for w in (glow, inner, *inner.winfo_children()):
             w.bind("<Button-1>", self._toggle_quick_add_menu)
