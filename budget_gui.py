@@ -8068,9 +8068,6 @@ class BudgetApp(tk.Tk):
             "investments": "Invest",
             "review": "Review",
         }
-        self.nav_section_order = ["Core", "Build", "Explore"]
-        self.nav_section_limit = 5
-
         self._configure_styles()
         self._build_ui()
         self._show_page(self.current_page_key)
@@ -8419,22 +8416,6 @@ class BudgetApp(tk.Tk):
                         bordercolor=UI_BORDER, borderwidth=1)
         style.configure("MiniGame.TLabelframe.Label", background=UI_WARNING_SOFT,
                         foreground=UI_GOLD, font=FONT_CAPTION_BOLD, padding=(SP_SM, 2))
-
-        # ── Notebook / tabs — quiet underline style ───────────────────────────
-        style.configure("TNotebook", background=UI_BG, borderwidth=0, tabmargins=0)
-        style.configure("TNotebook.Tab",
-                        padding=(SP_LG, SP_SM + 2),
-                        font=FONT_BODY,
-                        relief="flat",
-                        borderwidth=0)
-        style.map(
-            "TNotebook.Tab",
-            background=[("selected", UI_BG), ("active", UI_BG), ("!selected", UI_BG)],
-            foreground=[("selected", UI_TEXT_BRIGHT), ("active", UI_TEXT),
-                        ("!selected", UI_MUTED)],
-            font=[("selected", FONT_BODY_BOLD), ("!selected", FONT_BODY)],
-            expand=[("selected", [0, 0, 0, 0])],
-        )
 
         # ── Labels ────────────────────────────────────────────────────────────
         style.configure("TLabel", background=UI_BG, foreground=UI_TEXT,
@@ -16082,8 +16063,7 @@ class BudgetApp(tk.Tk):
              _focus("goal_name", "setup", "goals", getattr(self, "clear_goal_form", None))),
             ("Import Bank Statement (PDF)", "action",
              (lambda: (self._show_page("transactions"),
-                       self.import_bank_statement()
-                       if hasattr(self, "import_bank_statement") else None))),
+                       self.import_pdf_transactions()))),
             ("Open Perk Shop", "action",
              (lambda: self._open_perk_shop()
               if hasattr(self, "_open_perk_shop") else None)),

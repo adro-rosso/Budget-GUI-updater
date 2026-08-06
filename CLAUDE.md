@@ -4,7 +4,7 @@
 
 A personal finance desktop app built with **Python + Tkinter** (single file). Combines budgeting tools with a deep gamification system to make saving feel rewarding.
 
-**Single source file:** `budget_gui.py` (~10,000 lines)
+**Single source file:** `budget_gui.py` (~21,000 lines)
 **Data file:** `budget_data.json` (persists all state)
 **Backup file:** `budget_data.bak` (auto-created on every save — atomic write pattern)
 
@@ -123,6 +123,7 @@ Auto-claimed on set completion via `check_card_set_completions()`. Items use `un
 - Row 5: Score Breakdown + Achievements
 
 ### UI Patterns
+- **Collapsible sections ("calm by default")**: secondary panels on every tab sit behind `_collapsible_section(parent, title, key, *, default_open, summary_var, on_expand, bg)` — a chevron header that toggles content via grid/grid_remove and shows a one-line summary while collapsed. Open state persists per key in `AppState.ui_prefs` (e.g. `today.health`, `score.charts`, `tx.classify`). `ui_prefs` must stay the LAST AppState field (from_dict passes args positionally). Pass `on_expand` for canvas charts (unmapped canvases report 1px width). `_expand_section(key)` opens programmatically (e.g. Transactions classify toolbox auto-expands on preview-row select).
 - Scrollable tabs via Canvas + Frame + mousewheel binding
 - TreeView rows color-coded via tags: `overdue`, `urgent`, `good`, `matched`, `review`
 - Canvas-based interactive pie charts (draggable handles on target mix)
