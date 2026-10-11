@@ -6457,6 +6457,17 @@ class BudgetGameEngine:
                 # fallback to common
                 pool = pool_by_rarity.get("common", list(CARD_POOL))
             card = random.choice(pool)
+            # Duplicate protection: a set that is ≥80% complete rerolls a duplicate
+            # from it once, toward one of its missing cards of the same rarity.
+            if card[0] in g.cards_owned:
+                for _sid, _sn, _sd, _cids, _rw in CARD_SETS:
+                    if card[0] in _cids:
+                        _owned = sum(1 for c_ in _cids if c_ in g.cards_owned)
+                        if _owned >= 0.8 * len(_cids):
+                            _missing = [c_ for c_ in pool if c_[0] in _cids and c_[0] not in g.cards_owned]
+                            if _missing:
+                                card = random.choice(_missing)
+                        break
             drawn.append(card)
             g.cards_owned.append(card[0])
             # Apply bonus if card has one and is first copy
@@ -10989,6 +11000,7 @@ class BudgetApp(tk.Tk):
         self.game_engine.ensure_season()
         self._startup_progression_migration()
         self._render_sample_banner()
+        self._log_engagement("launch")
         self.refresh_all_views()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -12511,6 +12523,8 @@ class BudgetApp(tk.Tk):
         self._sample_banner.grid(row=row_idx + 1, column=0, sticky="ew", padx=SP_SM, pady=(SP_XS, 0))
         self._sample_banner.grid_remove()
         self._sample_banner.bind("<Button-1>", lambda _e: self._settings_clear_sample())
+        self._nav_rank_lbl = tk.Label(nav, text="", bg=UI_PANEL_ALT, fg=UI_GOLD, font=FONT_CAPTION_BOLD, anchor="w", wraplength=170, justify="left")
+        self._nav_rank_lbl.grid(row=row_idx + 2, column=0, sticky="ew", padx=SP_SM, pady=(SP_XS, 0))
 
         self._build_game_tab()
         self._build_collection_tab()
@@ -16742,6 +16756,7 @@ class BudgetApp(tk.Tk):
         prev = fund.current_saved
         fund.current_saved = round(max(prev - amt, 0.0), 2)
         self.refresh_funds(); self.refresh_today_tab(); self.save_state()
+        self._homestead_burst("fund", fund.name)
 
         def _undo():
             fund.current_saved = prev
@@ -17265,6 +17280,12 @@ class BudgetApp(tk.Tk):
         # ── Prestige unlocked
         if g.level >= 10 and g.prestige_level == 0:
             quips.append((55, "Level 10 — Prestige is unlocked. Reset for a permanent score multiplier. Worth it.", "wink"))
+
+        # ── The Homestead noticing things
+        try:
+            quips.extend(self._scene_quips(getattr(self, "_homestead_snap", None) or self.homestead.snapshot()))
+        except Exception:
+            pass
 
         # ── Daily challenges
         incomplete = [ch for ch in g.daily_challenges if not ch.get("completed")]
@@ -17985,9 +18006,9 @@ class BudgetApp(tk.Tk):
                 self.refresh_character_tab()
             except Exception:
                 pass
-            self._show_toast(f"Homestead Tier {snap['tier']} — new companion: {names}. Equip it on the Avatar tab.", "success", 6000)
             self.after(300, lambda t=snap["tier"], n=names: self._celebrate(f"Homestead Tier {t}!", f"{n} joins you", UI_AMETHYST))
-        self._homestead_tier_var.set(f"TIER {snap['tier']} / 5")
+            self.after(2000, lambda t=snap["tier"], ids=list(awarded): self._show_tier_up_card(t, ids))
+        self._homestead_tier_var.set(f"TIER {snap['tier']} / 5  ·  {self.rank_name_for_level(self.state.game.level, self.state.game.prestige_level)}")
         if hasattr(self, "today_homestead_var"):
             self.today_homestead_var.set(f"Tier {snap['tier']} of 5")
         self._draw_homestead_canvas()
@@ -19588,7 +19609,12 @@ class BudgetApp(tk.Tk):
         tk.Label(txt, text="Applies when the app next opens (fonts are set when the window is built). Layout is checked at Default; Largest may crowd narrow panels on a small screen.",
                  bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=760, justify="left").grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
         self._refresh_settings_text_scale()
-        smp = section("SAMPLE DATA", 7)
+        hab = section("YOUR HABIT", 7)
+        self._settings_engagement_var = tk.StringVar(value="")
+        tk.Label(hab, textvariable=self._settings_engagement_var, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL, wraplength=760, justify="left").grid(row=1, column=0, sticky="w")
+        tk.Label(hab, text="Counted from engagement.jsonl beside your data file (launches, Pulses, pays, imports, pacts). Local only; nothing is sent anywhere.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=760, justify="left").grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
+        smp = section("SAMPLE DATA", 8)
         row = tk.Frame(smp, bg=UI_SURFACE)
         row.grid(row=1, column=0, sticky="w")
         ttk.Button(row, text="Load sample data", style="Secondary.TButton", command=self._settings_load_sample).pack(side="left")
@@ -19617,6 +19643,7 @@ class BudgetApp(tk.Tk):
         on = bool(self.state.ui_prefs.get("focus_mode", False))
         self._settings_focus_btn.configure(text="Focus mode: on — show the game" if on else "Focus mode: off — hide the game")
         self._refresh_settings_reminders()
+        self._refresh_settings_engagement()
 
     def _settings_backup(self):
         default = f"budget_backup_{date.today():%Y%m%d}.json"
@@ -20110,6 +20137,7 @@ class BudgetApp(tk.Tk):
             self.refresh_daily_challenges()
         except Exception:
             pass
+        self._log_engagement("pulse")
         sub = f"Day {res['day']} · {res['streak']}-day run" + (" · ×2 bonus" if res["bonus"] else "")
         if res["gems"]:
             sub += f" · +{res['gems']} Gem{'s' if res['gems'] != 1 else ''}"
@@ -20293,6 +20321,7 @@ class BudgetApp(tk.Tk):
                 continue
             if kind in ("fund", "goal"):
                 eng.plant(kind, obj.name)
+                self._homestead_burst(kind, obj.name)
             if eng.update_record("biggest_contribution", amt) == "new":
                 pb.append(f"Biggest contribution yet: ${amt:,.0f}")
         new_ms = eng.check_money_milestones(award=True)
@@ -20611,6 +20640,7 @@ class BudgetApp(tk.Tk):
             self.save_state()
             self.refresh_game_text()
             self._render_pact_card()
+            self._log_engagement("pact")
             self._celebrate("Pact made", f"{eng.pact_title(g.active_pact)} — {st['stake']} Gem{'s' if st['stake'] != 1 else ''} on the line", UI_AMETHYST)
 
         _render()
@@ -21452,6 +21482,182 @@ class BudgetApp(tk.Tk):
             lbl.grid()
         else:
             lbl.grid_remove()
+
+    # ── Engagement log (local only: engagement.jsonl beside the data file) ──
+    def _log_engagement(self, action: str):
+        try:
+            path = DATA_FILE.with_name("engagement.jsonl")
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"ts": datetime.now().isoformat(timespec="minutes"), "action": action}) + "\n")
+        except Exception:
+            pass
+
+    def _engagement_stats(self) -> dict:
+        """Active days in the last 7 / 30, first-seen date, and whether the
+        profile came back on day 7 / day 30 after first launch."""
+        path = DATA_FILE.with_name("engagement.jsonl")
+        days = set()
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    days.add(date.fromisoformat(json.loads(line)["ts"][:10]))
+                except Exception:
+                    continue
+        except OSError:
+            pass
+        if not days:
+            return {"first": None, "active7": 0, "active30": 0, "d7": None, "d30": None, "total": 0}
+        today = date.today()
+        first = min(days)
+        d7 = (first + timedelta(days=7)) <= today
+        d30 = (first + timedelta(days=30)) <= today
+        return {"first": first, "total": len(days),
+                "active7": sum(1 for d in days if (today - d).days < 7),
+                "active30": sum(1 for d in days if (today - d).days < 30),
+                "d7": (any(7 <= (d - first).days <= 9 for d in days) if d7 else None),
+                "d30": (any(28 <= (d - first).days <= 34 for d in days) if d30 else None)}
+
+    def _refresh_settings_engagement(self):
+        var = getattr(self, "_settings_engagement_var", None)
+        if var is None:
+            return
+        s = self._engagement_stats()
+        if not s["first"]:
+            var.set("No activity logged yet.")
+            return
+        yn = lambda v: "—" if v is None else ("yes" if v else "no")
+        var.set(f"First opened {s['first']:%d %b %Y} · {s['total']} active days · {s['active7']} of the last 7 · {s['active30']} of the last 30"
+                f" · came back on day 7: {yn(s['d7'])} · day 30: {yn(s['d30'])}")
+
+    # ── Collection nudges ────────────────────────────────────────────────
+    def _nearest_set_nudge(self) -> str:
+        try:
+            prog = self.game_engine.card_set_progress()
+        except Exception:
+            return ""
+        best = None
+        for sid, sname, _d, _cids, reward in CARD_SETS:
+            owned, total, complete, _c = prog.get(sid, (0, 1, False, False))
+            if complete:
+                continue
+            left = total - owned
+            if left <= 2 and (best is None or left < best[0]):
+                best = (left, sname, AVATAR_ITEMS.get(reward, {}).get("name", "a reward"))
+        if not best:
+            return ""
+        left, sname, rname = best
+        return f"✦ {left} card{'s' if left != 1 else ''} from completing {sname} → {rname}. Duplicates of that set are rerolled while you're this close."
+
+    # ── Homestead phase 2: harvest burst, tier-up card ───────────────────
+    def _homestead_burst(self, kind: str, name: str):
+        """A short sparkle burst over a plot/tree on whichever Homestead canvas is visible."""
+        snap = getattr(self, "_homestead_snap", None) or self.homestead.snapshot()
+        items = snap.get("plots" if kind == "fund" else "trees", [])
+        idx = next((i for i, p in enumerate(items) if p.get("name") == name), None)
+        if idx is None:
+            return
+        for c, full in ((getattr(self, "_homestead_canvas", None), True), (getattr(self, "_today_homestead_canvas", None), False)):
+            if c is None:
+                continue
+            try:
+                if not c.winfo_ismapped():
+                    continue
+                w, h = c.winfo_width(), c.winfo_height()
+                if kind == "fund":
+                    r_, c_ = divmod(idx, 4)
+                    x, y = (0.40 + c_ * 0.085) * w, (0.76 + r_ * 0.1) * h
+                else:
+                    x, y = (0.6 + idx * 0.058) * w, 0.64 * h
+            except tk.TclError:
+                continue
+            self._sparkle_burst(c, x, y, 18 if full else 8, 14 if full else 6)
+
+    def _sparkle_burst(self, c, x, y, n=16, r=14, frames=12):
+        import random, math as _m
+        ids = []
+        pts = []
+        for i in range(n):
+            a = random.random() * 2 * _m.pi
+            sp = r * (0.5 + random.random())
+            col = random.choice([UI_GOLD, "#ffffff", UI_EMERALD, UI_AMETHYST])
+            try:
+                iid = c.create_oval(x - 2, y - 2, x + 2, y + 2, fill=col, outline="", tags="burst")
+            except tk.TclError:
+                return
+            ids.append(iid); pts.append((_m.cos(a) * sp / frames, _m.sin(a) * sp / frames - 0.6))
+
+        def step(k=0):
+            try:
+                if k >= frames:
+                    c.delete("burst"); return
+                for iid, (dx, dy) in zip(ids, pts):
+                    c.move(iid, dx, dy + 0.15 * k)
+                self.after(40, lambda: step(k + 1))
+            except tk.TclError:
+                pass
+        step()
+
+    def _show_tier_up_card(self, tier: int, item_ids: list):
+        scrim, content, btn_row, step_var, close = self._overlay_card(f"HOMESTEAD TIER {tier}", 560, 400)
+        names = []
+        for iid in item_ids:
+            it = AVATAR_ITEMS.get(iid, {})
+            names.append(it.get("name", iid))
+            row = tk.Frame(content, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_AMETHYST, padx=SP_MD, pady=SP_SM)
+            row.pack(fill="x", pady=(0, SP_SM))
+            c = tk.Canvas(row, width=120, height=150, bg=UI_SURFACE2, highlightthickness=0)
+            c.pack(side="left", padx=(0, SP_MD))
+            try:
+                eq = dict(self.state.game.character_equipped); eq["companion"] = iid
+                draw_avatar(c, eq, 120, 150)
+            except Exception:
+                c.create_text(60, 75, text=it.get("emoji", "✦"), font=("Segoe UI Symbol", 40), fill=UI_AMETHYST)
+            txt = tk.Frame(row, bg=UI_SURFACE2)
+            txt.pack(side="left", fill="x", expand=True)
+            tk.Label(txt, text=it.get("name", iid), bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_HEADING).pack(anchor="w")
+            tk.Label(txt, text=it.get("description", ""), bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=340, justify="left").pack(anchor="w", pady=(2, 0))
+            tk.Label(txt, text=f"Companion · {it.get('rarity', '').upper()} · joins your avatar's shoulder", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(2, 0))
+        tk.Label(content, text=f"The Homestead reached tier {tier} of 5 because the plan is in better shape — this is the place saying thanks.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=500, justify="left").pack(anchor="w")
+
+        def _equip():
+            for iid in item_ids:
+                try:
+                    ok, msg = self.game_engine.equip_avatar_item(iid)
+                    if not ok:
+                        self._show_toast(msg, "warning", 4000)
+                except Exception:
+                    pass
+            self.save_state()
+            try:
+                self.refresh_character_tab()
+            except Exception:
+                pass
+            close()
+            self._show_toast(f"{', '.join(names)} equipped.", "success", 3000)
+        ttk.Button(btn_row, text="Later", style="Ghost.TButton", command=close).pack(side="left")
+        ttk.Button(btn_row, text="Equip now  ✓", style="Primary.TButton", command=_equip).pack(side="right")
+
+    def _scene_quips(self, snap: dict) -> list:
+        """Gerald noticing the Homestead — (priority, text, expression)."""
+        q = []
+        if snap.get("weeds"):
+            q.append((62, "Weeds in the Homestead — a pay's overdue to be logged. One log and they're gone.", "thinking"))
+        fence = snap.get("fence", [])
+        if fence and not all(f["ok"] for f in fence):
+            bad = next(f["name"] for f in fence if not f["ok"])
+            q.append((58, f"There's a gap in the fence where {bad} is overdue. Mark it paid or move the date and the post stands back up.", "thinking"))
+        if not snap.get("trees"):
+            q.append((30, "The orchard's empty — no goals yet. Even an open-ended 'Emergency' goal plants a tree.", "normal"))
+        elif all(t["stage"] == 0 for t in snap.get("trees", [])):
+            q.append((28, "The orchard's looking thin. A little into a goal and the first leaves show.", "normal"))
+        if snap.get("plots") and sum(1 for p in snap["plots"] if p["stage"] == 0) >= 2:
+            q.append((26, "Two bare plots out there. Add $ to a set-aside and it starts sprouting — and ripens into a pack fragment.", "wink"))
+        if not snap.get("windmill_spin") and self.state.incomes:
+            q.append((24, "The windmill's still. It turns while a pay streak is alive and nothing's overdue.", "normal"))
+        if snap.get("mill_ready"):
+            q.append((44, "Grain sack's full by the windmill — Gold waiting on the Homestead. Collect it.", "happy"))
+        return q
 
     def _build_rules_tab(self):
         frame = self.rules_tab
@@ -23164,6 +23370,9 @@ class BudgetApp(tk.Tk):
         tk.Label(packs_row, textvariable=self._pack_pity_var, bg=UI_BG, fg=UI_AMETHYST,
                  font=FONT_CAPTION_BOLD, anchor="w").grid(row=1, column=0, columnspan=len(PACK_TYPES),
                                                            sticky="w", pady=(6, 0))
+        self._pack_nudge_var = tk.StringVar(value="")
+        tk.Label(packs_row, textvariable=self._pack_nudge_var, bg=UI_BG, fg=UI_GOLD,
+                 font=FONT_CAPTION_BOLD, anchor="w", wraplength=700, justify="left").grid(row=2, column=0, columnspan=len(PACK_TYPES), sticky="w", pady=(2, 0))
 
         # ── Divider ───────────────────────────────────────────────────────────
         tk.Frame(body, bg=UI_BORDER, height=1).grid(row=3, column=0, sticky="ew", pady=(14, 0))
@@ -26165,6 +26374,7 @@ class BudgetApp(tk.Tk):
 
     def _commit_pay(self, amount: float, pay_date: date, pay_source: str, overrides: Optional[dict] = None):
         self._capture_personality_snapshot()
+        self._log_engagement("pay")
         pre_ratios = self.game_engine.pre_pay_ratios()
         saved_before = {("fund", f.name): f.current_saved for f in self.state.funds}
         saved_before.update({("goal", x.name): x.current_saved for x in self.state.goals})
@@ -26240,6 +26450,7 @@ class BudgetApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Import failed", str(exc)); return
         self.state.last_import_date = date.today().isoformat()
+        self._log_engagement("import")
         # Month rollover detection: if this PDF spans into a new calendar month, score the previous month automatically.
         if imported:
             months = sorted({tx.tx_date.strftime("%Y-%m") for tx in imported})
@@ -26514,6 +26725,7 @@ class BudgetApp(tk.Tk):
         self.game_engine.mark_real_action()
         self._last_commit = {"txs": batch, "pending_added": list(new_pending), "bills_paid": bills_paid,
                              "incomes_added": hist_pays, "when": datetime.now()}
+        self._log_engagement("commit")
         n_hist = sum(1 for t_ in batch if self._is_historical(t_))
         if n_hist:
             self.after(700, lambda b=batch: self._statement_setup_offer(b))
@@ -28630,6 +28842,9 @@ class BudgetApp(tk.Tk):
         self._update_nav_badges()
         if hasattr(self, "_records_host"):
             self._render_records()
+        if hasattr(self, "_nav_rank_lbl"):
+            _g = self.state.game
+            self._nav_rank_lbl.configure(text=f"★ {self.rank_name_for_level(_g.level, _g.prestige_level)} · Level {_g.level}" + (f" · P{_g.prestige_level}" if _g.prestige_level else ""))
         g = self.state.game
         # Stats cards
         self.level_var.set(str(g.level))
@@ -29304,6 +29519,8 @@ class BudgetApp(tk.Tk):
             left = max(1, 5 - g.packs_since_epic)
             self._pack_pity_var.set("✦ Next pack has a guaranteed Epic or better!" if left == 1
                                     else f"✦ Epic or better guaranteed within {left} packs")
+        if hasattr(self, "_pack_nudge_var"):
+            self._pack_nudge_var.set(self._nearest_set_nudge())
 
         # Update filter pill styling
         current_filt = self._coll_filter_var.get()

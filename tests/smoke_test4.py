@@ -24,7 +24,7 @@ st.transactions[0].flagged = True
 st.game.level = 7; st.game.streak_pays = 4
 st.incomes.append(bg.IncomeEntry(2000.0, today - timedelta(days=40), "Pay"))
 eng = bg.HomesteadEngine(st)
-snap = eng.snapshot(datetime(2026, 10, 7, 21, 0))
+snap = eng.snapshot(datetime(today.year, today.month, today.day, 21, 0))   # tonight: bills above are relative to today
 print({k: snap[k] for k in ("time_of_day", "weather", "house_stage", "lit_windows", "path_stones", "mailbox_flag", "windmill_spin", "weeds", "tier")})
 assert snap["time_of_day"] == "night" and snap["weather"] == "clear" and snap["house_stage"] == 3
 assert snap["lit_windows"] is False                         # Power overdue

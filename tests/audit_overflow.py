@@ -138,6 +138,9 @@ audit(sc, "cost-guide"); btn(sc, "Close")[0].invoke(); app.update()
 for k in ("bill", "fund", "goal"):
     app._show_quick_add(k); app.update(); sc = scrims(app)[-1]; audit(sc, f"quick-add:{k}"); btn(sc, "Cancel")[0].invoke(); app.update()
 
+# Tier-up card
+app._show_tier_up_card(2, ["comp_cat"]); app.update(); sc = scrims(app)[-1]; audit(sc, "tier-up"); btn(sc, "Later")[0].invoke(); app.update()
+
 # Custom period overlay (Analysis)
 app._show_page("review"); app.update(); app._show_review_custom_range(); app.update(); sc = scrims(app)[-1]; audit(sc, "review-custom"); btn(sc, "Cancel")[0].invoke(); app.update()
 for _k in ("qtr", "fy"):
