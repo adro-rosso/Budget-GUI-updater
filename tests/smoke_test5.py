@@ -81,7 +81,10 @@ btn = [b for b in _buttons(app._vault_host) if str(b.cget("text")) == "OPEN THE 
 assert btn, vt
 btn[0].invoke(); app.update()
 assert app.state.game.pulse_streak == 1 and app.state.game.vault_last_tier == "gold" and app.state.game.total_score >= 20
+assert any(t.startswith("✓ Done · 1-day run") and "Gold" in t for t in texts(app._vault_host)), texts(app._vault_host)   # compact strip once done
+app._toggle_pulse_details(); app.update()
 assert any("Gold chest opened" in t for t in texts(app._vault_host)), texts(app._vault_host)
+app._toggle_pulse_details(); app.update()
 top = getattr(app, "_celebration_top", None)
 assert top is not None and top.winfo_exists()
 time.sleep(0.5); app.update()
@@ -96,7 +99,7 @@ app.state.incomes[-1] = bg.IncomeEntry(2000.0, today - timedelta(days=13), "Pay"
 risk = app._streak_risk(); assert risk and risk[1] == bg.UI_GOLD, risk
 # next-up ordering: closest first, max 4, and homestead entry present
 items = app._next_up_items()
-assert 1 <= len(items) <= 4 and all(items[i][1] >= items[i + 1][1] for i in range(len(items) - 1))
+assert 1 <= len(items) <= 5 and all(items[i][1] >= items[i + 1][1] for i in range(len(items) - 1))   # Next Up shows up to five
 assert all(len(it) == 5 for it in items)   # (homestead at 0% is legitimately outside the top 4 on a fresh profile)
 # collection pity label
 app._show_page("collection"); app.update()

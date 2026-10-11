@@ -12789,6 +12789,20 @@ class BudgetApp(tk.Tk):
         """Show a non-blocking toast notification in the bottom-right corner.
         When action_label + action_cb are provided, a clickable text button is
         appended to the toast (used for Undo)."""
+        # Coalesce: a second plain toast within a second joins the previous one
+        # instead of stacking (challenge + milestone + record all at once).
+        try:
+            last = self._toast_stack[-1] if self._toast_stack else None
+            if (last is not None and last.winfo_exists() and not action_label and not getattr(last, "_has_action", False)
+                    and time_module.time() - getattr(last, "_shown_at", 0) < 1.0 and getattr(last, "_msg_lbl", None) is not None):
+                cur = str(last._msg_lbl.cget("text"))
+                if message not in cur and cur.count("\n") < 3:
+                    last._msg_lbl.configure(text=cur + "\n" + message)
+                    last._shown_at = time_module.time()
+                    self._reposition_toasts()
+                    return
+        except tk.TclError:
+            pass
         s = self._TOAST_STYLES.get(style, self._TOAST_STYLES["info"])
         toast = tk.Frame(self, bg=s["bg"], highlightthickness=1,
                          highlightbackground=s["fg"], padx=SP_MD, pady=SP_SM)
@@ -12798,6 +12812,9 @@ class BudgetApp(tk.Tk):
         msg_lbl = tk.Label(toast, text=message, bg=s["bg"], fg=UI_TEXT,
                            font=FONT_SMALL, wraplength=300, justify="left")
         msg_lbl.pack(side="left", fill="x")
+        toast._msg_lbl = msg_lbl
+        toast._shown_at = time_module.time()
+        toast._has_action = bool(action_label and action_cb is not None)
         if action_label and action_cb is not None:
             def _fire(_e=None):
                 try:
@@ -15453,25 +15470,34 @@ class BudgetApp(tk.Tk):
         self._confirm_income_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._flagged_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._month_report_host = tk.Frame(quick_inner, bg=UI_SURFACE)
-        self._pact_host = tk.Frame(quick_inner, bg=UI_SURFACE)
-        self._event_host = tk.Frame(quick_inner, bg=UI_SURFACE)
+        self._today_extras_summary = tk.StringVar(value="")
+        _ex_wrap, _ex = self._collapsible_section(quick_inner, "Pacts & this month", "today.extras", default_open=False,
+                                                  summary_var=self._today_extras_summary, bg=UI_SURFACE)
+        _ex_wrap.pack(fill="x", pady=(SP_SM, 0), before=qa_lbl)
+        self._pact_host = tk.Frame(_ex, bg=UI_SURFACE)
+        self._event_host = tk.Frame(_ex, bg=UI_SURFACE)
         quick_mode_row = tk.Frame(quick_inner, bg=UI_SURFACE)
         quick_mode_row.pack(anchor="w", pady=(SP_MD, 0), fill="x")
         ttk.Button(quick_mode_row, text="Log Pay", style="Primary.TButton",
                    command=lambda: self._show_page("income")).pack(side="left")
         ttk.Button(quick_mode_row, text="Import statement", style="Secondary.TButton",
                    command=lambda: self._show_page("transactions")).pack(side="left", padx=(SP_SM, 0))
-        ttk.Button(quick_mode_row, text="Setup Hub", style="Secondary.TButton",
+        ttk.Button(quick_mode_row, text="Setup", style="Secondary.TButton",
                    command=lambda: self._show_page("setup")).pack(side="left", padx=(SP_SM, 0))
-        ttk.Button(quick_mode_row, text="Open Perk Shop", style="Gem.TButton",
-                   command=self._open_perk_shop).pack(side="left", padx=(SP_SM, 0))
-        quick_tools_row = tk.Frame(quick_inner, bg=UI_SURFACE)
-        quick_tools_row.pack(anchor="w", pady=(SP_SM, 0), fill="x")
-        ttk.Button(quick_tools_row, text="Sort Unrecognised",
-                   command=lambda: (self._show_page("transactions"),
-                                    self.open_review_queue())).pack(side="left")
-        ttk.Button(quick_tools_row, text="Commit Reviewed",
-                   command=self.commit_imported_transactions).pack(side="left", padx=(SP_SM, 0))
+        _more = ttk.Menubutton(quick_mode_row, text="More ▾", style="Secondary.TButton")
+        _more_menu = tk.Menu(_more, tearoff=0, bg=UI_SURFACE2, fg=UI_TEXT, activebackground=UI_SURFACE3, activeforeground=UI_TEXT_BRIGHT, bd=0)
+        _more_menu.add_command(label="Sort unrecognised", command=lambda: (self._show_page("transactions"), self.open_review_queue()))
+        _more_menu.add_command(label="Commit reviewed", command=self.commit_imported_transactions)
+        _more_menu.add_separator()
+        _more_menu.add_command(label="Open Perk Shop", command=self._open_perk_shop)
+        _more_menu.add_command(label="Make a pact with Gerald", command=self._show_pact_maker)
+        _more_menu.add_command(label="Savings challenges…", command=self._show_savings_challenges)
+        _more_menu.add_separator()
+        _more_menu.add_command(label="Set up from my statement", command=self._show_statement_setup)
+        _more_menu.add_command(label="Keyboard shortcuts  (Ctrl + /)", command=self._show_shortcuts)
+        _more["menu"] = _more_menu
+        _more.pack(side="left", padx=(SP_SM, 0))
+        self._today_more_menu = _more_menu
         tk.Label(quick_inner, textvariable=self.today_workflow_summary_var, bg=UI_SURFACE,
                  fg=UI_MUTED, font=FONT_CAPTION, justify="left", wraplength=760).pack(
                  anchor="w", pady=(SP_SM, 0))
@@ -17584,6 +17610,7 @@ class BudgetApp(tk.Tk):
             self._render_pact_card()
             self._update_today_harvest()
             self._render_event_banner()
+            self._update_today_extras_summary()
         if hasattr(self, "_month_report_host"):
             self._render_month_report_card()
         if hasattr(self, "_vault_host"):
@@ -18482,7 +18509,7 @@ class BudgetApp(tk.Tk):
                                                     summary_var=self._homestead_shop_summary)
         shop_wrap.grid(row=4, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
         self._letters_summary = tk.StringVar(value="")
-        let_wrap, let = self._collapsible_section(frame, "Letters from Gerald", "homestead.letters", default_open=True,
+        let_wrap, let = self._collapsible_section(frame, "Letters from Gerald", "homestead.letters", default_open=False,
                                                   summary_var=self._letters_summary)
         let_wrap.grid(row=5, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_XL))
         let.columnconfigure(0, weight=1)
@@ -18633,8 +18660,16 @@ class BudgetApp(tk.Tk):
     # ── Engagement hooks: celebrations, Daily Vault, Next Up ─────────────
     def _celebrate(self, title: str, subtitle: str = "", color: str = UI_GOLD, duration_ms: int = 1700):
         """Full-window confetti burst with a headline, over the app, for ~1.7 s.
-        Uses a transparent-colour Toplevel on Windows; click to dismiss early."""
+        Uses a transparent-colour Toplevel on Windows; click to dismiss early.
+        One at a time: a second celebration waits for the first to finish."""
         import random
+        try:
+            prev = getattr(self, "_celebration_top", None)
+            if prev is not None and prev.winfo_exists():
+                self.after(300, lambda: self._celebrate(title, subtitle, color, duration_ms))   # poll until the current burst ends
+                return
+        except tk.TclError:
+            pass
         try:
             self.update_idletasks()
             x, y = self.winfo_rootx(), self.winfo_rooty()
@@ -18745,9 +18780,18 @@ class BudgetApp(tk.Tk):
         except Exception:
             pass
         try:
+            prog_ = self.game_engine.pact_progress()
+            if prog_:
+                items.append(("Pact: " + prog_['title'][:34], prog_['pct'], f"{prog_['text']} {prog_['days_left']}d left · stake {prog_['stake']}", "today", UI_AMETHYST))
+            ev_ = self.game_engine.current_event()
+            if self._feature_unlocked("events") and not ev_['set_claimed'] and ev_['set_have'] > 0:
+                items.append((f"{ev_['set_name']} {ev_['set_have']}/{ev_['set_total']}", ev_['set_have'] / ev_['set_total'], "seasonal cards — only in packs this season", "collection", UI_GOLD))
+        except Exception:
+            pass
+        try:
             rows_ = self.game_engine.rival_standings()
             you_ = next(r_ for r_ in rows_ if r_['you'])
-            if you_['place'] > 1:
+            if you_['place'] > 1 and self._feature_unlocked("race"):
                 ahead_ = [r_ for r_ in rows_ if r_['place'] < you_['place']][-1]
                 items.append((f"Weekly race: {['', '', '2nd', '3rd', '4th', '5th'][you_['place']]}", min(1.0, you_['xp'] / max(1, ahead_['xp'])), f"{ahead_['xp'] - you_['xp'] + 1} XP to pass {ahead_['name']} · {self.state.game.rival_league} league", "score", UI_SAPPHIRE))
         except Exception:
@@ -20128,6 +20172,8 @@ class BudgetApp(tk.Tk):
         self._settings_focus_btn = ttk.Button(row, text="Focus mode", style="Secondary.TButton", command=lambda: (self._toggle_focus_mode(), self._refresh_settings_tab()))
         self._settings_focus_btn.pack(side="left")
         ttk.Button(row, text="Keyboard shortcuts  (Ctrl + /)", style="Ghost.TButton", command=self._show_shortcuts).pack(side="left", padx=(SP_SM, 0))
+        self._settings_unlock_btn = ttk.Button(row, text="Show everything now", style="Secondary.TButton", command=self._settings_toggle_unlock_all)
+        self._settings_unlock_btn.pack(side="left", padx=(SP_SM, 0))
         ttk.Button(row, text="Reset game progress…", style="Danger.TButton", command=self._settings_reset_game).pack(side="left", padx=(SP_LG, 0))
         tk.Label(disp, text="Window size, position and the tab you were on are remembered automatically.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
         rem = section("REMINDERS & DAILY PULSE", 5)
@@ -20176,6 +20222,8 @@ class BudgetApp(tk.Tk):
             self._settings_undo_var.set("No import to undo this session.")
         on = bool(self.state.ui_prefs.get("focus_mode", False))
         self._settings_focus_btn.configure(text="Focus mode: on — show the game" if on else "Focus mode: off — hide the game")
+        if hasattr(self, "_settings_unlock_btn"):
+            self._settings_unlock_btn.configure(text="Reveal systems as I go" if self.state.ui_prefs.get("unlock_all") else "Show everything now")
         self._refresh_settings_reminders()
         self._refresh_settings_engagement()
 
@@ -20453,6 +20501,17 @@ class BudgetApp(tk.Tk):
             tk.Label(head, text="❄" * st["freezes"], bg=UI_SURFACE2, fg=UI_SAPPHIRE, font=FONT_CAPTION_BOLD).pack(side="right", padx=(SP_XS, 0))
         tk.Label(head, text=f"🔥 {run}-day run" if run else "start a run", bg=UI_SURFACE2,
                  fg=UI_TEXT if run else UI_MUTED, font=FONT_CAPTION_BOLD).pack(side="right")
+        compact = st["opened_today"] and not getattr(self, "_pulse_details", False)
+        self._layout_hook_row(compact)
+        if compact:
+            line = tk.Label(host, text=self._pulse_compact_line(st), bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=640, justify="left", cursor="hand2")
+            line.pack(anchor="w", pady=(SP_XS, 0))
+            line.bind("<Button-1>", lambda _e: self._toggle_pulse_details())
+            if self.game_engine.letter_waiting():
+                lw_ = tk.Label(host, text="✉ a letter is waiting at the Homestead →", bg=UI_SURFACE2, fg=UI_GOLD, font=FONT_CAPTION_BOLD, cursor="hand2")
+                lw_.pack(anchor="w")
+                lw_.bind("<Button-1>", lambda _e: self._show_page("homestead"))
+            return
         pills = tk.Frame(host, bg=UI_SURFACE2)
         pills.pack(fill="x", pady=(SP_XS, SP_XS))
         steps = [("Yesterday", bool(p.get("spend"))), ("Sort one", bool(p.get("sort"))), ("Vault", st["opened_today"])]
@@ -20656,6 +20715,9 @@ class BudgetApp(tk.Tk):
             bits.append("✉ letter waiting")
         bits.append(f"❄ at {nxt_freeze}" if st["freezes"] < BudgetGameEngine.PULSE_FREEZE_CAP else "freezes full")
         tk.Label(body, text=" · ".join(bits) + ". Back tomorrow.", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=300, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+        less = tk.Label(body, text="less", bg=UI_SURFACE2, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD, cursor="hand2")
+        less.pack(anchor="w")
+        less.bind("<Button-1>", lambda _e: self._toggle_pulse_details())
 
     def _open_daily_vault(self):
         st = self.game_engine.vault_status()
@@ -20727,6 +20789,9 @@ class BudgetApp(tk.Tk):
         eng = self.game_engine
         eng.ensure_weekly()
         g = self.state.game
+        if not self._feature_unlocked("weekly"):
+            self._locked_line(host, "weekly", "Weekly challenges (a free Gem Pack)")
+            return
         head = tk.Frame(host, bg=UI_BG)
         head.pack(fill="x")
         tk.Label(head, text="THIS WEEK", bg=UI_BG, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD).pack(side="left")
@@ -21003,6 +21068,9 @@ class BudgetApp(tk.Tk):
         host.pack(fill="x", pady=(SP_SM, 0))
         eng = self.game_engine
         prog = eng.pact_progress()
+        if not prog and not self._feature_unlocked("pacts"):
+            self._locked_line(host, "pacts", "Pacts with Gerald")
+            return
         box = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_AMETHYST if prog else UI_BORDER, padx=SP_MD, pady=SP_SM)
         box.pack(fill="x")
         c = tk.Canvas(box, width=44, height=58, bg=UI_SURFACE2, highlightthickness=0)
@@ -22141,7 +22209,7 @@ class BudgetApp(tk.Tk):
         if busy and _tries < 40:
             self.after(3000, lambda: self._show_tier_up_card(tier, item_ids, _tries + 1))
             return
-        scrim, content, btn_row, step_var, close = self._overlay_card(f"HOMESTEAD TIER {tier}", 560, 400)
+        scrim, content, btn_row, step_var, close = self._overlay_card(f"HOMESTEAD TIER {tier}", 560, min(720, 230 + 180 * max(1, len(item_ids))))
         names = []
         for iid in item_ids:
             it = AVATAR_ITEMS.get(iid, {})
@@ -22211,6 +22279,9 @@ class BudgetApp(tk.Tk):
             w_.destroy()
         g = self.state.game
         eng = self.game_engine
+        if not self._feature_unlocked("decor"):
+            self._locked_line(host, "decor", "Decor & palettes")
+            return
         # Palettes
         prow = tk.Frame(host, bg=UI_SURFACE)
         prow.pack(fill="x", pady=(0, SP_SM))
@@ -22324,6 +22395,9 @@ class BudgetApp(tk.Tk):
             return
         host.pack(fill="x", pady=(SP_SM, 0))
         ev = self.game_engine.current_event()
+        if not self._feature_unlocked("events"):
+            self._locked_line(host, "events", f"This month: {ev['name']}")
+            return
         box = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_GOLD if ev["xp_window"] else UI_BORDER, padx=SP_MD, pady=SP_SM)
         box.pack(fill="x")
         head = tk.Frame(box, bg=UI_SURFACE2)
@@ -22448,6 +22522,11 @@ class BudgetApp(tk.Tk):
         g = self.state.game
         waiting = eng.letter_waiting()
         avail = eng.letters_available()
+        if waiting and not self.state.ui_prefs.get("homestead.letters"):
+            try:
+                self._expand_section("homestead.letters")
+            except Exception:
+                pass
         box = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_GOLD if waiting else UI_BORDER, padx=SP_MD, pady=SP_SM)
         box.pack(fill="x")
         tk.Label(box, text="✉  " + ("A letter is waiting." if waiting else ("Nothing new — the next letter arrives with tomorrow's Pulse." if g.letters_read < len(GERALD_LETTERS) else "You've read every letter Gerald has written so far.")),
@@ -22520,7 +22599,7 @@ class BudgetApp(tk.Tk):
     def _build_rivals_section(self, frame):
         self._rivals_summary_var = tk.StringVar(value="")
         wrap, content = self._collapsible_section(frame, "Weekly race — the villagers", "score.rivals",
-                                                  default_open=True, summary_var=self._rivals_summary_var)
+                                                  default_open=False, summary_var=self._rivals_summary_var)
         wrap.grid(row=5, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
         content.columnconfigure(0, weight=1)
         self._rivals_host = tk.Frame(content, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
@@ -22534,6 +22613,10 @@ class BudgetApp(tk.Tk):
             w_.destroy()
         eng = self.game_engine
         g = self.state.game
+        if not self._feature_unlocked("race"):
+            self._locked_line(host, "race", "Weekly race against the villagers")
+            self._rivals_summary_var.set("locked — " + self._UNLOCKS["race"][0].lower())
+            return
         res = eng.ensure_rival_week()
         if res:
             self.save_state()
@@ -22696,6 +22779,106 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             self._show_toast(f"Couldn't save: {e}", "warning", 5000); return
         self._log_engagement("share_card")
         self._show_toast(f"Saved {Path(path).name}.", "success", 5000, action_label="Open", action_cb=lambda p=path: os.startfile(p))
+
+    # ── Progressive unlock: show a system only once the player has a reason to see it ──
+    _UNLOCKS = {
+        # key: (predicate name, one-line hint while locked)
+        "weekly":  ("Unlocks after 2 Daily Pulses.",),
+        "pacts":   ("Unlocks after your first logged pay or 3 Daily Pulses.",),
+        "race":    ("Unlocks after 5 Daily Pulses.",),
+        "decor":   ("Unlocks at Homestead tier 1 (or Level 3).",),
+        "events":  ("Unlocks after your first Daily Pulse.",),
+    }
+
+    def _feature_unlocked(self, key: str) -> bool:
+        if self.state.ui_prefs.get("unlock_all"):
+            return True
+        g = self.state.game
+        if key == "weekly":
+            return g.pulse_days_total >= 2
+        if key == "pacts":
+            return g.total_pays_processed >= 1 or g.pulse_days_total >= 3
+        if key == "race":
+            return g.pulse_days_total >= 5
+        if key == "decor":
+            return g.homestead_tier >= 1 or g.level >= 3
+        if key == "events":
+            return g.pulse_days_total >= 1
+        return True
+
+    def _locked_line(self, host, key: str, what: str):
+        hint = self._UNLOCKS.get(key, ("",))[0]
+        row = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_MD, pady=SP_XS)
+        row.pack(fill="x")
+        # Narrow wrap: this line can sit inside a half-width panel (Daily Challenges is ~500px).
+        tk.Label(row, text=f"🔒 {what} — {hint}", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=300, justify="left", anchor="w").pack(anchor="w")
+        lnk = tk.Label(row, text="show everything now", bg=UI_SURFACE2, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD, cursor="hand2")
+        lnk.pack(anchor="w")
+        lnk.bind("<Button-1>", lambda _e: self._settings_toggle_unlock_all(True))
+
+    def _settings_toggle_unlock_all(self, value: Optional[bool] = None):
+        cur = bool(self.state.ui_prefs.get("unlock_all", False))
+        self.state.ui_prefs["unlock_all"] = (not cur) if value is None else bool(value)
+        self.save_state()
+        self.refresh_all_views()
+        try:
+            self._refresh_settings_tab()
+        except Exception:
+            pass
+        self._show_toast("Everything is shown." if self.state.ui_prefs["unlock_all"] else "Systems reveal themselves as you go.", "info", 3000)
+
+    # ── Compact Pulse once it's done for the day ─────────────────────────
+    def _pulse_compact_line(self, st: dict) -> str:
+        g = self.state.game
+        tier = st.get("last_tier") or "bronze"
+        label = BudgetGameEngine.VAULT_CHESTS.get(tier, BudgetGameEngine.VAULT_CHESTS["bronze"])[3]
+        bits = [f"✓ Done · {st['streak']}-day run", label.replace(" chest", "")]
+        p = st.get("progress", {})
+        if p.get("no_spend"):
+            bits.append(f"no-spend {g.no_spend_streak}")
+        nxt = st["streak"] + 1
+        bits.append(f"next D{nxt}" + (" Gold+ ✦" if nxt % 7 == 0 else ""))
+        if st["freezes"]:
+            bits.append("❄" * st["freezes"])
+        return "  ·  ".join(bits)
+
+    def _layout_hook_row(self, compact: bool):
+        """Done for the day → the Pulse is a slim full-width strip and Next Up
+        takes the row below; otherwise the two sit side by side."""
+        vh, nh = getattr(self, "_vault_host", None), getattr(self, "_next_up_host", None)
+        if vh is None or nh is None:
+            return
+        try:
+            if compact:
+                vh.grid_configure(row=0, column=0, columnspan=2, padx=0, sticky="ew")
+                nh.grid_configure(row=1, column=0, columnspan=2, pady=(SP_SM, 0), sticky="nsew")
+            else:
+                vh.grid_configure(row=0, column=0, columnspan=1, padx=(0, SP_MD), sticky="nsew")
+                nh.grid_configure(row=0, column=1, columnspan=1, pady=0, sticky="nsew")
+        except tk.TclError:
+            pass
+
+    def _toggle_pulse_details(self):
+        self._pulse_details = not getattr(self, "_pulse_details", False)
+        self._render_daily_vault()
+
+    def _update_today_extras_summary(self):
+        var = getattr(self, "_today_extras_summary", None)
+        if var is None:
+            return
+        bits = []
+        try:
+            prog = self.game_engine.pact_progress()
+            bits.append(("Pact: " + prog["text"]) if prog else ("no pact" if self._feature_unlocked("pacts") else "pacts locked"))
+            ev = self.game_engine.current_event()
+            bits.append(ev["name"] + (" · ×2 XP weekend" if ev["xp_window"] else ""))
+            pid, disc = ev["deal"]
+            perk = next((p_ for p_ in PERK_SHOP_ITEMS if p_[0] == pid), None)
+            if perk:
+                bits.append(f"deal: {perk[1]} {disc} Gems")
+        except Exception:
+            pass
+        var.set(" · ".join(bits))
 
     def _build_rules_tab(self):
         frame = self.rules_tab

@@ -53,7 +53,7 @@ today = date.today()
 app = bg.BudgetApp(); app.state.onboarding_complete = True; app.state.tutorial_complete = True
 app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
-app._startup_progression_migration(); app.refresh_today_tab(); app.update()
+app._startup_progression_migration(); app.state.ui_prefs["unlock_all"] = True; app.refresh_today_tab(); app.update()
 g = app.state.game; eng = app.game_engine
 
 # ── Today harvest line: nothing yet → after 9 h of milling → collect ─────────

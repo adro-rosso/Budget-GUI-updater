@@ -80,13 +80,14 @@ app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 app._celebrate = lambda *a, **k: None
 g = app.state.game
-g.total_score = 500; g.gems = 5
+g.total_score = 500; g.gems = 5; g.level = app.game_engine.level_from_score(500)   # Level 4 unlocks the decor shop
 app._show_page("homestead"); app.update()
 app._expand_section("homestead.shop"); app.update()
 host = app._homestead_shop_host
 assert lbl(host, "Classic") and lbl(host, "Autumn 🔒") and btn(host, "60 Gold") and btn(host, "2 Gems")
+score_before = g.total_score   # visiting the Homestead may have paid a daily challenge; measure the purchase relatively
 btn(host, "60 Gold")[0].invoke(); app.update()
-assert "flowerbed" in g.homestead_decor and g.total_score == 440 and lbl(app._homestead_shop_host, "placed ✓")
+assert "flowerbed" in g.homestead_decor and g.total_score == score_before - 60 and lbl(app._homestead_shop_host, "placed ✓")
 assert "1 of" in app._homestead_shop_summary.get()
 # a Gem decor the user can't afford is disabled
 expensive = [b for b in all_w(app._homestead_shop_host) if isinstance(b, bg.ttk.Button) and str(b.cget("text")) == "8 Gems"]

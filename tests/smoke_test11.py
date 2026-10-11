@@ -57,6 +57,7 @@ app = bg.BudgetApp(); app.state.onboarding_complete = True; app.state.tutorial_c
 app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 app._startup_progression_migration(); app.refresh_today_tab(); app.update()   # the saved file in prod already has onboarding_complete
+app.state.ui_prefs["unlock_all"] = True   # progressive unlock would hide the weekly panel on a fresh profile
 g = app.state.game; eng = app.game_engine
 
 # ── Existing-profile migration: founder card + beats pre-done, gold chest forced ──
@@ -93,8 +94,11 @@ score0 = g.total_score
 btn(host, "OPEN THE VAULT")[0].invoke(); app.update()
 assert g.pulse_streak == 1 and g.pulse_last_date == today.isoformat() and g.total_score > score0
 gold, _, _, label = bg.BudgetGameEngine.VAULT_CHESTS[g.vault_last_tier]
+assert any(t.startswith("✓ Done · 1-day run") for t in texts(host)), texts(host)   # compact by default once done
+app._toggle_pulse_details(); app.update()                                                  # 'details' shows the full done state
 assert g.total_score - score0 >= gold * 2 and any(label + " opened ✓" == t for t in texts(host)), texts(host)
 assert any("D7 Gold+" in t for t in texts(host)) or any("D2" in t for t in texts(host))
+app._toggle_pulse_details(); app.update()
 for w in list(app.winfo_children()):
     if isinstance(w, tk.Toplevel): w.destroy()
 

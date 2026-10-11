@@ -7,6 +7,7 @@ from PIL import ImageGrab
 OUT = sys.argv[1]
 app = bg.BudgetApp(); app.state.onboarding_complete = True; app.state.tutorial_complete = True; app.state.starting_position_set = True
 app._celebrate = lambda *a, **k: None
+app._show_tier_up_card = lambda *a, **k: None
 app._show_toast = lambda *a, **k: None
 app.geometry("1366x768+40+60"); app.update(); time.sleep(0.4); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
@@ -25,6 +26,8 @@ g.season_xp = 220; g.mill_last_collected = (datetime.now() - timedelta(hours=5))
 for d, desc, out, cat in [(today - timedelta(days=1), "COLES 1234", 86.2, "Groceries"), (today - timedelta(days=2), "SHELL", 71.0, "Fuel"), (today - timedelta(days=3), "NETFLIX", 22.99, "Subscription"), (today - timedelta(days=4), "GUZMAN Y GOMEZ", 18.5, "Food")]:
     st.transactions.append(bg.TransactionRecord(d, desc, money_out=out, category=cat, fingerprint=desc, user_verified=True, needs_review=False, source_file="sept.pdf"))
 st.bank_links = [{"name": "CommBank", "url": "https://www.my.commbank.com.au/netbank/Logon/Logon.aspx", "every_days": 14, "last_opened": ""}]; st.last_import_date = (today - timedelta(days=19)).isoformat()
+app.state.ui_prefs["unlock_all"] = True
+app.game_engine.pulse_mark_beat("spend"); app.game_engine.pulse_mark_beat("sort"); app.game_engine.open_vault(force_tier="gold")
 app._startup_progression_migration(); app.refresh_all_views(); app.update()
 def shot(name):
     app.update(); time.sleep(0.35); app.update()
