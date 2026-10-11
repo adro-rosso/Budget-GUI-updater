@@ -21,3 +21,12 @@ budget_data.bak
 
 # Misc
 .sixth/
+
+# Personal notes (contains credentials) - never commit
+Habitat/
+
+# Local engagement log + reminder log
+engagement.jsonl
+budget_reminders.json
+budget_config.json
+budget_data.pre-restore.json

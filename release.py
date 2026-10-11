@@ -18,6 +18,7 @@ One-time setup required (see SETUP section in the chat).
 """
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import json
 import re
@@ -25,6 +26,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+HISTORY_LIMIT = 30  # keep the most recent N releases in version.json
 
 HERE = Path(__file__).parent
 BUDGET_GUI = HERE / "budget_gui.py"
@@ -103,17 +106,64 @@ def git_clean_check() -> None:
             fail("Aborted — commit or stash other changes first.")
 
 
+def check_exe_not_running() -> None:
+    """If BudgetPlanner.exe is running (or the file is otherwise locked),
+    PyInstaller can't overwrite it. Detect this BEFORE bumping the version."""
+    if not EXE_PATH.exists():
+        return
+    try:
+        # Open-for-append with truncate semantics — Windows refuses this on
+        # a running exe. We only test the lock; we don't actually modify.
+        with open(EXE_PATH, "ab"):
+            pass
+        # On Windows, even a successful open isn't conclusive — try a rename-
+        # in-place which does fail on a running exe.
+        try:
+            EXE_PATH.rename(EXE_PATH)
+        except OSError:
+            fail(f"{EXE_PATH.name} appears to be running. Close it and re-run.")
+    except PermissionError:
+        fail(f"{EXE_PATH.name} appears to be running. Close it and re-run.")
+
+
+def mypyc_hidden_imports() -> list[str]:
+    """charset_normalizer (a pdfminer.six dependency) is mypyc-compiled and
+    imports a hashed top-level helper module (e.g. 81d243bd2c585b0f4821__mypyc)
+    that PyInstaller's analysis can't see. Without it the frozen app raises
+    ModuleNotFoundError the first time the pdfminer fallback is used, which
+    surfaces as "Install the fallback parser" in the import dialog."""
+    import glob
+    import site
+    names: set[str] = set()
+    dirs = list(site.getsitepackages()) + [site.getusersitepackages()]
+    for d in dirs:
+        for f in glob.glob(str(Path(d) / "*__mypyc*.pyd")):
+            names.add(Path(f).name.split(".")[0])
+    args: list[str] = []
+    for n in sorted(names):
+        args += ["--hidden-import", n]
+    return args
+
+
+def pyinstaller_args() -> list[str]:
+    return [sys.executable, "-m", "PyInstaller",
+            "--onefile", "--windowed",
+            "--name", "BudgetPlanner",
+            "--icon", "icon.ico",
+            "--add-data", "icon.png;.",
+            "--add-data", "icon.ico;.",
+            "--hidden-import", "pypdf",
+            "--hidden-import", "pdfminer.high_level",
+            "--collect-all", "pdfminer",
+            "--collect-all", "charset_normalizer",
+            *mypyc_hidden_imports(),
+            "--noconfirm",
+            "budget_gui.py"]
+
+
 def build_exe() -> None:
     print("\n=== Building exe (this takes ~60 sec) ===")
-    run([sys.executable, "-m", "PyInstaller",
-         "--onefile", "--windowed",
-         "--name", "BudgetPlanner",
-         "--icon", "icon.ico",
-         "--add-data", "icon.png;.",
-         "--add-data", "icon.ico;.",
-         "--hidden-import", "pypdf",
-         "--noconfirm",
-         "budget_gui.py"])
+    run(pyinstaller_args())
     if not EXE_PATH.exists():
         fail(f"PyInstaller did not produce {EXE_PATH}")
 
@@ -127,8 +177,15 @@ def sha256_of(path: Path) -> str:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--build-only":
+        # Rebuild dist/BudgetPlanner.exe from the working tree. No version
+        # bump, no commit, nothing published.
+        check_exe_not_running()
+        build_exe()
+        print(f"\nBuilt {EXE_PATH} (no version bump, nothing published).")
+        return
     if len(sys.argv) < 2:
-        fail('Usage: python release.py "what changed in this release"')
+        fail('Usage: python release.py "what changed in this release"  |  python release.py --build-only')
     notes = sys.argv[1].strip()
     if not notes:
         fail("Release notes can't be empty.")
@@ -142,27 +199,58 @@ def main() -> None:
 
     git_clean_check()
 
+    # Fail fast if the exe is running — PyInstaller can't overwrite it.
+    check_exe_not_running()
+
     # 1. Bump version
     old_ver, text = read_version()
     new_ver = bump_patch(old_ver)
     print(f"\nVersion: {old_ver}  ->  {new_ver}")
     write_version(new_ver, text)
 
-    # 2. Build
-    build_exe()
+    # 2. Build — roll back the version bump if it fails, so the next attempt
+    # doesn't skip a number.
+    try:
+        build_exe()
+    except SystemExit:
+        print(f"\n!! Build failed — rolling back version to {old_ver}")
+        write_version(old_ver, text)
+        raise
 
     # 3. SHA256
     sha = sha256_of(EXE_PATH)
     print(f"sha256: {sha}")
 
-    # 4. Manifest
+    # 4. Manifest (with rolling history of past releases)
     owner, repo = detect_repo()
     download_url = f"https://github.com/{owner}/{repo}/releases/download/v{new_ver}/BudgetPlanner.exe"
+    today = _dt.date.today().isoformat()
+
+    history: list = []
+    if VERSION_JSON.exists():
+        try:
+            prev = json.loads(VERSION_JSON.read_text(encoding="utf-8"))
+            history = list(prev.get("history") or [])
+            # seed history with the previous release if it wasn't recorded there
+            if not history and prev.get("version"):
+                history.append({
+                    "version": str(prev.get("version")),
+                    "date": str(prev.get("date") or today),
+                    "notes": str(prev.get("notes") or ""),
+                })
+        except Exception:
+            history = []
+
+    history.insert(0, {"version": new_ver, "date": today, "notes": notes})
+    history = history[:HISTORY_LIMIT]
+
     manifest = {
         "version": new_ver,
+        "date": today,
         "download_url": download_url,
         "sha256": sha,
         "notes": notes,
+        "history": history,
     }
     VERSION_JSON.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {VERSION_JSON}")

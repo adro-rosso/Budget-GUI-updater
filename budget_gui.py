@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import math
 import os
@@ -7,6 +8,7 @@ import re
 import subprocess
 import sys
 import threading
+import time as time_module
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from dataclasses import dataclass, asdict, field
@@ -29,7 +31,21 @@ except AttributeError:
 except OSError:
     pass
 
-DATA_FILE = Path("budget_data.json")
+CONFIG_FILE = Path("budget_config.json")   # optional pointer: {"data_path": "..."} (Settings → Move data file)
+
+
+def _load_data_location() -> Path:
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        p = Path(str(cfg.get("data_path", "")))
+        if cfg.get("data_path") and p.parent.is_dir():
+            return p
+    except Exception:
+        pass
+    return Path("budget_data.json")
+
+
+DATA_FILE = _load_data_location()
 
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
@@ -105,9 +121,10 @@ UI_CARD_GLOW = "#161923"     # barely-there card elevation
 # Button tier palette — Linear/Vercel style hierarchy
 # Main tiers (Primary / Accent / Secondary) sit visibly above their surroundings.
 # Quiet tiers (Standard / Ghost) rely on hover for affordance.
-UI_PRIMARY_BG = "#eef0f4"       # Tier 1 CTA — near-white fill (maximum weight on dark)
-UI_PRIMARY_HOVER = "#ffffff"
-UI_PRIMARY_FG = "#0b0c10"       # dark text on light button
+UI_PRIMARY_BG = "#4f5fd6"       # Tier 1 CTA — saturated indigo fill (the one bright thing on a page)
+UI_PRIMARY_HOVER = "#6273e6"
+UI_PRIMARY_FG = "#ffffff"       # white text on indigo
+UI_PRIMARY_PRESSED = "#3f4db8"
 UI_ACCENT_BTN_BG = "#282b36"    # Tier 2 — clearly lifted filled button
 UI_ACCENT_BTN_HOVER = "#323644"
 UI_SECONDARY_BG = "#20232c"     # Tier 3 — subtly lifted but still readable as a button
@@ -118,6 +135,12 @@ UI_STANDARD_HOVER = "#1d2029"
 UI_GHOST_HOVER = "#17191f"      # Tier 5 — ghost hover
 UI_PILL_ACTIVE_BG = "#1c1f2a"   # selected tab pill background
 UI_PILL_ACTIVE_FG = "#f2f3f6"   # selected tab pill text
+# Active navigation — the selected main tab and selected sub-tab get real
+# colour so "where am I" is obvious at a glance.
+UI_NAV_ACTIVE_BG   = "#273057"   # selected main tab fill (deep indigo)
+UI_NAV_ACTIVE_BAR  = "#a5b2ed"   # selected main tab left bar
+UI_NAV_ACTIVE_SUB  = "#c3caf0"   # selected main tab subtitle
+UI_SUBTAB_ACTIVE   = "#e3b341"   # selected child tab text + underline (gold)
 
 # ── Spacing & Typography Scale ────────────────────────────────────────────────
 SP_XS  = 4    # tight inner spacing
@@ -156,16 +179,79 @@ SEASON_TIERS = [
 ]
 
 CHALLENGE_POOL = [
+    # Any-day challenges — every one of these can be done today.
     # (id, description, trigger, reward_type, reward_amount)
-    ("log_pay",       "Log a pay this session",            "pay",          "gold",  25),
-    ("reserve_40",    "Reserve 40%+ of your pay",          "pay_40",       "gems",   1),
-    ("submit_target", "Submit your spending target mix",   "submit_target","gems",   1),
-    ("run_mini_game", "Complete a mini-game round",        "mini_game",    "gold",  20),
-    ("good_pay",      "Score 35+ points on a pay",         "pay_35",       "gems",   1),
-    ("verify_3",      "Verify 3+ transactions",            "verify_3",     "gold",  20),
-    ("streak_active", "Have an active pay streak",         "streak",       "gold",  15),
-    ("import_pdf",    "Import a bank statement",           "import",       "gold",  15),
+    ("pulse",         "Finish today's Daily Pulse",             "pulse",         "gold", 15),
+    ("no_spend",      "Record a no-spend day",                  "no_spend",      "gold", 20),
+    ("sort_1",        "Sort one unrecognised transaction",      "verify_1",      "gold", 15),
+    ("verify_3",      "Verify 3+ transactions",                 "verify_3",      "gold", 20),
+    ("contribute",    "Add money to a fund or goal",            "contribute",    "gold", 20),
+    ("homestead",     "Visit your Homestead",                   "homestead",     "gold", 10),
+    ("run_mini_game", "Complete an arcade round",               "mini_game",     "gold", 20),
+    ("import_pdf",    "Import a bank statement",                "import",        "gems",  1),
+    ("submit_target", "Submit your spending target mix",        "submit_target", "gems",  1),
 ]
+# Drawn into slot 1 only when a pay is expected today (±1 day).
+PAYDAY_CHALLENGES = [
+    ("log_pay",       "Log today's pay",                        "pay",           "gold", 25),
+    ("reserve_40",    "Reserve 40%+ of your pay",               "pay_40",        "gems",  1),
+    ("good_pay",      "Score 35+ points on a pay",              "pay_35",        "gems",  1),
+    ("streak_active", "Keep the pay streak alive",              "streak",        "gold", 15),
+]
+# Resets every ISO week; all three done = a free Gem Pack.
+WEEKLY_CHALLENGES = [
+    # (id, description, trigger, goal)
+    ("w_pulses",     "Finish 5 Daily Pulses this week",         "pulse",      5),
+    ("w_no_spend",   "Record 2 no-spend days",                  "no_spend",   2),
+    ("w_contribute", "Add $ to savings twice",                  "contribute", 2),
+]
+
+# Level curve: fast early levels (endowed progress), 250 Gold a level after that.
+# Savings challenges (Setup → Plan → Savings challenges…). Fund-kind ones create a
+# Fund tagged with `challenge`; the no-spend month counts Pulse 'No spend' days.
+SAVINGS_CHALLENGES = [
+    {"id": "52week", "name": "52-week challenge", "kind": "fund", "cells": 52, "unit": "week",
+     "blurb": "$1 in week 1, $2 in week 2 … $52 in week 52. $1,378 by the end, and it starts easy.",
+     "fund": {"target": 1378.0, "mode": "fixed", "fixed": 3.0, "days": 364}},
+    {"id": "nospend30", "name": "No-spend month", "kind": "nospend", "cells": 30, "unit": "day",
+     "blurb": "30 days. Bills, groceries and fuel only. Every 'No spend' tick in the Daily Pulse fills a box."},
+    {"id": "roundup", "name": "Round-up jar", "kind": "fund", "cells": 40, "unit": "round-up",
+     "blurb": "Every cash spend you log in the Pulse rounds up to the next $5. The change goes in the jar.",
+     "fund": {"target": 0.0, "mode": "ongoing", "fixed": 0.0}},
+    {"id": "fiver", "name": "$5 note challenge", "kind": "fund", "cells": 100, "unit": "note",
+     "blurb": "Every $5 note you get goes in the jar. 100 notes is $500.",
+     "fund": {"target": 500.0, "mode": "fixed", "fixed": 10.0}},
+    {"id": "payfirst", "name": "Pay yourself first (10%)", "kind": "goal",
+     "blurb": "10% of every pay's surplus goes to savings before anything else can touch it.",
+     "goal": {"name": "Pay yourself first", "mode": "percent_surplus", "value": 10, "target": 0.0}},
+]
+
+# Bank statement pages — (label, url, note). Login pages where they are stable
+# and well known; otherwise the bank's front page (the user can edit any of them).
+BANK_PRESETS = [
+    ("CommBank (NetBank)",      "https://netbank.web.commbank.com.au/auth/logon", "NetBank → Accounts → Statements, or View transactions → Export (CSV)."),
+    ("NAB",                     "https://ib.nab.com.au/login",                             "Internet Banking → an account → Transactions → Export (CSV / OFX)."),
+    ("ANZ",                     "https://login.anz.com/internetbanking",                   "Internet Banking → an account → Transactions → Download (CSV / OFX)."),
+    ("Westpac",                 "https://banking.westpac.com.au/wbc/banking/handler?TAM_OP=login", "Online Banking → an account → Export transactions (CSV / OFX)."),
+    ("ING",                     "https://www.ing.com.au/securebanking/",                   "Online banking → an account → Transactions → Download (CSV / PDF)."),
+    ("Macquarie",               "https://online.macquarie.com.au/",                        "Online banking → an account → Transactions → Download."),
+    ("Bankwest",                "https://ibs.bankwest.com.au/",                            "Online Banking → an account → Export transactions."),
+    ("St George / Bank of Melbourne / BankSA", "https://ibanking.stgeorge.com.au/ibank/loginPage.action", "Internet Banking → an account → Export (CSV / OFX)."),
+    ("Suncorp",                 "https://internetbanking.suncorpbank.com.au/",             "Internet Banking → an account → Transactions → Export."),
+    ("Bendigo Bank",            "https://www.bendigobank.com.au/",                         "Click 'Log in' → an account → Transactions → Export."),
+    ("Bank of Queensland",      "https://www.boq.com.au/",                                 "Click 'Internet Banking' → an account → Export."),
+    ("Up",                      "https://up.com.au/",                                      "Up is app-only: in the app, Account → Export transactions (CSV), then AirDrop/email it to this PC."),
+    ("Other (paste a link)",    "",                                                        "Paste the login or statements page of any bank, credit union or card."),
+]
+
+LEVEL_STEPS = (100, 150, 200)
+
+
+def level_threshold(level: int) -> int:
+    """Total Gold needed to *reach* `level` (level 1 = 0)."""
+    n = max(0, int(level) - 1)
+    return sum(LEVEL_STEPS[:min(n, len(LEVEL_STEPS))]) + max(0, n - len(LEVEL_STEPS)) * 250
+
 
 FORTUNE_CARDS = [
     # (title, symbol, text, effect_type, effect_amount, weight)
@@ -291,6 +377,17 @@ PACK_TYPES = [
 ]
 
 # Card index by id for fast lookup
+FOUNDER_CARD_ID = "x_founder"
+CARD_POOL.append((FOUNDER_CARD_ID, "The Founder", "legendary", "🏛", "Here from day one. The Vault remembers.", ""))
+CHAMPION_CARD_ID = "x_champion"
+CARD_POOL.append((CHAMPION_CARD_ID, "Challenge Champion", "legendary", "🏁", "A savings challenge, finished. Most people quit at week nine.", ""))
+CARD_POOL.extend([
+    ("p_oath_reserve", "Oath of Reserve",    "epic", "🤝", "You promised a share of your pay to the future. You kept it.", ""),
+    ("p_oath_cap",     "Oath of Restraint",  "epic", "🧘", "A cap on a category, held for a week. Discipline, witnessed.", ""),
+    ("p_oath_fund",    "Oath of the Harvest","epic", "🌾", "A number by a date. Said out loud, then done.", ""),
+    ("p_oath_nospend", "Oath of Quiet Days", "epic", "🕯", "Days where nothing left the account. Gerald counted every one.", ""),
+])
+EXCLUSIVE_CARD_IDS = {FOUNDER_CARD_ID, CHAMPION_CARD_ID, "p_oath_reserve", "p_oath_cap", "p_oath_fund", "p_oath_nospend"}   # awarded, never drawn from packs
 CARD_BY_ID = {c[0]: c for c in CARD_POOL}
 
 # ── Card Sets — themed groups with avatar rewards on completion ────────────────
@@ -380,8 +477,9 @@ ESSENTIAL_CATEGORIES = {"groceries", "utilities", "rent", "mortgage", "fuel", "t
 # Bust-portrait style: circle head + oval body, drawn with Canvas primitives.
 # Draw commands: (method, relative_coords, canvas_kwargs)
 # Methods: oval, arc, rectangle, polygon, line, text, rect_abs (fractions of w/h)
-AVATAR_SLOT_ORDER = ["background", "aura", "outfit", "eyes", "hair", "accessory"]
-AVATAR_SLOT_ICONS = {"hair": "✂", "eyes": "◉", "outfit": "◧", "accessory": "✦", "aura": "◎", "background": "▦"}
+AVATAR_SLOT_ORDER = ["background", "aura", "outfit", "eyes", "hair", "accessory", "companion"]
+AVATAR_SLOT_ICONS = {"hair": "✂", "eyes": "◉", "outfit": "◧", "accessory": "✦", "aura": "◎", "background": "▦",
+                     "companion": "♞"}
 
 AVATAR_ITEMS = {
     # ── HAIR ── anchor: (cx, cy - 22)  ·  head-top region ────────────────────
@@ -2298,6 +2396,1072 @@ AVATAR_ITEMS = {
 }
 
 # Index items by slot for quick lookup
+# ── Visual overhaul expansion: 30 items built on the shaded primitives
+# (grad_oval / grad_poly / grad_band / sparkle). Items with "draw_back"
+# render behind the head (long hair, capes). Items that cover the eyes
+# set "no_blink" so the idle blink doesn't paint lids over them.
+_TORSO = [(-56, -22), (-74, 14), (-64, 155), (64, 155), (74, 14), (56, -22)]
+AVATAR_ITEMS.update({
+    # ── HAIR ────────────────────────────────────────────────────────
+    "hair_top_knot": {
+        "name": "Top Knot", "slot": "hair", "rarity": "common",
+        "cost_type": "gold", "cost": 35, "unlock_req": None,
+        "emoji": "◓", "description": "Slicked back into a tidy knot. Low maintenance, high intent.",
+        "draw": [
+            ("arc", (-47, -21, 47, 27), {"fill": "#2a1a10", "outline": "#1c1008", "start": 0, "extent": 180, "style": "pieslice", "width": 1}),
+            ("arc", (-43, -17, 43, 23), {"fill": "#3b2616", "outline": "", "start": 0, "extent": 180, "style": "pieslice"}),
+            ("line", [(-30, -8), (0, -20)], {"fill": "#4e3420", "width": 1, "smooth": True}),
+            ("line", [(-14, -14), (2, -20)], {"fill": "#5a3e26", "width": 1, "smooth": True}),
+            ("line", [(30, -8), (4, -20)], {"fill": "#4e3420", "width": 1, "smooth": True}),
+            ("line", [(16, -14), (4, -20)], {"fill": "#5a3e26", "width": 1, "smooth": True}),
+            ("grad_oval", (-15, -54, 15, -26), {"from": "#241408", "to": "#6a4a2e", "steps": 5}),
+            ("rectangle", (-9, -30, 9, -24), {"fill": "#8b5a2b", "outline": "#5f3b18"}),
+            ("line", [(-6, -46), (-2, -32)], {"fill": "#7a5436", "width": 1}),
+        ],
+    },
+    "hair_afro_halo": {
+        "name": "Afro Halo", "slot": "hair", "rarity": "rare",
+        "cost_type": "gold", "cost": 90, "unlock_req": None,
+        "emoji": "◍", "description": "Full, round and glorious. Catches the light on every curl.",
+        "draw_back": [
+            ("grad_oval", (-72, -58, 72, 78), {"from": "#0e0804", "to": "#2c1a10", "steps": 5, "shrink": 0.5}),
+            ("oval", (-74, -20, -50, 40), {"fill": "#180e08", "outline": ""}),
+            ("oval", (50, -20, 74, 40), {"fill": "#180e08", "outline": ""}),
+        ],
+        "draw": [
+            ("arc", (-54, -34, 54, 28), {"fill": "#1c1008", "outline": "", "start": 0, "extent": 180, "style": "pieslice"}),
+            ("arc", (-48, -28, 48, 22), {"fill": "#2c1a10", "outline": "", "start": 0, "extent": 180, "style": "pieslice"}),
+            ("oval", (-52, -30, -34, -12), {"fill": "#2c1a10", "outline": "#1c1008"}),
+            ("oval", (-30, -40, -10, -20), {"fill": "#2c1a10", "outline": "#1c1008"}),
+            ("oval", (-8, -44, 12, -24), {"fill": "#2c1a10", "outline": "#1c1008"}),
+            ("oval", (12, -40, 32, -20), {"fill": "#2c1a10", "outline": "#1c1008"}),
+            ("oval", (34, -30, 52, -12), {"fill": "#2c1a10", "outline": "#1c1008"}),
+            ("arc", (-26, -36, -12, -24), {"fill": "", "outline": "#4a3020", "start": 40, "extent": 100, "style": "arc", "width": 1}),
+            ("arc", (-4, -40, 10, -28), {"fill": "", "outline": "#4a3020", "start": 40, "extent": 100, "style": "arc", "width": 1}),
+            ("arc", (18, -36, 32, -24), {"fill": "", "outline": "#4a3020", "start": 40, "extent": 100, "style": "arc", "width": 1}),
+        ],
+    },
+    "hair_silver_fox": {
+        "name": "Silver Fox", "slot": "hair", "rarity": "rare",
+        "cost_type": "gold", "cost": 85, "unlock_req": {"type": "level", "value": 5},
+        "emoji": "◠", "description": "Swept-back silver with steel-grey depth. Earned, not bought. Well, both.",
+        "draw": [
+            ("arc", (-48, -24, 48, 26), {"fill": "#6b7280", "outline": "#4b5563", "start": 0, "extent": 180, "style": "pieslice", "width": 1}),
+            ("arc", (-44, -20, 44, 22), {"fill": "#9ca3af", "outline": "", "start": 0, "extent": 180, "style": "pieslice"}),
+            ("arc", (-36, -18, 20, 14), {"fill": "#c4c9d2", "outline": "", "start": 25, "extent": 120, "style": "pieslice"}),
+            ("line", [(-34, -6), (-22, -18), (-6, -20)], {"fill": "#e5e7eb", "width": 1, "smooth": True}),
+            ("line", [(-20, -4), (-8, -14), (8, -18)], {"fill": "#e5e7eb", "width": 1, "smooth": True}),
+            ("line", [(-4, -4), (10, -12), (26, -14)], {"fill": "#d1d5db", "width": 1, "smooth": True}),
+            ("line", [(14, -2), (26, -8), (38, -8)], {"fill": "#d1d5db", "width": 1, "smooth": True}),
+            ("arc", (-52, -2, -36, 30), {"fill": "#6b7280", "outline": "", "start": 90, "extent": 90, "style": "pieslice"}),
+            ("arc", (36, -2, 52, 30), {"fill": "#6b7280", "outline": "", "start": 0, "extent": 90, "style": "pieslice"}),
+            ("line", [(-46, 4), (-44, 24)], {"fill": "#e5e7eb", "width": 1}),
+            ("line", [(46, 4), (44, 24)], {"fill": "#e5e7eb", "width": 1}),
+        ],
+    },
+    "hair_neon_undercut": {
+        "name": "Neon Undercut", "slot": "hair", "rarity": "epic",
+        "cost_type": "gems", "cost": 8, "unlock_req": None,
+        "emoji": "◗", "description": "Shaved sides, electric sweep. Violet fades to cyan at the tips.",
+        "draw": [
+            ("arc", (-46, -16, 46, 26), {"fill": "#15151f", "outline": "#0c0c14", "start": 0, "extent": 180, "style": "pieslice", "width": 1}),
+            ("arc", (-42, -12, 42, 22), {"fill": "#23232f", "outline": "", "start": 0, "extent": 180, "style": "pieslice"}),
+            ("grad_poly", [(-38, -14), (-22, -40), (8, -50), (40, -34), (46, -14), (12, -6), (-28, -6)],
+             {"from": "#5b21b6", "to": "#22d3ee", "steps": 6, "light": (0.35, -0.3), "shrink": 0.75}),
+            ("line", [(-30, -12), (-10, -34), (22, -40)], {"fill": "#c084fc", "width": 2, "smooth": True}),
+            ("line", [(-18, -10), (4, -28), (34, -30)], {"fill": "#67e8f9", "width": 1, "smooth": True}),
+            ("line", [(2, -8), (20, -20), (42, -20)], {"fill": "#a5f3fc", "width": 1, "smooth": True}),
+            ("line", [(-40, -2), (-38, 14)], {"fill": "#30303f", "width": 1}),
+            ("line", [(40, -2), (38, 14)], {"fill": "#30303f", "width": 1}),
+            ("sparkle", (40, -38), {"r": 4, "fill": "#a5f3fc", "phase": 3}),
+            ("sparkle", (-14, -44), {"r": 3, "fill": "#e9d5ff", "phase": 21}),
+        ],
+    },
+    "hair_starfall_mane": {
+        "name": "Starfall Mane", "slot": "hair", "rarity": "legendary",
+        "cost_type": "gems", "cost": 16, "unlock_req": {"type": "streak", "value": 10},
+        "emoji": "✶", "description": "A midnight mane that falls past the shoulders, shedding stars as it moves.",
+        "draw_back": [
+            ("grad_poly", [(-58, -4), (-76, 60), (-68, 156), (68, 156), (76, 60), (58, -4)],
+             {"from": "#120a30", "to": "#3b2a7a", "steps": 6, "light": (0.0, -0.4), "shrink": 0.6}),
+            ("line", [(-62, 20), (-66, 90), (-60, 150)], {"fill": "#5b4aa0", "width": 1, "smooth": True}),
+            ("line", [(62, 20), (66, 90), (60, 150)], {"fill": "#5b4aa0", "width": 1, "smooth": True}),
+            ("sparkle", (-62, 70), {"r": 4, "fill": "#e9d5ff", "phase": 5}),
+            ("sparkle", (64, 110), {"r": 3, "fill": "#c4b5fd", "phase": 17}),
+            ("sparkle", (-54, 130), {"r": 3, "fill": "#f5f3ff", "phase": 29}),
+            ("sparkle", (56, 40), {"r": 4, "fill": "#e9d5ff", "phase": 11}),
+        ],
+        "draw": [
+            ("arc", (-52, -32, 52, 28), {"fill": "#1a1040", "outline": "#120a30", "start": 0, "extent": 180, "style": "pieslice", "width": 1}),
+            ("arc", (-46, -26, 46, 22), {"fill": "#2a1a5a", "outline": "", "start": 0, "extent": 180, "style": "pieslice"}),
+            ("arc", (-38, -24, 2, 16), {"fill": "#3b2a7a", "outline": "", "start": 20, "extent": 120, "style": "pieslice"}),
+            ("line", [(-30, -14), (-20, -24)], {"fill": "#7c6ac8", "width": 1}),
+            ("line", [(-8, -20), (0, -26)], {"fill": "#8b7ad8", "width": 1}),
+            ("line", [(18, -16), (26, -22)], {"fill": "#7c6ac8", "width": 1}),
+            ("oval", (-58, 10, -38, 90), {"fill": "#2a1a5a", "outline": "#1a1040"}),
+            ("oval", (38, 10, 58, 90), {"fill": "#2a1a5a", "outline": "#1a1040"}),
+            ("line", [(-50, 20), (-48, 80)], {"fill": "#5b4aa0", "width": 1, "smooth": True}),
+            ("line", [(50, 20), (48, 80)], {"fill": "#5b4aa0", "width": 1, "smooth": True}),
+            ("sparkle", (-44, -10), {"r": 4, "fill": "#f5f3ff", "phase": 2}),
+            ("sparkle", (30, -22), {"r": 3, "fill": "#e9d5ff", "phase": 14}),
+            ("sparkle", (46, 60), {"r": 3, "fill": "#c4b5fd", "phase": 26}),
+        ],
+    },
+
+    # ── EYES ────────────────────────────────────────────────────────
+    "eyes_dreamer": {
+        "name": "Dreamer", "slot": "eyes", "rarity": "common",
+        "cost_type": "gold", "cost": 25, "unlock_req": None, "no_blink": True,
+        "emoji": "◠ ◠", "description": "Eyes closed, smiling. Already picturing the goal.",
+        "draw": [
+            ("arc", (-20, -8, -2, 6), {"fill": "", "outline": "#5a4030", "start": 0, "extent": 180, "style": "arc", "width": 2}),
+            ("arc", (2, -8, 20, 6), {"fill": "", "outline": "#5a4030", "start": 0, "extent": 180, "style": "arc", "width": 2}),
+            ("line", [(-20, -1), (-23, 3)], {"fill": "#5a4030", "width": 1}),
+            ("line", [(-2, -1), (1, 3)], {"fill": "#5a4030", "width": 1}),
+            ("line", [(2, -1), (-1, 3)], {"fill": "#5a4030", "width": 1}),
+            ("line", [(20, -1), (23, 3)], {"fill": "#5a4030", "width": 1}),
+            ("oval", (-24, 4, -8, 12), {"fill": "#e3a08c", "outline": ""}),
+            ("oval", (8, 4, 24, 12), {"fill": "#e3a08c", "outline": ""}),
+        ],
+    },
+    "eyes_storm_grey": {
+        "name": "Storm", "slot": "eyes", "rarity": "common",
+        "cost_type": "gold", "cost": 25, "unlock_req": None,
+        "emoji": "◉ ◉", "description": "Cool grey irises with a slate rim. Calm under pressure.",
+        "draw": [
+            ("oval", (-19, -8, -1, 8), {"fill": "#f5f3f0", "outline": "#b9ab9c", "width": 1}),
+            ("oval", (1, -8, 19, 8), {"fill": "#f5f3f0", "outline": "#b9ab9c", "width": 1}),
+            ("grad_oval", (-16, -6, -4, 6), {"from": "#334155", "to": "#94a3b8", "steps": 4, "shrink": 0.6}),
+            ("grad_oval", (4, -6, 16, 6), {"from": "#334155", "to": "#94a3b8", "steps": 4, "shrink": 0.6}),
+            ("oval", (-12, -2, -8, 2), {"fill": "#0f172a", "outline": ""}),
+            ("oval", (8, -2, 12, 2), {"fill": "#0f172a", "outline": ""}),
+            ("oval", (-9, -5, -7, -3), {"fill": "#ffffff", "outline": ""}),
+            ("oval", (11, -5, 13, -3), {"fill": "#ffffff", "outline": ""}),
+            ("arc", (-20, -10, 0, 2), {"fill": "", "outline": "#a08c78", "start": 8, "extent": 164, "style": "arc", "width": 1}),
+            ("arc", (0, -10, 20, 2), {"fill": "", "outline": "#a08c78", "start": 8, "extent": 164, "style": "arc", "width": 1}),
+        ],
+    },
+    "eyes_rose_quartz": {
+        "name": "Rose Quartz", "slot": "eyes", "rarity": "rare",
+        "cost_type": "gold", "cost": 65, "unlock_req": None,
+        "emoji": "◉ ◉", "description": "Soft pink irises with a crystal glint. Optimistic by design.",
+        "draw": [
+            ("oval", (-19, -8, -1, 8), {"fill": "#fff7f7", "outline": "#c9a6a6", "width": 1}),
+            ("oval", (1, -8, 19, 8), {"fill": "#fff7f7", "outline": "#c9a6a6", "width": 1}),
+            ("grad_oval", (-16, -6, -4, 6), {"from": "#9d174d", "to": "#f9a8d4", "steps": 5, "shrink": 0.65}),
+            ("grad_oval", (4, -6, 16, 6), {"from": "#9d174d", "to": "#f9a8d4", "steps": 5, "shrink": 0.65}),
+            ("oval", (-12, -2, -8, 2), {"fill": "#2a0a1a", "outline": ""}),
+            ("oval", (8, -2, 12, 2), {"fill": "#2a0a1a", "outline": ""}),
+            ("sparkle", (-8, -4), {"r": 3, "fill": "#ffffff", "phase": 4}),
+            ("sparkle", (12, -4), {"r": 3, "fill": "#ffffff", "phase": 19}),
+            ("arc", (-20, -10, 0, 2), {"fill": "", "outline": "#b89090", "start": 8, "extent": 164, "style": "arc", "width": 1}),
+            ("arc", (0, -10, 20, 2), {"fill": "", "outline": "#b89090", "start": 8, "extent": 164, "style": "arc", "width": 1}),
+        ],
+    },
+    "eyes_prism": {
+        "name": "Prism", "slot": "eyes", "rarity": "epic",
+        "cost_type": "gems", "cost": 8, "unlock_req": None,
+        "emoji": "◈ ◈", "description": "Six-colour irises that split the light. Sees every angle.",
+        "draw": [
+            ("oval", (-19, -8, -1, 8), {"fill": "#f8fafc", "outline": "#a9b1c0", "width": 1}),
+            ("oval", (1, -8, 19, 8), {"fill": "#f8fafc", "outline": "#a9b1c0", "width": 1}),
+            ("arc", (-16, -6, -4, 6), {"fill": "#ef4444", "outline": "", "start": 0, "extent": 60, "style": "pieslice"}),
+            ("arc", (-16, -6, -4, 6), {"fill": "#f59e0b", "outline": "", "start": 60, "extent": 60, "style": "pieslice"}),
+            ("arc", (-16, -6, -4, 6), {"fill": "#22c55e", "outline": "", "start": 120, "extent": 60, "style": "pieslice"}),
+            ("arc", (-16, -6, -4, 6), {"fill": "#06b6d4", "outline": "", "start": 180, "extent": 60, "style": "pieslice"}),
+            ("arc", (-16, -6, -4, 6), {"fill": "#6366f1", "outline": "", "start": 240, "extent": 60, "style": "pieslice"}),
+            ("arc", (-16, -6, -4, 6), {"fill": "#d946ef", "outline": "", "start": 300, "extent": 60, "style": "pieslice"}),
+            ("arc", (4, -6, 16, 6), {"fill": "#ef4444", "outline": "", "start": 0, "extent": 60, "style": "pieslice"}),
+            ("arc", (4, -6, 16, 6), {"fill": "#f59e0b", "outline": "", "start": 60, "extent": 60, "style": "pieslice"}),
+            ("arc", (4, -6, 16, 6), {"fill": "#22c55e", "outline": "", "start": 120, "extent": 60, "style": "pieslice"}),
+            ("arc", (4, -6, 16, 6), {"fill": "#06b6d4", "outline": "", "start": 180, "extent": 60, "style": "pieslice"}),
+            ("arc", (4, -6, 16, 6), {"fill": "#6366f1", "outline": "", "start": 240, "extent": 60, "style": "pieslice"}),
+            ("arc", (4, -6, 16, 6), {"fill": "#d946ef", "outline": "", "start": 300, "extent": 60, "style": "pieslice"}),
+            ("oval", (-12, -2, -8, 2), {"fill": "#111111", "outline": ""}),
+            ("oval", (8, -2, 12, 2), {"fill": "#111111", "outline": ""}),
+            ("sparkle", (-8, -4), {"r": 3, "fill": "#ffffff", "phase": 7}),
+            ("sparkle", (12, -4), {"r": 3, "fill": "#ffffff", "phase": 23}),
+        ],
+    },
+    "eyes_eclipse": {
+        "name": "Eclipse", "slot": "eyes", "rarity": "legendary",
+        "cost_type": "gems", "cost": 14, "unlock_req": {"type": "prestige", "value": 2},
+        "emoji": "◎ ◎", "description": "Black irises ringed by a burning gold corona. Reserved for those who've been around twice.",
+        "draw": [
+            ("oval", (-19, -8, -1, 8), {"fill": "#efe9df", "outline": "#a89b88", "width": 1}),
+            ("oval", (1, -8, 19, 8), {"fill": "#efe9df", "outline": "#a89b88", "width": 1}),
+            ("grad_oval", (-17, -7, -3, 7), {"from": "#fbbf24", "to": "#7c2d12", "steps": 4, "shrink": 0.5, "light": (0, 0)}),
+            ("grad_oval", (3, -7, 17, 7), {"from": "#fbbf24", "to": "#7c2d12", "steps": 4, "shrink": 0.5, "light": (0, 0)}),
+            ("oval", (-14, -4, -6, 4), {"fill": "#0a0a0a", "outline": "#fde68a", "width": 1}),
+            ("oval", (6, -4, 14, 4), {"fill": "#0a0a0a", "outline": "#fde68a", "width": 1}),
+            ("arc", (-16, -6, -4, 6), {"fill": "", "outline": "#fef3c7", "start": 30, "extent": 120, "style": "arc", "width": 1}),
+            ("arc", (4, -6, 16, 6), {"fill": "", "outline": "#fef3c7", "start": 30, "extent": 120, "style": "arc", "width": 1}),
+            ("sparkle", (-8, -5), {"r": 3, "fill": "#fff7cc", "phase": 9}),
+            ("sparkle", (12, -5), {"r": 3, "fill": "#fff7cc", "phase": 31}),
+            ("sparkle", (-24, -12), {"r": 3, "fill": "#fbbf24", "phase": 2}),
+            ("sparkle", (24, -12), {"r": 3, "fill": "#fbbf24", "phase": 16}),
+        ],
+    },
+
+    # ── OUTFIT ──────────────────────────────────────────────────────
+    "outfit_hi_vis": {
+        "name": "Hi-Vis", "slot": "outfit", "rarity": "common",
+        "cost_type": "gold", "cost": 40, "unlock_req": None,
+        "emoji": "▮", "description": "Safety orange with reflective bands. Visible from space, and the bank.",
+        "draw": [
+            ("grad_poly", _TORSO, {"from": "#9a3412", "to": "#fb923c", "steps": 5, "light": (-0.15, -0.3), "shrink": 0.7, "outline": "#7c2d12", "width": 2}),
+            ("polygon", [(-70, 58), (70, 58), (68, 72), (-68, 72)], {"fill": "#a1a1aa", "outline": "#71717a", "width": 1}),
+            ("polygon", [(-69, 62), (69, 62), (68, 68), (-68, 68)], {"fill": "#f4f4f5", "outline": ""}),
+            ("polygon", [(-66, 102), (66, 102), (65, 116), (-65, 116)], {"fill": "#a1a1aa", "outline": "#71717a", "width": 1}),
+            ("polygon", [(-65, 106), (65, 106), (64, 112), (-64, 112)], {"fill": "#f4f4f5", "outline": ""}),
+            ("polygon", [(-16, -24), (0, 4), (16, -24)], {"fill": "#1f2937", "outline": "#111827", "smooth": True, "splinesteps": 6}),
+            ("line", [(-38, 10), (-40, 150)], {"fill": "#c2410c", "width": 1}),
+            ("line", [(38, 10), (40, 150)], {"fill": "#c2410c", "width": 1}),
+            ("rectangle", (-30, 24, -12, 40), {"fill": "#ea580c", "outline": "#9a3412"}),
+            ("line", [(-30, 28), (-12, 28)], {"fill": "#9a3412", "width": 1}),
+        ],
+    },
+    "outfit_chef_whites": {
+        "name": "Chef Whites", "slot": "outfit", "rarity": "common",
+        "cost_type": "gold", "cost": 40, "unlock_req": None,
+        "emoji": "▯", "description": "Double-breasted whites and a red neckerchief. Cooking at home pays.",
+        "draw": [
+            ("grad_poly", _TORSO, {"from": "#c7ccd4", "to": "#ffffff", "steps": 5, "light": (-0.1, -0.35), "shrink": 0.7, "outline": "#9aa3b0", "width": 2}),
+            ("polygon", [(-18, -26), (-12, 2), (12, 2), (18, -26)], {"fill": "#f3f4f6", "outline": "#b5bcc7", "width": 1}),
+            ("polygon", [(-24, -18), (0, 14), (24, -18), (14, -6), (-14, -6)], {"fill": "#dc2626", "outline": "#991b1b", "width": 1, "smooth": True, "splinesteps": 4}),
+            ("line", [(0, 10), (0, 140)], {"fill": "#cfd4dc", "width": 1}),
+            ("oval", (-16, 30, -10, 36), {"fill": "#1f2937", "outline": ""}),
+            ("oval", (10, 30, 16, 36), {"fill": "#1f2937", "outline": ""}),
+            ("oval", (-16, 58, -10, 64), {"fill": "#1f2937", "outline": ""}),
+            ("oval", (10, 58, 16, 64), {"fill": "#1f2937", "outline": ""}),
+            ("oval", (-16, 86, -10, 92), {"fill": "#1f2937", "outline": ""}),
+            ("oval", (10, 86, 16, 92), {"fill": "#1f2937", "outline": ""}),
+            ("oval", (-16, 114, -10, 120), {"fill": "#1f2937", "outline": ""}),
+            ("oval", (10, 114, 16, 120), {"fill": "#1f2937", "outline": ""}),
+        ],
+    },
+    "outfit_pinstripe": {
+        "name": "Pinstripe", "slot": "outfit", "rarity": "rare",
+        "cost_type": "gold", "cost": 95, "unlock_req": None,
+        "emoji": "▥", "description": "Charcoal three-piece with chalk stripes. Old-money energy on a new-money plan.",
+        "draw": [
+            ("grad_poly", _TORSO, {"from": "#0f141c", "to": "#3a4350", "steps": 5, "light": (-0.15, -0.3), "shrink": 0.7, "outline": "#0a0e14", "width": 2}),
+            ("line", [(-46, 10), (-48, 150)], {"fill": "#6b7280", "width": 1}),
+            ("line", [(-34, 4), (-36, 150)], {"fill": "#6b7280", "width": 1}),
+            ("line", [(34, 4), (36, 150)], {"fill": "#6b7280", "width": 1}),
+            ("line", [(46, 10), (48, 150)], {"fill": "#6b7280", "width": 1}),
+            ("polygon", [(-22, -24), (-10, 6), (0, -24)], {"fill": "#f8fafc", "outline": "#cbd5e1", "smooth": True, "splinesteps": 6}),
+            ("polygon", [(0, -24), (10, 6), (22, -24)], {"fill": "#f8fafc", "outline": "#cbd5e1", "smooth": True, "splinesteps": 6}),
+            ("polygon", [(-30, -22), (-14, 36), (-4, 20), (-18, -24)], {"fill": "#0a0e14", "outline": "#1f2937", "smooth": True, "splinesteps": 4}),
+            ("polygon", [(30, -22), (14, 36), (4, 20), (18, -24)], {"fill": "#0a0e14", "outline": "#1f2937", "smooth": True, "splinesteps": 4}),
+            ("polygon", [(-4, -8), (0, 62), (4, -8)], {"fill": "#7f1d1d", "outline": "#450a0a", "width": 1, "smooth": True, "splinesteps": 6}),
+            ("polygon", [(26, 42), (42, 42), (34, 34)], {"fill": "#fbbf24", "outline": "#b45309", "width": 1}),
+            ("line", [(-26, 84), (26, 84)], {"fill": "#0a0e14", "width": 1}),
+            ("oval", (-3, 50, 3, 56), {"fill": "#d4a017", "outline": "#92400e"}),
+            ("oval", (-3, 74, 3, 80), {"fill": "#d4a017", "outline": "#92400e"}),
+        ],
+    },
+    "outfit_kimono_dawn": {
+        "name": "Kimono Dawn", "slot": "outfit", "rarity": "epic",
+        "cost_type": "gems", "cost": 9, "unlock_req": None,
+        "emoji": "⋈", "description": "Plum silk with a gold obi and drifting petals. Discipline, beautifully worn.",
+        "draw": [
+            ("grad_poly", _TORSO, {"from": "#3b0f3f", "to": "#8a3a86", "steps": 6, "light": (-0.2, -0.3), "shrink": 0.7, "outline": "#2a0a2e", "width": 2}),
+            ("polygon", [(30, -24), (-12, 46), (-22, 66), (44, -8)], {"fill": "#fde7d8", "outline": "#d8b7a3", "width": 1, "smooth": True, "splinesteps": 4}),
+            ("polygon", [(-30, -24), (12, 46), (22, 66), (-44, -8)], {"fill": "#f8d9c7", "outline": "#d8b7a3", "width": 1, "smooth": True, "splinesteps": 4}),
+            ("polygon", [(-24, -22), (10, 38), (18, 58), (-38, -8)], {"fill": "#fff1e8", "outline": "", "smooth": True, "splinesteps": 4}),
+            ("rectangle", (-62, 82, 62, 104), {"fill": "#d4a017", "outline": "#92400e", "width": 1}),
+            ("rectangle", (-62, 86, 62, 90), {"fill": "#fde68a", "outline": ""}),
+            ("rectangle", (-14, 78, 14, 108), {"fill": "#b45309", "outline": "#78350f", "width": 1}),
+            ("oval", (-40, 118, -30, 128), {"fill": "#f9a8d4", "outline": "#ec4899"}),
+            ("oval", (28, 112, 38, 122), {"fill": "#f9a8d4", "outline": "#ec4899"}),
+            ("oval", (-50, 40, -42, 48), {"fill": "#f9a8d4", "outline": "#ec4899"}),
+            ("sparkle", (46, 60), {"r": 3, "fill": "#fbcfe8", "phase": 6}),
+            ("sparkle", (-48, 130), {"r": 3, "fill": "#fbcfe8", "phase": 22}),
+            ("sparkle", (50, 126), {"r": 3, "fill": "#fde68a", "phase": 13}),
+        ],
+    },
+    "outfit_astronaut": {
+        "name": "Astronaut", "slot": "outfit", "rarity": "legendary",
+        "cost_type": "gems", "cost": 17, "unlock_req": {"type": "achievement", "value": "Monthly Mix Master"},
+        "emoji": "◍", "description": "Pressure suit with a live chest panel. For people whose budget actually hit its target mix.",
+        "draw": [
+            ("grad_poly", _TORSO, {"from": "#9ca3af", "to": "#fafafa", "steps": 6, "light": (-0.15, -0.35), "shrink": 0.7, "outline": "#6b7280", "width": 2}),
+            ("grad_oval", (-32, -32, 32, -4), {"from": "#4b5563", "to": "#d1d5db", "steps": 4, "shrink": 0.5}),
+            ("oval", (-26, -28, 26, -8), {"fill": "#1f2937", "outline": "#111827", "width": 1}),
+            ("rectangle", (-24, 42, 24, 76), {"fill": "#111827", "outline": "#374151", "width": 1}),
+            ("rectangle", (-20, 46, 20, 58), {"fill": "#0f172a", "outline": "#1d4ed8", "width": 1}),
+            ("line", [(-18, 52), (-10, 49), (-2, 55), (6, 48), (18, 53)], {"fill": "#22d3ee", "width": 1, "smooth": True}),
+            ("oval", (-18, 64, -12, 70), {"fill": "#22c55e", "outline": ""}),
+            ("oval", (-8, 64, -2, 70), {"fill": "#f59e0b", "outline": ""}),
+            ("oval", (2, 64, 8, 70), {"fill": "#ef4444", "outline": ""}),
+            ("oval", (12, 64, 18, 70), {"fill": "#3b82f6", "outline": ""}),
+            ("arc", (-60, 20, -30, 80), {"fill": "", "outline": "#9ca3af", "start": 90, "extent": 180, "style": "arc", "width": 3}),
+            ("arc", (30, 20, 60, 80), {"fill": "", "outline": "#9ca3af", "start": 270, "extent": 180, "style": "arc", "width": 3}),
+            ("grad_oval", (-54, 92, -30, 116), {"from": "#1e3a8a", "to": "#60a5fa", "steps": 4, "shrink": 0.6}),
+            ("oval", (34, 96, 52, 114), {"fill": "#b91c1c", "outline": "#7f1d1d", "width": 1}),
+            ("sparkle", (-42, 104), {"r": 4, "fill": "#ffffff", "phase": 8}),
+            ("sparkle", (43, 105), {"r": 3, "fill": "#fde68a", "phase": 20}),
+            ("line", [(-64, 20), (-56, 150)], {"fill": "#d1d5db", "width": 1}),
+            ("line", [(64, 20), (56, 150)], {"fill": "#d1d5db", "width": 1}),
+        ],
+    },
+
+    # ── ACCESSORY ───────────────────────────────────────────────────
+    "acc_headphones": {
+        "name": "Headphones", "slot": "accessory", "rarity": "common",
+        "cost_type": "gold", "cost": 30, "unlock_req": None,
+        "emoji": "∩", "description": "Over-ears with a soft band. Budgeting playlist optional.",
+        "draw": [
+            ("arc", (-52, -56, 52, 36), {"fill": "", "outline": "#1f2937", "start": 10, "extent": 160, "style": "arc", "width": 5}),
+            ("arc", (-52, -56, 52, 36), {"fill": "", "outline": "#4b5563", "start": 30, "extent": 120, "style": "arc", "width": 2}),
+            ("grad_oval", (-60, -12, -36, 20), {"from": "#0f172a", "to": "#4b5563", "steps": 4, "shrink": 0.55}),
+            ("grad_oval", (36, -12, 60, 20), {"from": "#0f172a", "to": "#4b5563", "steps": 4, "shrink": 0.55}),
+            ("oval", (-56, -8, -40, 16), {"fill": "#374151", "outline": "#1f2937"}),
+            ("oval", (40, -8, 56, 16), {"fill": "#374151", "outline": "#1f2937"}),
+            ("oval", (-50, 10, -46, 14), {"fill": "#22c55e", "outline": ""}),
+            ("sparkle", (46, -10), {"r": 2, "fill": "#e5e7eb", "phase": 5}),
+        ],
+    },
+    "acc_monocle": {
+        "name": "Monocle", "slot": "accessory", "rarity": "rare",
+        "cost_type": "gold", "cost": 70, "unlock_req": None,
+        "emoji": "◎", "description": "Gold-rimmed monocle on a fine chain. For scrutinising statements.",
+        "draw": [
+            ("oval", (3, -7, 25, 15), {"fill": "", "outline": "#b8860b", "width": 2}),
+            ("oval", (5, -5, 23, 13), {"fill": "", "outline": "#f5e6b8", "width": 1}),
+            ("oval", (7, -3, 21, 11), {"fill": "#e8f0fa", "outline": ""}),
+            ("line", [(9, 2), (15, -1)], {"fill": "#ffffff", "width": 1}),
+            ("line", [(24, 12), (34, 30), (30, 50), (40, 62)], {"fill": "#d4a017", "width": 1, "smooth": True}),
+            ("oval", (38, 60, 44, 66), {"fill": "#d4a017", "outline": "#92400e"}),
+            ("sparkle", (11, -2), {"r": 3, "fill": "#ffffff", "phase": 12}),
+        ],
+    },
+    "acc_gold_chain": {
+        "name": "Gold Chain", "slot": "accessory", "rarity": "rare",
+        "cost_type": "gems", "cost": 4, "unlock_req": None,
+        "emoji": "∪", "description": "A chunky gold rope with a coin pendant. Tasteful. Mostly.",
+        "draw": [
+            ("arc", (-32, 48, 32, 90), {"fill": "", "outline": "#92400e", "start": 195, "extent": 150, "style": "arc", "width": 4}),
+            ("arc", (-32, 48, 32, 90), {"fill": "", "outline": "#fbbf24", "start": 200, "extent": 140, "style": "arc", "width": 2}),
+            ("arc", (-26, 52, 26, 84), {"fill": "", "outline": "#fde68a", "start": 220, "extent": 100, "style": "arc", "width": 1}),
+            ("grad_oval", (-8, 82, 8, 98), {"from": "#92400e", "to": "#fde68a", "steps": 4, "shrink": 0.6}),
+            ("text", (0, 90), {"text": "$", "fill": "#78350f", "font": ("Segoe UI", 6, "bold")}),
+            ("sparkle", (6, 84), {"r": 3, "fill": "#ffffff", "phase": 3}),
+        ],
+    },
+    "acc_flower_crown": {
+        "name": "Flower Crown", "slot": "accessory", "rarity": "rare",
+        "cost_type": "gold", "cost": 75, "unlock_req": None,
+        "emoji": "✿", "description": "Fresh blooms on a leafy band. Spring, whenever you need it.",
+        "draw": [
+            ("arc", (-48, -52, 48, -4), {"fill": "", "outline": "#3f6212", "start": 10, "extent": 160, "style": "arc", "width": 3}),
+            ("polygon", [(-40, -40), (-34, -48), (-28, -42)], {"fill": "#65a30d", "outline": "#3f6212"}),
+            ("polygon", [(26, -44), (32, -52), (38, -44)], {"fill": "#65a30d", "outline": "#3f6212"}),
+            ("polygon", [(-10, -52), (-4, -60), (2, -52)], {"fill": "#65a30d", "outline": "#3f6212"}),
+            ("oval", (-42, -46, -28, -32), {"fill": "#f9a8d4", "outline": "#ec4899"}),
+            ("oval", (-22, -54, -8, -40), {"fill": "#fef3c7", "outline": "#f59e0b"}),
+            ("oval", (0, -58, 14, -44), {"fill": "#fda4af", "outline": "#e11d48"}),
+            ("oval", (20, -52, 34, -38), {"fill": "#ffffff", "outline": "#d1d5db"}),
+            ("oval", (36, -42, 48, -30), {"fill": "#c4b5fd", "outline": "#7c3aed"}),
+            ("oval", (-37, -41, -33, -37), {"fill": "#fbbf24", "outline": ""}),
+            ("oval", (-17, -49, -13, -45), {"fill": "#f97316", "outline": ""}),
+            ("oval", (5, -53, 9, -49), {"fill": "#fbbf24", "outline": ""}),
+            ("oval", (25, -47, 29, -43), {"fill": "#fbbf24", "outline": ""}),
+            ("oval", (40, -38, 44, -34), {"fill": "#fbbf24", "outline": ""}),
+        ],
+    },
+    "acc_coin_crown": {
+        "name": "Coin Crown", "slot": "accessory", "rarity": "legendary",
+        "cost_type": "gems", "cost": 18, "unlock_req": {"type": "level", "value": 10},
+        "emoji": "♛", "description": "A crown of minted coins. Level 10 and the treasury shows.",
+        "draw": [
+            ("grad_poly", [(-40, -46), (-40, -74), (-22, -58), (0, -82), (22, -58), (40, -74), (40, -46)],
+             {"from": "#92400e", "to": "#fde68a", "steps": 5, "light": (0, -0.5), "shrink": 0.6, "outline": "#78350f", "width": 1, "smooth": False}),
+            ("rectangle", (-42, -52, 42, -44), {"fill": "#d4a017", "outline": "#92400e", "width": 1}),
+            ("grad_oval", (-46, -82, -34, -70), {"from": "#92400e", "to": "#fde68a", "steps": 3, "shrink": 0.6}),
+            ("grad_oval", (-6, -90, 6, -78), {"from": "#92400e", "to": "#fde68a", "steps": 3, "shrink": 0.6}),
+            ("grad_oval", (34, -82, 46, -70), {"from": "#92400e", "to": "#fde68a", "steps": 3, "shrink": 0.6}),
+            ("oval", (-26, -52, -20, -46), {"fill": "#dc2626", "outline": "#7f1d1d"}),
+            ("oval", (-3, -52, 3, -46), {"fill": "#2563eb", "outline": "#1e3a8a"}),
+            ("oval", (20, -52, 26, -46), {"fill": "#16a34a", "outline": "#14532d"}),
+            ("sparkle", (-40, -76), {"r": 4, "fill": "#ffffff", "phase": 1}),
+            ("sparkle", (0, -84), {"r": 5, "fill": "#fff7cc", "phase": 13}),
+            ("sparkle", (40, -76), {"r": 4, "fill": "#ffffff", "phase": 25}),
+            ("sparkle", (-56, -40), {"r": 3, "fill": "#fbbf24", "phase": 7}),
+            ("sparkle", (56, -40), {"r": 3, "fill": "#fbbf24", "phase": 19}),
+        ],
+    },
+
+    # ── AURA ────────────────────────────────────────────────────────
+    "aura_ledger_lines": {
+        "name": "Ledger", "slot": "aura", "rarity": "common",
+        "cost_type": "gold", "cost": 45, "unlock_req": None,
+        "emoji": "☰", "description": "Faint ruled lines and a red margin. Everything accounted for.",
+        "draw": [
+            ("line", [(-120, -90), (120, -90)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-120, -70), (120, -70)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-120, -50), (120, -50)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-120, -30), (120, -30)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-120, -10), (120, -10)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-120, 10), (120, 10)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-120, 30), (120, 30)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-120, 50), (120, 50)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-120, 70), (120, 70)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-120, 90), (120, 90)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-120, 110), (120, 110)], {"fill": "#1e2a44", "width": 1}),
+            ("line", [(-88, -110), (-88, 130)], {"fill": "#5a2a2a", "width": 1}),
+            ("text", (-104, -60), {"text": "+", "fill": "#62b38a", "font": ("Segoe UI", 7, "bold")}),
+            ("text", (100, -20), {"text": "+", "fill": "#62b38a", "font": ("Segoe UI", 7, "bold")}),
+            ("text", (-100, 60), {"text": "+", "fill": "#62b38a", "font": ("Segoe UI", 7, "bold")}),
+            ("text", (104, 100), {"text": "=", "fill": "#c9a24a", "font": ("Segoe UI", 7, "bold")}),
+        ],
+    },
+    "aura_ember_drift": {
+        "name": "Ember Drift", "slot": "aura", "rarity": "rare",
+        "cost_type": "gems", "cost": 4, "unlock_req": None,
+        "emoji": "∴", "description": "Warm glow with embers rising. Slow burn, steady heat.",
+        "draw": [
+            ("grad_oval", (-98, -86, 98, 118), {"from": "#1f0a04", "to": "#7c2d12", "steps": 6, "shrink": 0.75, "light": (0, 0.1)}),
+            ("text", (-70, 60), {"text": "•", "fill": "#f97316", "font": ("Segoe UI Symbol", 6)}),
+            ("text", (-50, -20), {"text": "•", "fill": "#fb923c", "font": ("Segoe UI Symbol", 4)}),
+            ("text", (64, 40), {"text": "•", "fill": "#f97316", "font": ("Segoe UI Symbol", 5)}),
+            ("text", (78, -30), {"text": "•", "fill": "#fdba74", "font": ("Segoe UI Symbol", 4)}),
+            ("text", (-84, -60), {"text": "•", "fill": "#fb923c", "font": ("Segoe UI Symbol", 3)}),
+            ("text", (40, 96), {"text": "•", "fill": "#f97316", "font": ("Segoe UI Symbol", 5)}),
+            ("sparkle", (-60, 20), {"r": 3, "fill": "#fdba74", "phase": 4}),
+            ("sparkle", (70, 80), {"r": 3, "fill": "#fed7aa", "phase": 18}),
+            ("sparkle", (56, -66), {"r": 3, "fill": "#fdba74", "phase": 30}),
+        ],
+    },
+    "aura_frost_halo": {
+        "name": "Frost Halo", "slot": "aura", "rarity": "epic",
+        "cost_type": "gems", "cost": 8, "unlock_req": None,
+        "emoji": "❄", "description": "Pale rings of ice crystal that turn slowly around you. Cool head, cold cash.",
+        "draw": [
+            ("grad_oval", (-96, -84, 96, 116), {"from": "#0b1220", "to": "#1e3a5f", "steps": 5, "shrink": 0.7, "light": (0, 0)}),
+            ("arc", (-82, -72, 82, 102), {"fill": "", "outline": "#93c5fd", "start": 10, "extent": 300, "style": "arc", "width": 2}),
+            ("arc", (-94, -84, 94, 114), {"fill": "", "outline": "#bfdbfe", "start": 200, "extent": 250, "style": "arc", "width": 1}),
+            ("arc", (-70, -60, 70, 90), {"fill": "", "outline": "#e0f2fe", "start": 120, "extent": 200, "style": "arc", "width": 1}),
+            ("sparkle", (-80, -20), {"r": 5, "fill": "#e0f2fe", "phase": 2}),
+            ("sparkle", (84, 10), {"r": 5, "fill": "#e0f2fe", "phase": 14}),
+            ("sparkle", (-56, 92), {"r": 4, "fill": "#bfdbfe", "phase": 26}),
+            ("sparkle", (60, -70), {"r": 4, "fill": "#bfdbfe", "phase": 8}),
+            ("sparkle", (0, -94), {"r": 4, "fill": "#ffffff", "phase": 20}),
+            ("sparkle", (6, 112), {"r": 3, "fill": "#ffffff", "phase": 32}),
+        ],
+    },
+    "aura_coin_rain": {
+        "name": "Coin Rain", "slot": "aura", "rarity": "epic",
+        "cost_type": "gems", "cost": 9, "unlock_req": {"type": "streak", "value": 5},
+        "emoji": "¢", "description": "Gold coins drifting down around you. Five pays in a row made it rain.",
+        "draw": [
+            ("grad_oval", (-92, -80, 92, 112), {"from": "#120c04", "to": "#3b2a0a", "steps": 5, "shrink": 0.7, "light": (0, 0)}),
+            ("grad_oval", (-84, -70, -70, -56), {"from": "#92400e", "to": "#fde68a", "steps": 3, "shrink": 0.6}),
+            ("grad_oval", (66, -40, 80, -26), {"from": "#92400e", "to": "#fde68a", "steps": 3, "shrink": 0.6}),
+            ("grad_oval", (-70, 50, -56, 64), {"from": "#92400e", "to": "#fde68a", "steps": 3, "shrink": 0.6}),
+            ("grad_oval", (74, 70, 88, 84), {"from": "#92400e", "to": "#fde68a", "steps": 3, "shrink": 0.6}),
+            ("grad_oval", (-20, -96, -6, -82), {"from": "#92400e", "to": "#fde68a", "steps": 3, "shrink": 0.6}),
+            ("text", (-77, -63), {"text": "$", "fill": "#78350f", "font": ("Segoe UI", 5, "bold")}),
+            ("text", (73, -33), {"text": "$", "fill": "#78350f", "font": ("Segoe UI", 5, "bold")}),
+            ("text", (-63, 57), {"text": "$", "fill": "#78350f", "font": ("Segoe UI", 5, "bold")}),
+            ("text", (81, 77), {"text": "$", "fill": "#78350f", "font": ("Segoe UI", 5, "bold")}),
+            ("text", (-13, -89), {"text": "$", "fill": "#78350f", "font": ("Segoe UI", 5, "bold")}),
+            ("sparkle", (-88, 10), {"r": 3, "fill": "#fde68a", "phase": 3}),
+            ("sparkle", (88, 20), {"r": 3, "fill": "#fde68a", "phase": 15}),
+            ("sparkle", (40, 104), {"r": 3, "fill": "#fff7cc", "phase": 27}),
+        ],
+    },
+    "aura_nebula_veil": {
+        "name": "Nebula Veil", "slot": "aura", "rarity": "legendary",
+        "cost_type": "gems", "cost": 15, "unlock_req": None,
+        "emoji": "✺", "description": "Violet and teal gas clouds with turning star-arcs. A small galaxy, personally owned.",
+        "draw": [
+            ("grad_oval", (-104, -92, 104, 124), {"from": "#07041a", "to": "#4c1d95", "steps": 6, "shrink": 0.8, "light": (-0.2, -0.2)}),
+            ("grad_oval", (-60, -30, 110, 116), {"from": "#07041a", "to": "#0e7490", "steps": 5, "shrink": 0.85, "light": (0.3, 0.3)}),
+            ("arc", (-90, -80, 90, 110), {"fill": "", "outline": "#c084fc", "start": 20, "extent": 110, "style": "arc", "width": 2}),
+            ("arc", (-98, -88, 98, 118), {"fill": "", "outline": "#67e8f9", "start": 200, "extent": 90, "style": "arc", "width": 1}),
+            ("arc", (-76, -66, 76, 96), {"fill": "", "outline": "#e9d5ff", "start": 290, "extent": 60, "style": "arc", "width": 1}),
+            ("sparkle", (-84, -40), {"r": 4, "fill": "#f5f3ff", "phase": 1}),
+            ("sparkle", (90, -10), {"r": 5, "fill": "#ffffff", "phase": 9}),
+            ("sparkle", (-66, 90), {"r": 4, "fill": "#a5f3fc", "phase": 17}),
+            ("sparkle", (70, 100), {"r": 4, "fill": "#e9d5ff", "phase": 25}),
+            ("sparkle", (-30, -100), {"r": 3, "fill": "#ffffff", "phase": 33}),
+            ("sparkle", (46, -84), {"r": 3, "fill": "#c4b5fd", "phase": 5}),
+            ("sparkle", (-100, 30), {"r": 3, "fill": "#67e8f9", "phase": 21}),
+        ],
+    },
+
+    # ── BACKGROUND ──────────────────────────────────────────────────
+    "background_beach_dusk": {
+        "name": "Beach Dusk", "slot": "background", "rarity": "common",
+        "cost_type": "gold", "cost": 45, "unlock_req": None,
+        "emoji": "▬", "description": "Violet sky melting into orange over a quiet sea.",
+        "draw": [
+            ("grad_band", (0, 0, 1, 0.62), {"from": "#2e1065", "to": "#fb923c", "steps": 12}),
+            ("grad_oval", (-16, 48, 16, 80), {"from": "#f59e0b", "to": "#fff7cc", "steps": 4, "shrink": 0.6, "light": (0, 0)}),
+            ("grad_band", (0, 0.62, 1, 0.82), {"from": "#1e3a8a", "to": "#0f766e", "steps": 8}),
+            ("grad_band", (0, 0.82, 1, 1), {"from": "#d6b27a", "to": "#a8814e", "steps": 6}),
+            ("line", [(-120, 108), (120, 108)], {"fill": "#fde68a", "width": 1}),
+            ("line", [(-80, 122), (-20, 122)], {"fill": "#fbbf24", "width": 1}),
+            ("line", [(30, 132), (90, 132)], {"fill": "#fbbf24", "width": 1}),
+            ("arc", (-70, -40, -54, -30), {"fill": "", "outline": "#1e1b4b", "start": 0, "extent": 180, "style": "arc", "width": 1}),
+            ("arc", (-54, -40, -38, -30), {"fill": "", "outline": "#1e1b4b", "start": 0, "extent": 180, "style": "arc", "width": 1}),
+            ("arc", (60, -60, 72, -52), {"fill": "", "outline": "#1e1b4b", "start": 0, "extent": 180, "style": "arc", "width": 1}),
+            ("arc", (72, -60, 84, -52), {"fill": "", "outline": "#1e1b4b", "start": 0, "extent": 180, "style": "arc", "width": 1}),
+        ],
+    },
+    "background_rainy_window": {
+        "name": "Rainy Window", "slot": "background", "rarity": "rare",
+        "cost_type": "gold", "cost": 80, "unlock_req": None,
+        "emoji": "▦", "description": "City lights blurred through a wet pane. Best budgeting weather.",
+        "draw": [
+            ("grad_band", (0, 0, 1, 1), {"from": "#0b1120", "to": "#1f2a3f", "steps": 10}),
+            ("oval", (-100, -30, -60, 10), {"fill": "#3b2f12", "outline": ""}),
+            ("oval", (-92, -22, -68, 2), {"fill": "#6b5416", "outline": ""}),
+            ("oval", (50, -70, 80, -40), {"fill": "#2a1f3d", "outline": ""}),
+            ("oval", (58, -62, 72, -48), {"fill": "#7c3aed", "outline": ""}),
+            ("oval", (20, 20, 60, 60), {"fill": "#1a2a40", "outline": ""}),
+            ("oval", (30, 30, 50, 50), {"fill": "#2563eb", "outline": ""}),
+            ("oval", (-40, 60, -10, 90), {"fill": "#3b2412", "outline": ""}),
+            ("oval", (-32, 68, -18, 82), {"fill": "#f59e0b", "outline": ""}),
+            ("rect_abs", (0.485, 0, 0.515, 1), {"fill": "#0a0e18", "outline": ""}),
+            ("rect_abs", (0, 0.44, 1, 0.47), {"fill": "#0a0e18", "outline": ""}),
+            ("line", [(-110, -120), (-104, -60)], {"fill": "#4a5a78", "width": 1}),
+            ("line", [(-70, -40), (-66, 20)], {"fill": "#4a5a78", "width": 1}),
+            ("line", [(-20, -110), (-16, -70)], {"fill": "#4a5a78", "width": 1}),
+            ("line", [(40, -20), (44, 50)], {"fill": "#4a5a78", "width": 1}),
+            ("line", [(90, -100), (96, -30)], {"fill": "#4a5a78", "width": 1}),
+            ("line", [(70, 70), (74, 130)], {"fill": "#4a5a78", "width": 1}),
+            ("oval", (-96, -50, -92, -44), {"fill": "#7d8ba6", "outline": ""}),
+            ("oval", (30, -90, 35, -83), {"fill": "#7d8ba6", "outline": ""}),
+            ("oval", (-50, 40, -45, 47), {"fill": "#7d8ba6", "outline": ""}),
+            ("oval", (100, 90, 105, 97), {"fill": "#7d8ba6", "outline": ""}),
+        ],
+    },
+    "background_skyline_dawn": {
+        "name": "Skyline Dawn", "slot": "background", "rarity": "rare",
+        "cost_type": "gems", "cost": 5, "unlock_req": None,
+        "emoji": "▯▯", "description": "First light over the towers. Markets open soon; you're ahead of them.",
+        "draw": [
+            ("grad_band", (0, 0, 1, 0.72), {"from": "#1e3a8a", "to": "#fbbf24", "steps": 12}),
+            ("grad_oval", (-34, 28, 34, 96), {"from": "#f59e0b", "to": "#fffbeb", "steps": 5, "shrink": 0.7, "light": (0, 0)}),
+            ("rectangle", (-116, 40, -92, 180), {"fill": "#111827", "outline": "#1f2937"}),
+            ("rectangle", (-86, 10, -60, 180), {"fill": "#0f172a", "outline": "#1f2937"}),
+            ("rectangle", (-54, 60, -34, 180), {"fill": "#111827", "outline": "#1f2937"}),
+            ("rectangle", (34, 50, 56, 180), {"fill": "#0f172a", "outline": "#1f2937"}),
+            ("rectangle", (62, 16, 88, 180), {"fill": "#111827", "outline": "#1f2937"}),
+            ("rectangle", (94, 44, 116, 180), {"fill": "#0f172a", "outline": "#1f2937"}),
+            ("line", [(-73, 10), (-73, -6)], {"fill": "#1f2937", "width": 2}),
+            ("line", [(75, 16), (75, 0)], {"fill": "#1f2937", "width": 2}),
+            ("rectangle", (-80, 22, -76, 28), {"fill": "#fde68a", "outline": ""}),
+            ("rectangle", (-70, 36, -66, 42), {"fill": "#fbbf24", "outline": ""}),
+            ("rectangle", (-108, 52, -104, 58), {"fill": "#fde68a", "outline": ""}),
+            ("rectangle", (-46, 72, -42, 78), {"fill": "#fbbf24", "outline": ""}),
+            ("rectangle", (40, 62, 44, 68), {"fill": "#fde68a", "outline": ""}),
+            ("rectangle", (70, 30, 74, 36), {"fill": "#fbbf24", "outline": ""}),
+            ("rectangle", (80, 48, 84, 54), {"fill": "#fde68a", "outline": ""}),
+            ("rectangle", (102, 58, 106, 64), {"fill": "#fbbf24", "outline": ""}),
+            ("grad_band", (0, 0.72, 1, 1), {"from": "#0b1220", "to": "#05080f", "steps": 4}),
+        ],
+    },
+    "background_library": {
+        "name": "Library", "slot": "background", "rarity": "epic",
+        "cost_type": "gems", "cost": 8, "unlock_req": None,
+        "emoji": "▤", "description": "Warm oak shelves, a reading lamp, and a few thousand pages of compound interest.",
+        "draw": [
+            ("grad_band", (0, 0, 1, 1), {"from": "#2a170c", "to": "#5c3a1e", "steps": 10}),
+            ("grad_oval", (40, -120, 150, -20), {"from": "#5c3a1e", "to": "#c98f3a", "steps": 6, "shrink": 0.85, "light": (0, 0)}),
+            ("rect_abs", (0, 0.28, 1, 0.305), {"fill": "#1c0f07", "outline": ""}),
+            ("rect_abs", (0, 0.56, 1, 0.585), {"fill": "#1c0f07", "outline": ""}),
+            ("rectangle", (-120, -98, -104, -58), {"fill": "#7f1d1d", "outline": "#450a0a"}),
+            ("rectangle", (-102, -92, -90, -58), {"fill": "#1e3a8a", "outline": "#172554"}),
+            ("rectangle", (-88, -100, -70, -58), {"fill": "#365314", "outline": "#1a2e05"}),
+            ("rectangle", (-68, -90, -56, -58), {"fill": "#d4a017", "outline": "#92400e"}),
+            ("rectangle", (-54, -96, -36, -58), {"fill": "#4c1d95", "outline": "#2e1065"}),
+            ("rectangle", (-34, -88, -22, -58), {"fill": "#9a3412", "outline": "#7c2d12"}),
+            ("rectangle", (-20, -94, -4, -58), {"fill": "#0f766e", "outline": "#134e4a"}),
+            ("rectangle", (-120, 0, -100, 36), {"fill": "#1e3a8a", "outline": "#172554"}),
+            ("rectangle", (-98, -6, -84, 36), {"fill": "#9a3412", "outline": "#7c2d12"}),
+            ("rectangle", (-82, 2, -62, 36), {"fill": "#365314", "outline": "#1a2e05"}),
+            ("rectangle", (-60, -4, -48, 36), {"fill": "#7f1d1d", "outline": "#450a0a"}),
+            ("rectangle", (60, -2, 76, 36), {"fill": "#4c1d95", "outline": "#2e1065"}),
+            ("rectangle", (78, 4, 96, 36), {"fill": "#d4a017", "outline": "#92400e"}),
+            ("rectangle", (98, -6, 112, 36), {"fill": "#0f766e", "outline": "#134e4a"}),
+            ("rectangle", (62, -94, 80, -58), {"fill": "#7f1d1d", "outline": "#450a0a"}),
+            ("rectangle", (82, -88, 100, -58), {"fill": "#1e3a8a", "outline": "#172554"}),
+            ("rectangle", (102, -96, 116, -58), {"fill": "#365314", "outline": "#1a2e05"}),
+            ("line", [(-118, -78), (-106, -78)], {"fill": "#fde68a", "width": 1}),
+            ("line", [(-52, -76), (-38, -76)], {"fill": "#fde68a", "width": 1}),
+            ("line", [(64, -74), (78, -74)], {"fill": "#fde68a", "width": 1}),
+            ("sparkle", (96, -70), {"r": 3, "fill": "#fde68a", "phase": 6}),
+        ],
+    },
+    "background_golden_hour": {
+        "name": "Golden Hour", "slot": "background", "rarity": "legendary",
+        "cost_type": "gems", "cost": 15, "unlock_req": None,
+        "emoji": "☀", "description": "Low sun, long light, rolling hills. The feeling of a plan that worked.",
+        "draw": [
+            ("grad_band", (0, 0, 1, 0.74), {"from": "#7c2d12", "to": "#fde68a", "steps": 14}),
+            ("polygon", [(-10, 60), (-120, -120), (-60, -130)], {"fill": "#f5c06a", "outline": ""}),
+            ("polygon", [(0, 60), (-30, -140), (30, -140)], {"fill": "#f7cc80", "outline": ""}),
+            ("polygon", [(10, 60), (60, -130), (120, -120)], {"fill": "#f5c06a", "outline": ""}),
+            ("polygon", [(-10, 60), (-140, -40), (-140, 0)], {"fill": "#f3b85a", "outline": ""}),
+            ("polygon", [(10, 60), (140, -40), (140, 0)], {"fill": "#f3b85a", "outline": ""}),
+            ("grad_oval", (-44, 16, 44, 104), {"from": "#f59e0b", "to": "#fffbeb", "steps": 6, "shrink": 0.7, "light": (0, 0)}),
+            ("arc", (-180, 70, -20, 190), {"fill": "#4d7c0f", "outline": "", "start": 0, "extent": 180, "style": "pieslice"}),
+            ("arc", (-60, 80, 120, 200), {"fill": "#3f6212", "outline": "", "start": 0, "extent": 180, "style": "pieslice"}),
+            ("arc", (40, 90, 220, 210), {"fill": "#365314", "outline": "", "start": 0, "extent": 180, "style": "pieslice"}),
+            ("grad_band", (0, 0.74, 1, 1), {"from": "#365314", "to": "#1a2e05", "steps": 6}),
+            ("sparkle", (-70, -20), {"r": 4, "fill": "#fff7cc", "phase": 2}),
+            ("sparkle", (80, -50), {"r": 4, "fill": "#fff7cc", "phase": 14}),
+            ("sparkle", (100, 40), {"r": 3, "fill": "#ffffff", "phase": 26}),
+            ("sparkle", (-100, 30), {"r": 3, "fill": "#ffffff", "phase": 8}),
+        ],
+    },
+})
+for _eid in ("eyes_cyber_visor", "eyes_cool_shades"):
+    if _eid in AVATAR_ITEMS:
+        AVATAR_ITEMS[_eid]["no_blink"] = True
+
+# ── Homestead scene renderer ────────────────────────────────────────────
+def draw_homestead(canvas: "tk.Canvas", snap: dict, w: int, h: int, frame: int = 0, mini: bool = False):
+    """Paint the Homestead from a HomesteadEngine snapshot.
+
+    Coordinates are fractions of the canvas (u across, v down) so the scene
+    fills any width; stroke/size details scale with ``m``. *mini* draws the
+    compact Today-card version (no labels, fewer details).
+    """
+    canvas.delete("all")
+    if w < 20 or h < 20:
+        return
+    m = min(w / 640.0, h / 320.0)
+    if mini:
+        m = max(m, 0.28)
+
+    def X(u): return u * w
+    def Y(v): return v * h
+    def lw(n): return max(1, int(round(n * m)))
+
+    ink = "#1d2a1a"
+    tod = snap.get("time_of_day", "day")
+    weather = snap.get("weather", "clear")
+    # ── Sky ──────────────────────────────────────────────────────────
+    sky = {"day": ("#6fb3ff", "#dff3ff"), "evening": ("#5b3b8c", "#f6a56a"), "night": ("#070b1f", "#1f2a55")}[tod]
+    steps = 10
+    for i in range(steps):
+        t0, t1 = i / steps, (i + 1) / steps
+        canvas.create_rectangle(0, Y(0.66 * t0), w, Y(0.66 * t1) + 1, fill=_lerp_color(sky[0], sky[1], i / (steps - 1)), outline="")
+    if weather == "overcast":
+        canvas.create_rectangle(0, 0, w, Y(0.66), fill="#7f8a99", outline="", stipple="gray50")
+    # Sun / moon
+    if tod == "night":
+        canvas.create_oval(X(0.82) - 14 * m, Y(0.14) - 14 * m, X(0.82) + 14 * m, Y(0.14) + 14 * m, fill="#f3f0d8", outline="")
+        canvas.create_oval(X(0.82) - 6 * m, Y(0.14) - 16 * m, X(0.82) + 18 * m, Y(0.14) + 8 * m, fill=sky[0], outline="")
+        for (u, v, r) in ((0.1, 0.1, 1.6), (0.3, 0.06, 1.2), (0.5, 0.15, 1.8), (0.65, 0.05, 1.2), (0.92, 0.3, 1.4), (0.2, 0.3, 1.0)):
+            rr = r * m * (1.0 if frame == 0 else 0.7 + 0.3 * abs(math.sin(frame * 0.1 + u * 20)))
+            canvas.create_oval(X(u) - rr, Y(v) - rr, X(u) + rr, Y(v) + rr, fill="#ffffff", outline="")
+    else:
+        sun = "#ffd166" if tod == "day" else "#ff8c42"
+        for i, (rr, col) in enumerate(((26, _lerp_color(sun, sky[1], 0.75)), (20, _lerp_color(sun, sky[1], 0.4)), (14, sun))):
+            canvas.create_oval(X(0.82) - rr * m, Y(0.16) - rr * m, X(0.82) + rr * m, Y(0.16) + rr * m, fill=col, outline="")
+    # Clouds (drift with frame)
+    if weather in ("cloud", "overcast"):
+        drift = (frame * 0.0015) % 0.3 if frame else 0.0
+        for (u, v, sc) in ((0.18, 0.2, 1.0), (0.55, 0.12, 0.8), (0.4, 0.3, 0.6)):
+            uu = ((u + drift) % 1.1) - 0.05
+            col = "#ffffff" if weather == "cloud" else "#c3cad4"
+            for (du, dv, r) in ((0, 0, 16), (-0.03, 0.02, 11), (0.035, 0.015, 12), (0.012, -0.02, 10)):
+                r *= sc * m
+                canvas.create_oval(X(uu + du) - r, Y(v + dv) - r * 0.7, X(uu + du) + r, Y(v + dv) + r * 0.7, fill=col, outline="")
+
+    # ── Land ─────────────────────────────────────────────────────────
+    far, near, ground = {"day": ("#6aa84f", "#4f8f3a", "#3f7a2e"), "evening": ("#5f8a44", "#43702f", "#355c26"),
+                         "night": ("#24402a", "#1b3321", "#14281a")}[tod]
+    canvas.create_oval(X(-0.2), Y(0.5), X(0.8), Y(0.95), fill=far, outline="")
+    canvas.create_oval(X(0.45), Y(0.52), X(1.25), Y(1.0), fill=near, outline="")
+    canvas.create_rectangle(0, Y(0.7), w, h, fill=ground, outline="")
+    canvas.create_line(0, Y(0.7), w, Y(0.7), fill=_lerp_color(ground, "#ffffff", 0.08), width=lw(1))
+
+    # ── Windmill (far right) ─────────────────────────────────────────
+    wx, wy = X(0.91), Y(0.66)
+    canvas.create_polygon(wx - 9 * m, wy, wx + 9 * m, wy, wx + 5 * m, wy - 60 * m, wx - 5 * m, wy - 60 * m,
+                          fill="#c9a97a", outline=ink, width=lw(1.2))
+    canvas.create_polygon(wx - 7 * m, wy - 60 * m, wx + 7 * m, wy - 60 * m, wx, wy - 70 * m, fill="#8a5a3c", outline=ink, width=lw(1))
+    ang = (frame * 0.08) if (frame and snap.get("windmill_spin")) else 0.6
+    for k in range(4):
+        a = ang + k * math.pi / 2
+        bx, by = wx + math.cos(a) * 26 * m, wy - 58 * m + math.sin(a) * 26 * m
+        canvas.create_line(wx, wy - 58 * m, bx, by, fill="#efe6d2", width=lw(3))
+        canvas.create_line(wx, wy - 58 * m, bx, by, fill=ink, width=lw(1))
+    canvas.create_oval(wx - 3 * m, wy - 61 * m, wx + 3 * m, wy - 55 * m, fill=ink, outline="")
+    if snap.get("mill_ready") and not mini:
+        # a full grain sack by the door: Gold is waiting to be collected
+        canvas.create_oval(wx + 11 * m, wy - 12 * m, wx + 23 * m, wy + 1 * m, fill="#e3b341", outline=ink, width=lw(1))
+        canvas.create_line(wx + 13 * m, wy - 10 * m, wx + 21 * m, wy - 10 * m, fill=ink, width=lw(1))
+
+    # ── Trees (goals) along the near hill ────────────────────────────
+    trees = snap.get("trees", [])
+    for i, t in enumerate(trees[:6]):
+        u = 0.6 + i * 0.058
+        tx, ty = X(u), Y(0.64 - (i % 2) * 0.02)
+        stage = t["stage"]
+        if stage == 0:
+            canvas.create_line(tx, ty, tx, ty - 10 * m, fill="#7a5230", width=lw(2))
+            canvas.create_oval(tx - 5 * m, ty - 16 * m, tx + 5 * m, ty - 8 * m, fill="#86c26a", outline=ink, width=lw(1))
+            continue
+        trunk = (10 + stage * 6) * m
+        crown = (8 + stage * 5) * m
+        canvas.create_line(tx, ty, tx, ty - trunk, fill="#6b4423", width=lw(2 + stage * 0.5))
+        for (dx, dy, f) in ((0, 0, 1.0), (-0.6, 0.35, 0.75), (0.6, 0.3, 0.75)):
+            r = crown * f
+            canvas.create_oval(tx + dx * crown - r, ty - trunk - crown * 0.4 + dy * crown - r,
+                               tx + dx * crown + r, ty - trunk - crown * 0.4 + dy * crown + r,
+                               fill="#4f9a3c" if tod != "night" else "#2d5a2a", outline=ink, width=lw(1))
+        if stage >= 4:
+            for (dx, dy) in ((-0.4, -0.2), (0.3, 0.1), (0.0, -0.6), (0.55, -0.45)):
+                r = 2.6 * m
+                canvas.create_oval(tx + dx * crown - r, ty - trunk - crown * 0.4 + dy * crown - r,
+                                   tx + dx * crown + r, ty - trunk - crown * 0.4 + dy * crown + r, fill="#e63946", outline="")
+
+    # ── House (left) ─────────────────────────────────────────────────
+    stage = snap.get("house_stage", 1)
+    hx, base = X(0.24), Y(0.70)
+    lit = snap.get("lit_windows", True) and tod != "day"
+    win_col = "#ffd27a" if lit else ("#2b3a55" if tod == "night" else "#9ecbff")
+    wall = {"day": "#e9d8b5", "evening": "#d9c29c", "night": "#7c6f5a"}[tod]
+    roof = "#8b3a2a"
+    if stage == 1:
+        canvas.create_polygon(hx - 36 * m, base, hx + 36 * m, base, hx, base - 48 * m, fill="#c9b27e", outline=ink, width=lw(1.5))
+        canvas.create_polygon(hx - 10 * m, base, hx + 10 * m, base, hx, base - 22 * m, fill="#6b4e2e", outline=ink, width=lw(1))
+    else:
+        width = (60 + stage * 16) * m
+        height = (36 + stage * 8) * m
+        canvas.create_rectangle(hx - width / 2, base - height, hx + width / 2, base, fill=wall, outline=ink, width=lw(1.5))
+        canvas.create_polygon(hx - width / 2 - 8 * m, base - height, hx + width / 2 + 8 * m, base - height, hx, base - height - 34 * m,
+                              fill=roof, outline=ink, width=lw(1.5))
+        if stage >= 3:
+            canvas.create_rectangle(hx + width * 0.22, base - height - 30 * m, hx + width * 0.32, base - height - 6 * m, fill="#6b4423", outline=ink, width=lw(1))
+        if stage >= 4:
+            canvas.create_rectangle(hx - width / 2 - 6 * m, base - 16 * m, hx + width / 2 + 6 * m, base, fill=_lerp_color(wall, "#000000", 0.15), outline=ink, width=lw(1))
+            for k in range(4):
+                px = hx - width / 2 - 2 * m + k * (width + 4 * m) / 3
+                canvas.create_line(px, base - 16 * m, px, base, fill="#8a6a46", width=lw(2))
+        if stage >= 5:
+            for side in (-1, 1):
+                wx2 = hx + side * (width / 2 + 22 * m)
+                canvas.create_rectangle(wx2 - 22 * m, base - height * 0.7, wx2 + 22 * m, base, fill=wall, outline=ink, width=lw(1.5))
+                canvas.create_polygon(wx2 - 26 * m, base - height * 0.7, wx2 + 26 * m, base - height * 0.7, wx2, base - height * 0.7 - 20 * m,
+                                      fill=roof, outline=ink, width=lw(1))
+                canvas.create_rectangle(wx2 - 6 * m, base - height * 0.5, wx2 + 6 * m, base - height * 0.3, fill=win_col, outline=ink, width=lw(1))
+        # Door + windows
+        canvas.create_rectangle(hx - 8 * m, base - 24 * m, hx + 8 * m, base, fill="#5a3a22", outline=ink, width=lw(1))
+        canvas.create_oval(hx + 4 * m, base - 13 * m, hx + 6 * m, base - 11 * m, fill="#e9b949", outline="")
+        n_win = 2 if stage < 4 else 4
+        for k in range(n_win):
+            off = (k - (n_win - 1) / 2) * (width / (n_win + 0.5))
+            if abs(off) < 14 * m:
+                off += 22 * m if off >= 0 else -22 * m
+            canvas.create_rectangle(hx + off - 7 * m, base - height * 0.72, hx + off + 7 * m, base - height * 0.42, fill=win_col, outline=ink, width=lw(1))
+            canvas.create_line(hx + off, base - height * 0.72, hx + off, base - height * 0.42, fill=ink, width=lw(1))
+
+    # ── Path (imports) from door to gate ─────────────────────────────
+    stones = snap.get("path_stones", 0)
+    for i in range(12):
+        t = (i + 0.5) / 12
+        px, py = X(0.24 + (0.5 - 0.24) * t), Y(0.72 + (0.95 - 0.72) * t)
+        r = (6 + 3 * t) * m
+        if i < stones:
+            canvas.create_oval(px - r, py - r * 0.55, px + r, py + r * 0.55, fill="#c9c2b2", outline=ink, width=lw(1))
+        elif not mini:
+            canvas.create_oval(px - r, py - r * 0.55, px + r, py + r * 0.55, fill="", outline=_lerp_color(ground, "#ffffff", 0.25), width=lw(1), dash=(2, 2))
+
+    # ── Plots (funds) ────────────────────────────────────────────────
+    plots = snap.get("plots", [])
+    weeds = snap.get("weeds", False)
+    for i, p in enumerate(plots[:8]):
+        r_, c_ = divmod(i, 4)
+        u, v = 0.40 + c_ * 0.085, 0.76 + r_ * 0.1
+        px, py = X(u), Y(v)
+        bw, bh = 26 * m, 9 * m
+        canvas.create_oval(px - bw, py - bh, px + bw, py + bh, fill="#6b4a2e", outline=ink, width=lw(1))
+        st_ = p["stage"]
+        if st_ >= 1:
+            canvas.create_line(px, py, px, py - (8 + st_ * 5) * m, fill="#3f8f2e", width=lw(2))
+        if st_ >= 2:
+            for side in (-1, 1):
+                canvas.create_oval(px + side * 7 * m - 5 * m, py - (8 + st_ * 3) * m - 4 * m, px + side * 7 * m + 5 * m, py - (8 + st_ * 3) * m + 4 * m,
+                                   fill="#58b046", outline=ink, width=lw(1))
+        if st_ >= 3:
+            canvas.create_oval(px - 9 * m, py - (14 + st_ * 5) * m - 7 * m, px + 9 * m, py - (14 + st_ * 5) * m + 7 * m, fill="#6cc25a", outline=ink, width=lw(1))
+            for (dx, dy) in ((-4, -3), (3, 1), (0, -7)):
+                canvas.create_oval(px + dx * m - 2 * m, py - (14 + st_ * 5) * m + dy * m - 2 * m, px + dx * m + 2 * m, py - (14 + st_ * 5) * m + dy * m + 2 * m,
+                                   fill="#ff9ecb", outline="")
+        if st_ >= 4:
+            for (dx, dy) in ((-6, -2), (5, -4), (1, 2)):
+                canvas.create_oval(px + dx * m - 3 * m, py - 32 * m + dy * m - 3 * m, px + dx * m + 3 * m, py - 32 * m + dy * m + 3 * m, fill="#f4a261", outline="")
+        if weeds and i % 2 == 0:
+            for dx in (-18, -12, 14, 20):
+                canvas.create_line(px + dx * m, py + 2 * m, px + dx * m - 2 * m, py - 9 * m, fill="#8aa05a", width=lw(1.5))
+                canvas.create_line(px + dx * m, py + 2 * m, px + dx * m + 3 * m, py - 7 * m, fill="#8aa05a", width=lw(1.5))
+
+    # ── Fence (bills) along the front ────────────────────────────────
+    fence = snap.get("fence", [])
+    n_posts = max(len(fence), 0)
+    if n_posts:
+        fy = Y(0.92)
+        u0, u1 = 0.06, 0.94
+        xs = [X(u0 + (u1 - u0) * i / max(n_posts - 1, 1)) for i in range(n_posts)] if n_posts > 1 else [X(0.5)]
+        for i, f in enumerate(fence):
+            fx = xs[i]
+            if f["ok"]:
+                canvas.create_rectangle(fx - 3 * m, fy - 22 * m, fx + 3 * m, fy, fill="#b08a5a", outline=ink, width=lw(1))
+                canvas.create_polygon(fx - 4 * m, fy - 22 * m, fx + 4 * m, fy - 22 * m, fx, fy - 27 * m, fill="#b08a5a", outline=ink, width=lw(1))
+            else:
+                canvas.create_polygon(fx - 3 * m, fy, fx + 3 * m, fy, fx + 11 * m, fy - 20 * m, fx + 6 * m, fy - 22 * m,
+                                      fill="#8a6a46", outline=ink, width=lw(1))
+            if i + 1 < n_posts and f["ok"] and fence[i + 1]["ok"]:
+                nx = xs[i + 1]
+                for dy in (8, 16):
+                    canvas.create_line(fx, fy - dy * m, nx, fy - dy * m, fill="#b08a5a", width=lw(2.2))
+                    canvas.create_line(fx, fy - dy * m, nx, fy - dy * m, fill=ink, width=lw(0.8))
+
+    # ── Mailbox (flagged follow-ups) ─────────────────────────────────
+    mx, my = X(0.53), Y(0.9)
+    canvas.create_line(mx, my, mx, my - 22 * m, fill="#6b4423", width=lw(2.5))
+    canvas.create_rectangle(mx - 9 * m, my - 32 * m, mx + 9 * m, my - 22 * m, fill="#4a6fa5", outline=ink, width=lw(1))
+    canvas.create_arc(mx - 9 * m, my - 36 * m, mx + 9 * m, my - 28 * m, start=0, extent=180, style="chord", fill="#4a6fa5", outline=ink, width=lw(1))
+    if snap.get("mailbox_flag"):
+        canvas.create_polygon(mx + 9 * m, my - 30 * m, mx + 9 * m, my - 44 * m, mx + 15 * m, my - 40 * m, fill="#e63946", outline=ink, width=lw(1))
+    else:
+        canvas.create_line(mx + 9 * m, my - 26 * m, mx + 17 * m, my - 26 * m, fill="#e63946", width=lw(2))
+
+    if not mini:
+        # Quiet scene labels for first-time readers
+        for (u, v, txt) in ((0.24, 0.985, "house · level"), (0.56, 0.985, "plots · set-asides"), (0.78, 0.985, "trees · goals"),
+                            (0.9, 0.985, "mill · streak")):
+            canvas.create_text(X(u), Y(v), text=txt, fill=_lerp_color(ground, "#ffffff", 0.55), font=("Segoe UI Variable Text", max(6, int(7 * m))))
+
+
+
+
+# ── Homestead companions (awarded by Homestead tier, equip in the "companion" slot) ──
+AVATAR_ITEMS.update({
+    "comp_hen": {
+        "name": "Marigold the Hen", "slot": "companion", "rarity": "rare",
+        "cost_type": "free", "cost": 0, "unlock_req": {"type": "homestead", "value": 1},
+        "emoji": "🐔", "description": "First tenant of the Homestead. Lays an egg of encouragement most mornings.",
+        "draw": [
+            ("grad_oval", (-20, -8, 12, 16), {"from": "#d8c9a8", "to": "#fff7e6", "steps": 4, "shrink": 0.6}),
+            ("polygon", [(-20, 0), (-30, -12), (-26, 2), (-32, -2), (-22, 8)], {"fill": "#c9b48a", "outline": "#7a6a4a", "width": 1, "smooth": True}),
+            ("oval", (4, -22, 20, -6), {"fill": "#fff7e6", "outline": "#8a7a5a", "width": 1}),
+            ("polygon", [(8, -24), (12, -30), (15, -24), (18, -29), (20, -22)], {"fill": "#e63946", "outline": "#8a1c26", "width": 1, "smooth": True}),
+            ("polygon", [(20, -14), (28, -11), (20, -8)], {"fill": "#f4a261", "outline": "#b5651d", "width": 1}),
+            ("oval", (18, -15, 22, -9), {"fill": "#e63946", "outline": ""}),
+            ("oval", (12, -17, 15, -14), {"fill": "#1a1a1a", "outline": ""}),
+            ("line", [(-4, 16), (-4, 24)], {"fill": "#f4a261", "width": 2}),
+            ("line", [(4, 16), (4, 24)], {"fill": "#f4a261", "width": 2}),
+            ("arc", (-16, -4, 6, 12), {"fill": "", "outline": "#c9b48a", "start": 200, "extent": 120, "style": "arc", "width": 1}),
+        ],
+    },
+    "comp_cat": {
+        "name": "Ledger the Cat", "slot": "companion", "rarity": "rare",
+        "cost_type": "free", "cost": 0, "unlock_req": {"type": "homestead", "value": 2},
+        "emoji": "🐈", "description": "Sits on statements. Judges your subscriptions silently.",
+        "draw": [
+            ("grad_oval", (-24, -6, 10, 16), {"from": "#5c5c66", "to": "#9a9aa6", "steps": 4, "shrink": 0.6}),
+            ("arc", (-34, -14, -10, 14), {"fill": "", "outline": "#5c5c66", "start": 90, "extent": 200, "style": "arc", "width": 3}),
+            ("oval", (2, -22, 24, -2), {"fill": "#8c8c98", "outline": "#4a4a54", "width": 1}),
+            ("polygon", [(4, -18), (6, -30), (12, -20)], {"fill": "#8c8c98", "outline": "#4a4a54", "width": 1}),
+            ("polygon", [(14, -20), (20, -30), (22, -18)], {"fill": "#8c8c98", "outline": "#4a4a54", "width": 1}),
+            ("oval", (7, -15, 12, -10), {"fill": "#8fd14f", "outline": ""}),
+            ("oval", (15, -15, 20, -10), {"fill": "#8fd14f", "outline": ""}),
+            ("line", [(9, -15), (9, -10)], {"fill": "#1a1a1a", "width": 1}),
+            ("line", [(17, -15), (17, -10)], {"fill": "#1a1a1a", "width": 1}),
+            ("polygon", [(12, -8), (15, -8), (13, -6)], {"fill": "#e8a0a0", "outline": ""}),
+            ("line", [(2, -7), (-6, -8)], {"fill": "#d0d0d8", "width": 1}),
+            ("line", [(24, -7), (32, -8)], {"fill": "#d0d0d8", "width": 1}),
+            ("oval", (-18, 2, -8, 10), {"fill": "#b4b4c0", "outline": ""}),
+        ],
+    },
+    "comp_fox": {
+        "name": "Ember the Fox", "slot": "companion", "rarity": "epic",
+        "cost_type": "free", "cost": 0, "unlock_req": {"type": "homestead", "value": 3},
+        "emoji": "🦊", "description": "Showed up once the fence was finished. Keeps an eye on the bills.",
+        "draw": [
+            ("polygon", [(-18, 10), (-34, -4), (-40, 12), (-28, 18)], {"fill": "#e76f28", "outline": "#8a3a10", "width": 1, "smooth": True}),
+            ("polygon", [(-34, 2), (-40, 12), (-30, 16)], {"fill": "#fff3e0", "outline": "", "smooth": True}),
+            ("grad_oval", (-22, -6, 10, 16), {"from": "#c4541a", "to": "#f58b3c", "steps": 4, "shrink": 0.6}),
+            ("oval", (0, -22, 24, -2), {"fill": "#f07c2e", "outline": "#8a3a10", "width": 1}),
+            ("polygon", [(2, -18), (2, -32), (10, -20)], {"fill": "#f07c2e", "outline": "#8a3a10", "width": 1}),
+            ("polygon", [(14, -20), (22, -32), (22, -18)], {"fill": "#f07c2e", "outline": "#8a3a10", "width": 1}),
+            ("polygon", [(4, -10), (12, 0), (20, -10), (12, -4)], {"fill": "#fff3e0", "outline": "", "smooth": True}),
+            ("oval", (6, -15, 10, -11), {"fill": "#1a1a1a", "outline": ""}),
+            ("oval", (15, -15, 19, -11), {"fill": "#1a1a1a", "outline": ""}),
+            ("oval", (11, -6, 14, -3), {"fill": "#1a1a1a", "outline": ""}),
+            ("oval", (-6, 4, 8, 14), {"fill": "#fff3e0", "outline": ""}),
+            ("sparkle", (-30, -10), {"r": 3, "fill": "#ffd166", "phase": 4}),
+        ],
+    },
+    "comp_owl": {
+        "name": "Audit the Owl", "slot": "companion", "rarity": "epic",
+        "cost_type": "free", "cost": 0, "unlock_req": {"type": "homestead", "value": 4},
+        "emoji": "🦉", "description": "Reads every statement twice. Approves of the path you've laid.",
+        "draw": [
+            ("grad_oval", (-16, -26, 16, 14), {"from": "#5b3a1e", "to": "#9c6b3c", "steps": 4, "shrink": 0.6}),
+            ("oval", (-10, -8, 10, 12), {"fill": "#d9b98a", "outline": ""}),
+            ("polygon", [(-14, -24), (-18, -36), (-6, -28)], {"fill": "#5b3a1e", "outline": "#2f1d0e", "width": 1}),
+            ("polygon", [(14, -24), (18, -36), (6, -28)], {"fill": "#5b3a1e", "outline": "#2f1d0e", "width": 1}),
+            ("oval", (-13, -22, -1, -10), {"fill": "#fff8e8", "outline": "#2f1d0e", "width": 1}),
+            ("oval", (1, -22, 13, -10), {"fill": "#fff8e8", "outline": "#2f1d0e", "width": 1}),
+            ("oval", (-10, -19, -4, -13), {"fill": "#f4a300", "outline": ""}),
+            ("oval", (4, -19, 10, -13), {"fill": "#f4a300", "outline": ""}),
+            ("oval", (-8, -17, -6, -15), {"fill": "#1a1a1a", "outline": ""}),
+            ("oval", (6, -17, 8, -15), {"fill": "#1a1a1a", "outline": ""}),
+            ("polygon", [(-3, -11), (3, -11), (0, -6)], {"fill": "#f4a300", "outline": "#8a5a00", "width": 1}),
+            ("arc", (-20, -14, -6, 10), {"fill": "#5b3a1e", "outline": "#2f1d0e", "start": 90, "extent": 180, "style": "chord", "width": 1}),
+            ("arc", (6, -14, 20, 10), {"fill": "#5b3a1e", "outline": "#2f1d0e", "start": 270, "extent": 180, "style": "chord", "width": 1}),
+            ("sparkle", (18, -30), {"r": 3, "fill": "#ffffff", "phase": 9}),
+        ],
+    },
+    "comp_dragonet": {
+        "name": "Vault the Dragonet", "slot": "companion", "rarity": "legendary",
+        "cost_type": "free", "cost": 0, "unlock_req": {"type": "homestead", "value": 5},
+        "emoji": "🐉", "description": "Only hatches on a fully thriving Homestead. Guards the hoard. Breathes small, polite flames.",
+        "draw": [
+            ("polygon", [(-20, 0), (-34, -8), (-44, 4), (-30, 10), (-22, 12)], {"fill": "#0f766e", "outline": "#063b37", "width": 1, "smooth": True}),
+            ("polygon", [(-10, -8), (-26, -30), (-2, -14)], {"fill": "#14b8a6", "outline": "#063b37", "width": 1, "smooth": True}),
+            ("polygon", [(2, -10), (16, -32), (12, -12)], {"fill": "#14b8a6", "outline": "#063b37", "width": 1, "smooth": True}),
+            ("grad_oval", (-22, -8, 10, 16), {"from": "#0f766e", "to": "#2dd4bf", "steps": 4, "shrink": 0.6}),
+            ("oval", (-12, 0, 6, 14), {"fill": "#99f6e4", "outline": ""}),
+            ("oval", (2, -24, 26, -4), {"fill": "#14b8a6", "outline": "#063b37", "width": 1}),
+            ("polygon", [(6, -22), (4, -34), (12, -24)], {"fill": "#fde68a", "outline": "#063b37", "width": 1}),
+            ("polygon", [(16, -22), (20, -34), (22, -22)], {"fill": "#fde68a", "outline": "#063b37", "width": 1}),
+            ("oval", (9, -17, 14, -11), {"fill": "#fde68a", "outline": ""}),
+            ("oval", (11, -16, 13, -12), {"fill": "#1a1a1a", "outline": ""}),
+            ("oval", (18, -17, 23, -11), {"fill": "#fde68a", "outline": ""}),
+            ("oval", (20, -16, 22, -12), {"fill": "#1a1a1a", "outline": ""}),
+            ("polygon", [(26, -12), (36, -14), (34, -8)], {"fill": "#f97316", "outline": "", "smooth": True}),
+            ("sparkle", (38, -16), {"r": 4, "fill": "#fde68a", "phase": 2}),
+            ("sparkle", (-40, -14), {"r": 3, "fill": "#99f6e4", "phase": 15}),
+        ],
+    },
+})
+
+# ── Cost guide — typical Queensland / Australian figures ────────────────
+# Used by the "Not sure? Cost guide" buttons on the Setup forms and in the
+# setup wizard, and by Gerald ("how much is rego?"). Figures are 2025-26 /
+# 2026-27 estimates for a typical household; every entry says where to
+# verify. "frequency" uses Bill frequencies; funds/goals carry a mode.
+COST_GUIDE_SOURCE_NOTE = "Typical figures only — check your own bill or the official site before relying on them."
+REGO_ESTIMATES_QLD = {   # 12 months incl. traffic improvement fee + CTP (2026-27)
+    "1–3 cyl": 785, "4 cyl": 871, "5–6 cyl": 1096, "7–8 cyl": 1300, "EV / hybrid": 790,
+}
+COST_GUIDE = [
+    {"id": "rego", "kind": "bill", "name": "Car registration (QLD)", "keywords": ["rego", "registration"],
+     "frequency": "yearly", "priority": "essential", "category": "Transport", "typical": 871, "low": 785, "high": 1400,
+     "calc": "rego", "note": "12 months including CTP, 2026-27: 4-cyl ≈ $871, 6-cyl ≈ $1,096, 8-cyl ≈ $1,300. "
+                             "You can pay 6-monthly (≈ half + a small fee). Verify at qld.gov.au/transport."},
+    {"id": "licence", "kind": "fund", "name": "Driver licence renewal (QLD)", "keywords": ["licence", "license"],
+     "fund_mode": "auto", "typical": 205, "low": 205, "high": 205, "years_ahead": 5,
+     "note": "$205.09 for a 5-year licence (from 1 July 2025). Save toward the expiry date on your card."},
+    {"id": "electricity", "kind": "bill", "name": "Electricity", "keywords": ["electricity", "power", "energy"],
+     "frequency": "quarterly", "priority": "essential", "category": "Utilities", "typical": 518, "low": 350, "high": 750,
+     "note": "QLD average ≈ $518 a quarter (Canstar). Singles ≈ $260, families ≈ $700+. Your last bill is the best guide."},
+    {"id": "gas", "kind": "bill", "name": "Gas", "keywords": ["gas"],
+     "frequency": "quarterly", "priority": "essential", "category": "Utilities", "typical": 180, "low": 100, "high": 320,
+     "note": "Bottled or reticulated gas for hot water/cooking ≈ $120–$320 a quarter."},
+    {"id": "water", "kind": "bill", "name": "Water (Brisbane, owners)", "keywords": ["water", "urban utilities"],
+     "frequency": "quarterly", "priority": "essential", "category": "Utilities", "typical": 373, "low": 250, "high": 500,
+     "note": "≈ $373 a quarter for an average Brisbane household (Urban Utilities). Renters usually pay usage only, ≈ $80–$150."},
+    {"id": "rates", "kind": "bill", "name": "Council rates (owners)", "keywords": ["rates", "council"],
+     "frequency": "quarterly", "priority": "essential", "category": "Housing", "typical": 550, "low": 400, "high": 800,
+     "note": "Brisbane owner-occupier rates ≈ $450–$700 a quarter. Check your last notice."},
+    {"id": "body_corp", "kind": "bill", "name": "Body corporate levies", "keywords": ["body corp", "strata", "levies"],
+     "frequency": "quarterly", "priority": "essential", "category": "Housing", "typical": 1200, "low": 600, "high": 2500,
+     "note": "Units/townhouses: ≈ $600–$2,500 a quarter depending on facilities. Your levy notice has the exact amount."},
+    {"id": "internet", "kind": "bill", "name": "Internet (NBN)", "keywords": ["internet", "nbn", "wifi", "broadband"],
+     "frequency": "monthly", "priority": "important", "category": "Utilities", "typical": 85, "low": 65, "high": 115,
+     "note": "NBN 50 ≈ $75–$90, NBN 100 ≈ $90–$115 a month."},
+    {"id": "mobile", "kind": "bill", "name": "Mobile phone", "keywords": ["mobile", "phone"],
+     "frequency": "monthly", "priority": "important", "category": "Utilities", "typical": 45, "low": 25, "high": 80,
+     "note": "Prepaid/SIM-only ≈ $25–$50; plans with a handset ≈ $60–$100."},
+    {"id": "car_insurance", "kind": "bill", "name": "Car insurance (comprehensive)", "keywords": ["car insurance", "comprehensive"],
+     "frequency": "yearly", "priority": "essential", "category": "Insurance", "typical": 1500, "low": 1100, "high": 2100,
+     "note": "QLD comprehensive ≈ $1,100–$2,000 a year (Canstar/Finder). Third-party property ≈ $300–$500. Monthly payment adds ~10%."},
+    {"id": "health", "kind": "bill", "name": "Health insurance (single)", "keywords": ["health insurance", "medibank", "bupa", "hcf"],
+     "frequency": "monthly", "priority": "important", "category": "Insurance", "typical": 160, "low": 85, "high": 330,
+     "note": "Singles: hospital ≈ $85–$270 a month, extras ≈ $57. Couples/families roughly double."},
+    {"id": "contents", "kind": "bill", "name": "Contents insurance", "keywords": ["contents insurance", "renters insurance"],
+     "frequency": "yearly", "priority": "important", "category": "Insurance", "typical": 450, "low": 300, "high": 700,
+     "note": "Renters' contents cover ≈ $300–$700 a year."},
+    {"id": "home_ins", "kind": "bill", "name": "Home & contents insurance", "keywords": ["home insurance", "house insurance"],
+     "frequency": "yearly", "priority": "essential", "category": "Insurance", "typical": 2200, "low": 1500, "high": 4000,
+     "note": "Owners: ≈ $1,500–$3,500 a year in SEQ; higher in flood/cyclone zones."},
+    {"id": "roadside", "kind": "bill", "name": "Roadside assistance", "keywords": ["roadside", "racq"],
+     "frequency": "yearly", "priority": "optional", "category": "Transport", "typical": 130, "low": 100, "high": 220,
+     "note": "RACQ-style cover ≈ $100–$220 a year by tier."},
+    {"id": "streaming", "kind": "bill", "name": "Streaming (Netflix / Stan / Disney+)", "keywords": ["netflix", "stan", "disney", "streaming", "binge", "kayo"],
+     "frequency": "monthly", "priority": "optional", "category": "Subscription", "typical": 20, "low": 10, "high": 30,
+     "note": "Netflix Standard ≈ $20, Stan ≈ $17, Disney+ ≈ $16, Kayo ≈ $30 a month. Add one bill per service."},
+    {"id": "music", "kind": "bill", "name": "Music (Spotify / Apple)", "keywords": ["spotify", "apple music", "music"],
+     "frequency": "monthly", "priority": "optional", "category": "Subscription", "typical": 14, "low": 7, "high": 25,
+     "note": "Individual ≈ $14, student ≈ $7, family ≈ $25 a month."},
+    {"id": "gym", "kind": "bill", "name": "Gym", "keywords": ["gym", "fitness"],
+     "frequency": "fortnightly", "priority": "optional", "category": "Health", "typical": 35, "low": 20, "high": 60,
+     "note": "Budget chains ≈ $20–$30 a fortnight, full-service ≈ $40–$60."},
+    {"id": "car_service", "kind": "fund", "name": "Car service", "keywords": ["service", "car service", "mechanic"],
+     "fund_mode": "buffer", "typical": 400, "low": 250, "high": 700,
+     "note": "A logbook service ≈ $300–$500 every 6–12 months; keep a buffer topped up so it never stings."},
+    {"id": "tyres", "kind": "fund", "name": "Tyres", "keywords": ["tyres", "tires"],
+     "fund_mode": "auto", "typical": 900, "low": 600, "high": 1500, "years_ahead": 2,
+     "note": "A set of four ≈ $600–$1,400 every 2–3 years. Save toward a date 2 years out."},
+    {"id": "christmas", "kind": "fund", "name": "Christmas & gifts", "keywords": ["christmas", "xmas", "gifts"],
+     "fund_mode": "auto", "typical": 800, "low": 400, "high": 1500, "christmas": True,
+     "note": "Australians spend ≈ $700–$1,500 on Christmas. Target 20 December so it's there before the shops are."},
+    {"id": "holiday", "kind": "fund", "name": "Holiday", "keywords": ["holiday", "vacation", "trip", "travel"],
+     "fund_mode": "auto", "typical": 2500, "low": 1000, "high": 6000, "years_ahead": 1,
+     "note": "Domestic week ≈ $1,500–$3,000; Bali/NZ ≈ $2,500–$4,000 per person. Set the date you want to go."},
+    {"id": "pet", "kind": "fund", "name": "Pet (vet, food, meds)", "keywords": ["pet", "vet", "dog", "cat"],
+     "fund_mode": "buffer", "typical": 600, "low": 300, "high": 1500,
+     "note": "Keep ≈ $600 topped up for vet visits; food and meds are ≈ $100–$200 a month on top."},
+    {"id": "home_repairs", "kind": "fund", "name": "Home repairs", "keywords": ["repairs", "maintenance", "appliance"],
+     "fund_mode": "buffer", "typical": 1000, "low": 500, "high": 3000,
+     "note": "Owners: a hot-water system is ≈ $1,500, a fridge ≈ $1,200. A $1,000 buffer covers most single surprises."},
+    {"id": "emergency", "kind": "goal", "name": "Emergency fund", "keywords": ["emergency", "rainy day", "safety net"],
+     "calc": "emergency", "typical": 5000, "low": 2000, "high": 15000,
+     "note": "Three months of essential bills is the standard target; six if your income is irregular. "
+             "Calculated from the bills you've entered."},
+    {"id": "deposit", "kind": "goal", "name": "House deposit", "keywords": ["deposit", "house", "home loan"],
+     "typical": 60000, "low": 30000, "high": 150000,
+     "note": "5% of the price with the First Home Guarantee, 20% to avoid lenders' mortgage insurance. "
+             "Brisbane median unit ≈ $600k → $30k–$120k."},
+    {"id": "car_replace", "kind": "goal", "name": "Next car", "keywords": ["new car", "next car", "car replacement"],
+     "typical": 15000, "low": 8000, "high": 40000,
+     "note": "A reliable used car ≈ $12k–$20k. Saving beats a car loan at 8–12%."},
+]
+COST_GUIDE_BY_ID = {e["id"]: e for e in COST_GUIDE}
+
+
+def _guide_lookup(lower: str) -> list:
+    """Cost-guide entries whose keywords appear in *lower* (longest keyword first)."""
+    hits = []
+    for e in COST_GUIDE:
+        best = max((len(k) for k in e["keywords"] if re.search(r"\b" + re.escape(k) + r"\b", lower)), default=0)
+        if best:
+            hits.append((best, e))
+    hits.sort(key=lambda h: -h[0])
+    return [e for _, e in hits]
+
+
+def monthly_equivalent(amount: float, frequency: str) -> float:
+    """What a bill costs per month on average, from its billing cadence."""
+    return {
+        "weekly": amount * 52 / 12, "fortnightly": amount * 26 / 12, "monthly": amount,
+        "quarterly": amount / 3, "yearly": amount / 12,
+    }.get(frequency, 0.0)
+
+
 AVATAR_ITEMS_BY_SLOT: Dict[str, list] = {}
 for _aid, _aitem in AVATAR_ITEMS.items():
     AVATAR_ITEMS_BY_SLOT.setdefault(_aitem["slot"], []).append((_aid, _aitem))
@@ -2323,7 +3487,19 @@ def _avatar_anchors(cx: float, cy_head: float, head_r: float = 44.0) -> Dict[str
         "eyes":       (cx, cy_head + head_r * 0.091),         # slightly below head centre
         "hair":       (cx, cy_head - head_r * 0.500),         # above head
         "accessory":  (cx, cy_head),                          # items self-position
+        "companion":  (cx + head_r * 1.55, cy_head + head_r * 1.75),  # perched on the right shoulder
     }
+
+
+def _lerp_color(c1: str, c2: str, t: float) -> str:
+    """Blend two '#rrggbb' colours; t=0 → c1, t=1 → c2."""
+    try:
+        r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+        r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
+    except (ValueError, IndexError):
+        return c1
+    t = max(0.0, min(1.0, t))
+    return "#%02x%02x%02x" % (round(r1 + (r2 - r1) * t), round(g1 + (g2 - g1) * t), round(b1 + (b2 - b1) * t))
 
 
 def _exec_avatar_draw(canvas: "tk.Canvas", cmd: tuple, ax: float, ay: float,
@@ -2344,9 +3520,95 @@ def _exec_avatar_draw(canvas: "tk.Canvas", cmd: tuple, ax: float, ay: float,
     """
     method, coords, kwargs = cmd
 
+    # Tk has no alpha channel and no smoothing on ovals/arcs/rectangles.
+    # A few hand-authored items use "#rrggbbaa" colours or smooth=True on
+    # ovals, which raises TclError and blanks the whole avatar. Sanitise
+    # here so one bad op can never take the figure down.
+    if any(isinstance(v, str) and len(v) == 9 and v.startswith("#") for v in kwargs.values()) \
+            or (method in ("oval", "arc", "rectangle", "rect_abs") and ("smooth" in kwargs or "splinesteps" in kwargs)):
+        kwargs = {k: (v[:7] if isinstance(v, str) and len(v) == 9 and v.startswith("#") else v)
+                  for k, v in kwargs.items()
+                  if not (method in ("oval", "arc", "rectangle", "rect_abs") and k in ("smooth", "splinesteps"))}
+
     if method == "rect_abs":
         x1, y1, x2, y2 = coords
         canvas.create_rectangle(x1 * cw, y1 * ch, x2 * cw, y2 * ch, **kwargs)
+        return
+
+    # ── Shaded primitives (added in the visual overhaul) ────────────
+    # These build soft volume out of several flat Tk shapes so items get
+    # real light/shadow without hand-authoring a dozen layers each.
+    if method == "grad_band":
+        # Vertical gradient over an absolute (0..1) rect — for skies/walls.
+        x1, y1, x2, y2 = coords
+        steps = max(2, int(kwargs.get("steps", 10)))
+        c_from, c_to = kwargs.get("from", "#000000"), kwargs.get("to", "#ffffff")
+        for i in range(steps):
+            t0, t1 = i / steps, (i + 1) / steps
+            yy1 = (y1 + (y2 - y1) * t0) * ch
+            yy2 = (y1 + (y2 - y1) * t1) * ch + 1
+            canvas.create_rectangle(x1 * cw, yy1, x2 * cw, yy2,
+                                    fill=_lerp_color(c_from, c_to, i / max(steps - 1, 1)), outline="")
+        return
+    if method == "grad_oval":
+        # Concentric ovals shrinking toward a light point: outer colour → inner.
+        x1, y1, x2, y2 = coords
+        steps = max(2, int(kwargs.get("steps", 6)))
+        c_from, c_to = kwargs.get("from", "#000000"), kwargs.get("to", "#ffffff")
+        lx, ly = kwargs.get("light", (-0.22, -0.28))
+        shrink = float(kwargs.get("shrink", 0.82))
+        outline = kwargs.get("outline", "")
+        w_half, h_half = (x2 - x1) / 2.0, (y2 - y1) / 2.0
+        cx0, cy0 = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        for i in range(steps):
+            t = i / max(steps - 1, 1)
+            f = 1.0 - t * shrink
+            ox, oy = cx0 + lx * w_half * t, cy0 + ly * h_half * t
+            canvas.create_oval(ax + (ox - w_half * f) * scale, ay + (oy - h_half * f) * scale,
+                               ax + (ox + w_half * f) * scale, ay + (oy + h_half * f) * scale,
+                               fill=_lerp_color(c_from, c_to, t),
+                               outline=outline if i == 0 else "",
+                               width=max(1, int(round(kwargs.get("width", 1) * scale))))
+        return
+    if method == "grad_poly":
+        # Successively inset polygons toward the centroid (offset to the light).
+        pts = coords
+        steps = max(2, int(kwargs.get("steps", 5)))
+        c_from, c_to = kwargs.get("from", "#000000"), kwargs.get("to", "#ffffff")
+        lx, ly = kwargs.get("light", (-0.15, -0.25))
+        shrink = float(kwargs.get("shrink", 0.7))
+        n = max(len(pts), 1)
+        gx = sum(p_[0] for p_ in pts) / n
+        gy = sum(p_[1] for p_ in pts) / n
+        span_x = max(abs(p_[0] - gx) for p_ in pts) or 1.0
+        span_y = max(abs(p_[1] - gy) for p_ in pts) or 1.0
+        smooth = kwargs.get("smooth", True)
+        for i in range(steps):
+            t = i / max(steps - 1, 1)
+            f = 1.0 - t * shrink
+            ox, oy = gx + lx * span_x * t, gy + ly * span_y * t
+            abs_pts = [(ax + (ox + (px - gx) * f) * scale, ay + (oy + (py - gy) * f) * scale) for px, py in pts]
+            canvas.create_polygon(abs_pts, fill=_lerp_color(c_from, c_to, t),
+                                  outline=kwargs.get("outline", "") if i == 0 else "",
+                                  width=max(1, int(round(kwargs.get("width", 1) * scale))),
+                                  smooth=smooth, splinesteps=int(kwargs.get("splinesteps", 10)))
+        return
+    if method == "sparkle":
+        # Four-point star; twinkles (scales) when animated.
+        sx, sy = coords
+        r = float(kwargs.get("r", 4.0))
+        if anim_frame > 0 and anim_level > 0:
+            phase = int(kwargs.get("phase", hash(str(coords)) % 40))
+            r *= 0.55 + 0.45 * abs(math.sin((anim_frame + phase) * 0.16))
+        r *= scale
+        px, py = ax + sx * scale, ay + sy * scale
+        k = 0.28
+        pts = [(px, py - r), (px + r * k, py - r * k), (px + r, py), (px + r * k, py + r * k),
+               (px, py + r), (px - r * k, py + r * k), (px - r, py), (px - r * k, py - r * k)]
+        canvas.create_polygon(pts, fill=kwargs.get("fill", "#ffffff"), outline="", smooth=False)
+        core = max(0.6, r * 0.25)
+        canvas.create_oval(px - core, py - core, px + core, py + core,
+                           fill=kwargs.get("core", "#ffffff"), outline="")
         return
 
     # ── Animation transforms ────────────────────────────────────────
@@ -2405,18 +3667,22 @@ def _exec_avatar_draw(canvas: "tk.Canvas", cmd: tuple, ax: float, ay: float,
 
 
 def draw_avatar(canvas: "tk.Canvas", equipped: dict, w: int = 260, h: int = 340,
-                anim_frame: int = 0):
+                anim_frame: int = 0, mood: str = "neutral"):
     """Render a bust-portrait avatar onto *canvas*.
 
-    When *anim_frame* > 0 rare+ items receive animation effects
-    (floating particles, rotating arcs, pulsing outlines).
+    When *anim_frame* > 0 the figure idles: a slow breathing bob and a
+    blink every few seconds for everyone, plus rare+ item effects
+    (floating particles, rotating arcs, pulsing outlines, twinkling
+    sparkles). *mood* ("neutral", "happy", "proud", "worried") shapes
+    the mouth and brows so the avatar reflects how the finances look.
     """
     canvas.delete("all")
     canvas.configure(width=w, height=h)
 
     cx = w / 2
-    cy_head = h * 0.33
     head_r = min(w, h) * 0.17          # ~44 px at 260×340
+    bob = math.sin(anim_frame * 0.09) * head_r * 0.028 if anim_frame else 0.0
+    cy_head = h * 0.33 + bob
     # Scale factor relative to reference size (260×340, head_r=44.2).
     # Used to scale per-item draw commands and hardcoded face pixels so
     # the figure renders cleanly at any canvas size.
@@ -2448,6 +3714,19 @@ def draw_avatar(canvas: "tk.Canvas", equipped: dict, w: int = 260, h: int = 340,
         al = _al(bg_item)
         for cmd in bg_item["draw"]:
             _exec_avatar_draw(canvas, cmd, bx, by, w, h, anim_frame, al, scale=s)
+    else:
+        # Default stage: soft radial vignette so the bust reads as lit.
+        try:
+            base_bg = canvas.cget("bg")
+        except tk.TclError:
+            base_bg = "#14161c"
+        if not base_bg.startswith("#"):
+            base_bg = "#14161c"
+        for i in range(5):
+            t = i / 4
+            rx, ry = w * (0.62 - 0.1 * i), h * (0.62 - 0.1 * i)
+            canvas.create_oval(cx - rx, cy_head + head_r * 0.6 - ry, cx + rx, cy_head + head_r * 0.6 + ry,
+                               fill=_lerp_color(base_bg, "#232736", t), outline="")
 
     # ── 2. Aura ─────────────────────────────────────────────────────
     aura_id = equipped.get("aura", "")
@@ -2484,6 +3763,15 @@ def draw_avatar(canvas: "tk.Canvas", equipped: dict, w: int = 260, h: int = 340,
             ox + p(52), oy + p(140), ox + p(58), oy + p(14), ox + p(44), oy - p(14),
             fill="#4b5563", outline="",
             smooth=True, splinesteps=12)
+
+    # ── 3b. Back layers (long hair, capes) drawn behind the head ────
+    for slot_key in ("hair", "accessory", "aura"):
+        back_item = AVATAR_ITEMS.get(equipped.get(slot_key, ""))
+        if back_item and back_item.get("draw_back"):
+            bax, bay = anchors[slot_key]
+            al = _al(back_item)
+            for cmd in back_item["draw_back"]:
+                _exec_avatar_draw(canvas, cmd, bax, bay, w, h, anim_frame, al, scale=s)
 
     # ── 4. Base character ───────────────────────────────────────────
     # Dimensions derived from head radius so everything scales together
@@ -2609,18 +3897,36 @@ def draw_avatar(canvas: "tk.Canvas", equipped: dict, w: int = 260, h: int = 340,
                       start=203, extent=52, style="arc",
                       outline=skin_sh, width=1)
 
-    # Eyebrows — soft warm-brown arcs (thin for natural look)
+    # Rim light (top-right) and shadow edge (lower-left) on the head —
+    # a thin lit edge is what makes the flat disc read as a sphere.
+    rim_w = max(1, int(round(2 * s)))
+    canvas.create_arc(cx - head_r + rim_w, cy_head - head_r + rim_w,
+                      cx + head_r - rim_w, cy_head + head_r - rim_w,
+                      start=20, extent=70, style="arc",
+                      outline="#eccfa4", width=rim_w)
+    canvas.create_arc(cx - head_r + rim_w, cy_head - head_r + rim_w,
+                      cx + head_r - rim_w, cy_head + head_r - rim_w,
+                      start=190, extent=70, style="arc",
+                      outline=skin_sh2, width=rim_w)
+
+    # Eyebrows — soft warm-brown arcs; mood tilts them
     brow_w = head_r * 0.30
     brow_y = cy_head - head_r * 0.12
     brow_h = max(2.0, head_r * 0.11)
-    canvas.create_arc(cx - head_r * 0.38 - brow_w, brow_y - brow_h,
-                      cx - head_r * 0.38 + brow_w, brow_y + brow_h,
-                      start=15, extent=150, style="arc",
-                      outline="#a8876a", width=1)
-    canvas.create_arc(cx + head_r * 0.38 - brow_w, brow_y - brow_h,
-                      cx + head_r * 0.38 + brow_w, brow_y + brow_h,
-                      start=15, extent=150, style="arc",
-                      outline="#a8876a", width=1)
+    brow_lift = {"happy": -head_r * 0.03, "proud": -head_r * 0.04,
+                 "worried": head_r * 0.02}.get(mood, 0.0)
+    brow_col = "#9c7a5c" if mood == "worried" else "#a8876a"
+    brow_width = max(1, int(round((2 if mood in ("proud", "worried") else 1) * s)))
+    # Worried: inner ends rise (start angle shifts); proud/happy: gentle arch
+    l_start, r_start = (30, 0) if mood == "worried" else (15, 15)
+    canvas.create_arc(cx - head_r * 0.38 - brow_w, brow_y - brow_h + brow_lift,
+                      cx - head_r * 0.38 + brow_w, brow_y + brow_h + brow_lift,
+                      start=l_start, extent=150, style="arc",
+                      outline=brow_col, width=brow_width)
+    canvas.create_arc(cx + head_r * 0.38 - brow_w, brow_y - brow_h + brow_lift,
+                      cx + head_r * 0.38 + brow_w, brow_y + brow_h + brow_lift,
+                      start=r_start, extent=150, style="arc",
+                      outline=brow_col, width=brow_width)
 
     # Nose — soft bridge line, rounded ball, gentle nostril shadows
     canvas.create_line(cx, cy_head - head_r * 0.02,
@@ -2650,28 +3956,60 @@ def draw_avatar(canvas: "tk.Canvas", equipped: dict, w: int = 260, h: int = 340,
                        cx + nose_ball_w, cy_head + head_r * 0.34,
                        fill=skin_sh, outline="")
 
-    # Mouth — soft natural lip rendering
+    # Mouth — soft natural lip rendering, shaped by mood
     m_w = head_r * 0.34
-    # Upper lip line (warm, subtle)
-    canvas.create_arc(cx - m_w, cy_head + head_r * 0.36,
-                      cx + m_w, cy_head + head_r * 0.6,
-                      start=200, extent=140, style="arc",
-                      outline="#be8a70", width=1)
-    # Cupid's bow
-    canvas.create_line(cx - m_w * 0.35, cy_head + head_r * 0.445,
-                       cx, cy_head + head_r * 0.42,
-                       cx + m_w * 0.35, cy_head + head_r * 0.445,
-                       fill="#be8a70", width=1, smooth=True)
-    # Lower lip — soft warm arc
-    canvas.create_arc(cx - m_w * 0.8, cy_head + head_r * 0.44,
-                      cx + m_w * 0.8, cy_head + head_r * 0.66,
-                      start=20, extent=-140, style="arc",
-                      outline="#cca088", width=1)
-    # Lip highlight — soft center
-    lip_hl_w = max(1.5, head_r * 0.068)
-    canvas.create_oval(cx - lip_hl_w, cy_head + head_r * 0.47,
-                       cx + lip_hl_w, cy_head + head_r * 0.53,
-                       fill=skin_hi, outline="")
+    lip_line = max(1, int(round(1.4 * s)))
+    if mood in ("happy", "proud"):
+        # Open, warm smile with a hint of teeth
+        wide = m_w * (1.15 if mood == "proud" else 1.0)
+        canvas.create_arc(cx - wide, cy_head + head_r * 0.30,
+                          cx + wide, cy_head + head_r * 0.66,
+                          start=200, extent=140, style="chord",
+                          fill="#8c3b3b", outline="#b07a68", width=lip_line)
+        canvas.create_arc(cx - wide * 0.82, cy_head + head_r * 0.36,
+                          cx + wide * 0.82, cy_head + head_r * 0.52,
+                          start=200, extent=140, style="chord",
+                          fill="#fbf6ee", outline="")
+        canvas.create_arc(cx - wide, cy_head + head_r * 0.30,
+                          cx + wide, cy_head + head_r * 0.66,
+                          start=200, extent=140, style="arc",
+                          outline="#b07a68", width=lip_line)
+        # Smile creases
+        for side in (-1, 1):
+            canvas.create_arc(cx + side * wide * 0.9 - head_r * 0.08, cy_head + head_r * 0.34,
+                              cx + side * wide * 0.9 + head_r * 0.08, cy_head + head_r * 0.52,
+                              start=240 if side < 0 else 60, extent=60, style="arc",
+                              outline=skin_sh, width=1)
+    elif mood == "worried":
+        canvas.create_arc(cx - m_w * 0.8, cy_head + head_r * 0.46,
+                          cx + m_w * 0.8, cy_head + head_r * 0.68,
+                          start=20, extent=140, style="arc",
+                          outline="#be8a70", width=lip_line)
+        canvas.create_line(cx - m_w * 0.35, cy_head + head_r * 0.50,
+                           cx, cy_head + head_r * 0.48,
+                           cx + m_w * 0.35, cy_head + head_r * 0.50,
+                           fill="#be8a70", width=1, smooth=True)
+    else:
+        # Upper lip line (warm, subtle)
+        canvas.create_arc(cx - m_w, cy_head + head_r * 0.36,
+                          cx + m_w, cy_head + head_r * 0.6,
+                          start=200, extent=140, style="arc",
+                          outline="#be8a70", width=1)
+        # Cupid's bow
+        canvas.create_line(cx - m_w * 0.35, cy_head + head_r * 0.445,
+                           cx, cy_head + head_r * 0.42,
+                           cx + m_w * 0.35, cy_head + head_r * 0.445,
+                           fill="#be8a70", width=1, smooth=True)
+        # Lower lip — soft warm arc
+        canvas.create_arc(cx - m_w * 0.8, cy_head + head_r * 0.44,
+                          cx + m_w * 0.8, cy_head + head_r * 0.66,
+                          start=20, extent=-140, style="arc",
+                          outline="#cca088", width=1)
+        # Lip highlight — soft center
+        lip_hl_w = max(1.5, head_r * 0.068)
+        canvas.create_oval(cx - lip_hl_w, cy_head + head_r * 0.47,
+                           cx + lip_hl_w, cy_head + head_r * 0.53,
+                           fill=skin_hi, outline="")
 
     # ── 5. Eyes ─────────────────────────────────────────────────────
     eyes_id = equipped.get("eyes", "")
@@ -2734,6 +4072,21 @@ def draw_avatar(canvas: "tk.Canvas", equipped: dict, w: int = 260, h: int = 340,
                               start=200, extent=140, style="arc",
                               outline="#d4c0b0", width=1)
 
+    # ── 5b. Blink — skin-coloured lids drop over the eyes for two
+    # frames every ~4 s. Items that cover the eyes (visors, shades)
+    # opt out with "no_blink".
+    if anim_frame and (anim_frame % 46) in (0, 1) and not (eyes_item and eyes_item.get("no_blink")):
+        ex, ey = anchors["eyes"]
+        lid_w = head_r * 0.24
+        lid_h = head_r * 0.15
+        for side in (-1, 1):
+            ox_e = ex + side * head_r * 0.27
+            canvas.create_oval(ox_e - lid_w, ey - lid_h, ox_e + lid_w, ey + lid_h * 0.7,
+                               fill=skin, outline="")
+            canvas.create_arc(ox_e - lid_w * 0.9, ey - lid_h * 0.6, ox_e + lid_w * 0.9, ey + lid_h * 0.6,
+                              start=200, extent=140, style="arc",
+                              outline="#8a6a52", width=max(1, int(round(1.5 * s))))
+
     # ── 6. Hair ─────────────────────────────────────────────────────
     hair_id = equipped.get("hair", "")
     hair_item = AVATAR_ITEMS.get(hair_id)
@@ -2752,186 +4105,297 @@ def draw_avatar(canvas: "tk.Canvas", equipped: dict, w: int = 260, h: int = 340,
         for cmd in acc_item["draw"]:
             _exec_avatar_draw(canvas, cmd, accx, accy, w, h, anim_frame, al, scale=s)
 
+    # ── 8. Companion (Homestead tier rewards) — on the shoulder ─────
+    comp_item = AVATAR_ITEMS.get(equipped.get("companion", ""))
+    if comp_item and comp_item["draw"]:
+        cpx, cpy = anchors["companion"]
+        if anim_frame:
+            cpy += math.sin(anim_frame * 0.13 + 1.0) * head_r * 0.02   # tiny independent bob
+        al = _al(comp_item)
+        for cmd in comp_item["draw"]:
+            _exec_avatar_draw(canvas, cmd, cpx, cpy, w, h, anim_frame, al, scale=s)
 
-def _draw_gerald(canvas: "tk.Canvas", w: int = 180, h: int = 240, expression: str = "normal"):
-    """Draw Gerald — the tutorial guide character.
 
-    Gerald has exclusive items not available to the player:
-    teal-jade vest, auburn messy spikes, asymmetric wink eyes.
+def _ellipse_pts(cx: float, cy: float, rx: float, ry: float, taper: float = 0.0, n: int = 28):
+    """Points around an ellipse; *taper* narrows the lower half (a jaw)."""
+    pts = []
+    for i in range(n):
+        a = 2 * math.pi * i / n
+        t = max(0.0, math.sin(a))          # 0 on the top half, 1 at the chin
+        pts.append((cx + rx * math.cos(a) * (1 - taper * t * t), cy + ry * math.sin(a)))
+    return pts
 
-    All pixel offsets scale with ``s = min(w, h) / 180`` so the figure
-    renders cleanly at any canvas size (60×80 commentator, 120×150
-    tutorial panel, 180×240 reference).
+
+def _dark_titlebar(win) -> None:
+    """Ask DWM for the dark (immersive) title bar so the frame matches the app.
+    Windows 10 1809+ / 11; silently does nothing elsewhere."""
+    try:
+        win.update_idletasks()
+        hwnd = _ctypes.windll.user32.GetParent(win.winfo_id())
+        val = _ctypes.c_int(1)
+        for attr in (20, 19):   # DWMWA_USE_IMMERSIVE_DARK_MODE, pre-20H1 fallback
+            if _ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, _ctypes.byref(val), _ctypes.sizeof(val)) == 0:
+                break
+    except Exception:
+        pass
+
+
+def _draw_gerald(canvas: "tk.Canvas", w: int = 180, h: int = 240, expression: str = "normal",
+                 blink: bool = False):
+    """Draw Gerald — the app's financially (mostly) responsible mascot.
+
+    Cel-shaded, ink-outlined cartoon: tapered jaw, swept tousled auburn
+    hair with a side part, big almond eyes under heavy brows, a smirk
+    that lives on the right side of his face. Teal waistcoat with notched
+    lapels over a white shirt, brass buttons, staff lanyard, pocket square.
+
+    Expressions: "normal" (smirk), "wink", "happy" (open grin), "thinking"
+    (one brow up, mouth pulled aside), "shocked" (round mouth, wide eyes),
+    "proud" (eyes shut, big grin), "sleepy" (heavy lids). *blink* shuts
+    both eyes for one frame.
+
+    Offsets scale with ``s = min(w, h) / 180`` so it holds together at the
+    44×58 wizard badge, 60×80 commentator, 120×150 chat and 180×240.
     """
     canvas.delete("all")
     canvas.configure(width=w, height=h)
+    if expression not in ("normal", "wink", "happy", "thinking", "shocked", "proud", "sleepy"):
+        expression = "normal"
     cx = w / 2
-    # Head vertical position: keep room for the body underneath at small
-    # canvas sizes so the vest doesn't vanish off the bottom.
     s = min(w, h) / 180.0
-    head_r = min(w, h) * 0.19
-    cy_head = max(head_r + 4 * s, h * 0.32)
+    hr = min(w, h) * 0.2                  # head radius (reference ~36 px)
+    cy = max(hr * 1.25 + 6 * s, h * 0.31)   # head centre y
+    small = s < 0.5
 
-    def p(n: float) -> float:
-        """Scale a reference-size pixel value."""
-        return n * s
+    def lw(n: float) -> int:
+        return max(1, int(round(n * s)))
 
-    skin     = "#d4a574"
-    skin_hi  = "#ddb88a"
-    skin_sh  = "#bf9470"
-    skin_mid = "#d0a078"
+    ink = "#2a1710"
+    skin, skin_sh, skin_hi = "#e8b98a", "#c98f66", "#f6d3ae"
+    blush = "#e49a7c"
+    hair_dk, hair_c, hair_h = "#6b2a12", "#9a3f1c", "#c9682f"
+    teal_dk, teal, teal_h = "#0a5a53", "#12948a", "#35c2b3"
+    ink_teal = "#073b37"
+    rx, ry = hr * 0.98, hr * 1.1
+    jaw_y = cy + ry
 
-    # ── Body — teal-jade vest over white shirt ──────────────────────
-    bx, by = cx, cy_head + p(64)
-    # White undershirt
-    canvas.create_polygon(
-        bx - p(42), by - p(16), bx - p(56), by + p(10), bx - p(48), by + p(120),
-        bx + p(48), by + p(120), bx + p(56), by + p(10), bx + p(42), by - p(16),
-        fill="#e2e8f0", outline="#cbd5e1", width=1,
-        smooth=True, splinesteps=12)
-    # Teal vest — left panel
-    canvas.create_polygon(
-        bx - p(36), by - p(14), bx - p(50), by + p(8), bx - p(44), by + p(110),
-        bx - p(8),  by + p(110), bx - p(8),  by - p(4),
-        fill="#0d9488", outline="#0f766e", width=max(1, int(round(2 * s))),
-        smooth=True, splinesteps=10)
-    # Teal vest — right panel
-    canvas.create_polygon(
-        bx + p(36), by - p(14), bx + p(50), by + p(8), bx + p(44), by + p(110),
-        bx + p(8),  by + p(110), bx + p(8),  by - p(4),
-        fill="#0d9488", outline="#0f766e", width=max(1, int(round(2 * s))),
-        smooth=True, splinesteps=10)
-    # Vest buttons
-    btn_r = max(1.0, p(2))
-    for yb in (by + p(20), by + p(40), by + p(60)):
-        canvas.create_oval(bx - btn_r, yb - btn_r, bx + btn_r, yb + btn_r,
-                           fill="#fbbf24", outline="#d97706")
+    # ── Body ─────────────────────────────────────────────────────────
+    neck_top = cy + ry * 0.82
+    by = cy + ry * 1.22                  # shoulder line
+    bottom = h + 6
+    sh = hr * 1.75                       # half shoulder width
+    # Shoulders / shirt
+    shirt = [(cx - sh * 0.55, by - hr * 0.2), (cx - sh, by + hr * 0.35), (cx - sh * 1.02, bottom),
+             (cx + sh * 1.02, bottom), (cx + sh, by + hr * 0.35), (cx + sh * 0.55, by - hr * 0.2)]
+    canvas.create_polygon(shirt, fill="#f4f6f9", outline=ink, width=lw(2), smooth=True, splinesteps=10)
+    # Waistcoat — two panels, right one in shadow (cel shading)
+    for side, col in ((-1, teal), (1, teal_dk)):
+        pts = [(cx + side * sh * 0.5, by - hr * 0.16), (cx + side * sh * 0.92, by + hr * 0.4),
+               (cx + side * sh * 0.86, bottom), (cx + side * hr * 0.12, bottom),
+               (cx + side * hr * 0.12, by + hr * 0.25)]
+        canvas.create_polygon(pts, fill=col, outline=ink_teal, width=lw(2), smooth=True, splinesteps=8)
+    # Highlight stripe on the lit panel
+    canvas.create_polygon([(cx - sh * 0.62, by + hr * 0.1), (cx - sh * 0.78, by + hr * 0.5),
+                           (cx - sh * 0.72, bottom), (cx - sh * 0.58, bottom)],
+                          fill=teal_h, outline="", smooth=True)
+    # Lapels
+    for side in (-1, 1):
+        canvas.create_polygon([(cx + side * hr * 0.12, by + hr * 0.25), (cx + side * sh * 0.5, by - hr * 0.16),
+                               (cx + side * sh * 0.44, by + hr * 0.9), (cx + side * hr * 0.12, by + hr * 1.25)],
+                              fill="#0f7d72" if side < 0 else "#0a5a53", outline=ink_teal, width=lw(1.5),
+                              smooth=True, splinesteps=6)
+    # Shirt collar wings
+    canvas.create_polygon([(cx - hr * 0.42, neck_top + hr * 0.1), (cx, by + hr * 0.55), (cx - hr * 0.02, neck_top + hr * 0.3)],
+                          fill="#ffffff", outline=ink, width=lw(1.5))
+    canvas.create_polygon([(cx + hr * 0.42, neck_top + hr * 0.1), (cx, by + hr * 0.55), (cx + hr * 0.02, neck_top + hr * 0.3)],
+                          fill="#ffffff", outline=ink, width=lw(1.5))
+    # Buttons
+    for i in range(3):
+        yb = by + hr * (1.2 + i * 0.55)
+        if yb > h - 4 * s:
+            break
+        r = max(1.5, hr * 0.07)
+        canvas.create_oval(cx - r, yb - r, cx + r, yb + r, fill="#e9b949", outline=ink, width=lw(1))
+    # Lanyard + badge
+    if not small:
+        canvas.create_line(cx - hr * 0.2, neck_top + hr * 0.42, cx - hr * 0.5, by + hr * 1.55, fill="#2458d6", width=lw(2.2))
+        canvas.create_line(cx + hr * 0.2, neck_top + hr * 0.42, cx - hr * 0.42, by + hr * 1.55, fill="#3b6ff0", width=lw(2.2))
+        bx1, by1 = cx - hr * 0.78, by + hr * 1.5
+        canvas.create_rectangle(bx1, by1, bx1 + hr * 0.6, by1 + hr * 0.72, fill="#fbfcfe", outline=ink, width=lw(1.5))
+        canvas.create_rectangle(bx1 + hr * 0.06, by1 + hr * 0.08, bx1 + hr * 0.54, by1 + hr * 0.26, fill=teal, outline="")
+        canvas.create_line(bx1 + hr * 0.08, by1 + hr * 0.42, bx1 + hr * 0.5, by1 + hr * 0.42, fill="#9aa3b2", width=lw(1))
+        canvas.create_line(bx1 + hr * 0.08, by1 + hr * 0.56, bx1 + hr * 0.36, by1 + hr * 0.56, fill="#9aa3b2", width=lw(1))
+        # Pocket square
+        canvas.create_polygon([(cx + sh * 0.5, by + hr * 1.05), (cx + sh * 0.82, by + hr * 1.05), (cx + sh * 0.66, by + hr * 0.85)],
+                              fill="#f5b731", outline=ink, width=lw(1))
 
-    # ── Neck ────────────────────────────────────────────────────────
-    nw_top = head_r * 0.34
-    nw_bot = head_r * 0.44
-    neck_top = cy_head + head_r - p(2)
-    neck_bot = neck_top + head_r * 0.45
-    canvas.create_oval(cx - head_r * 0.4, cy_head + head_r * 0.55,
-                       cx + head_r * 0.4, neck_bot + p(2),
-                       fill=skin_sh, outline="")
-    canvas.create_polygon(
-        cx - nw_top, neck_top, cx + nw_top, neck_top,
-        cx + nw_bot, neck_bot, cx - nw_bot, neck_bot,
-        fill=skin, outline="", smooth=True, splinesteps=8)
+    # ── Neck ─────────────────────────────────────────────────────────
+    nw = hr * 0.36
+    canvas.create_polygon([(cx - nw, neck_top - hr * 0.1), (cx + nw, neck_top - hr * 0.1),
+                           (cx + nw * 1.15, neck_top + hr * 0.5), (cx - nw * 1.15, neck_top + hr * 0.5)],
+                          fill=skin_sh, outline=ink, width=lw(2))
 
-    # ── Head ────────────────────────────────────────────────────────
-    canvas.create_oval(cx - head_r, cy_head - head_r,
-                       cx + head_r, cy_head + head_r,
-                       fill=skin, outline=skin_mid, width=1)
-    hl = head_r * 0.5
-    canvas.create_oval(cx - hl - p(3), cy_head - hl - p(4),
-                       cx + hl - p(8), cy_head + hl * 0.25 - p(4),
-                       fill=skin_hi, outline="")
+    # ── Back hair mass ───────────────────────────────────────────────
+    canvas.create_polygon(_ellipse_pts(cx + hr * 0.04, cy - hr * 0.22, rx * 1.2, ry * 1.08, taper=0.0),
+                          fill=hair_dk, outline=ink, width=lw(2), smooth=True, splinesteps=6)
 
-    # ── Nose ────────────────────────────────────────────────────────
-    canvas.create_line(cx, cy_head + head_r * 0.04,
-                       cx, cy_head + head_r * 0.26,
-                       fill=skin_mid, width=1)
-    nose_w = max(1.5, head_r * 0.09)
-    canvas.create_oval(cx - nose_w, cy_head + head_r * 0.2,
-                       cx + nose_w, cy_head + head_r * 0.34,
-                       fill=skin_mid, outline="")
+    # ── Ears ─────────────────────────────────────────────────────────
+    er = hr * 0.17
+    for side in (-1, 1):
+        ex0, ey0 = cx + side * rx * 0.98, cy + hr * 0.08
+        canvas.create_oval(ex0 - er, ey0 - er * 1.15, ex0 + er, ey0 + er * 1.15, fill=skin, outline=ink, width=lw(2))
+        canvas.create_arc(ex0 - er * 0.55, ey0 - er * 0.6, ex0 + er * 0.55, ey0 + er * 0.6,
+                          start=250 if side < 0 else 70, extent=160, style="arc", outline=skin_sh, width=lw(1.5))
 
-    # ── Mouth — cheeky smirk (asymmetric) ──────────────────────────
-    if expression == "wink":
-        canvas.create_arc(cx - head_r * 0.28, cy_head + head_r * 0.34,
-                          cx + head_r * 0.36, cy_head + head_r * 0.66,
-                          start=200, extent=140, style="arc",
-                          outline=skin_sh, width=max(1, int(round(2 * s))))
+    # ── Head (tapered jaw) ───────────────────────────────────────────
+    head = _ellipse_pts(cx, cy, rx, ry, taper=0.26)
+    canvas.create_polygon(head, fill=skin, outline=ink, width=lw(2), smooth=True, splinesteps=8)
+    # Cel shadow: right side of the face + under the fringe
+    shadow = [(cx + rx * 0.28, cy - ry * 0.85), (cx + rx * 0.78, cy - ry * 0.5), (cx + rx * 0.9, cy + ry * 0.1),
+              (cx + rx * 0.66, cy + ry * 0.72), (cx + rx * 0.2, cy + ry * 0.98), (cx + rx * 0.44, cy + ry * 0.55),
+              (cx + rx * 0.6, cy), (cx + rx * 0.5, cy - ry * 0.5)]
+    canvas.create_polygon(shadow, fill=skin_sh, outline="", smooth=True, splinesteps=6)
+    # Forehead highlight
+    canvas.create_oval(cx - rx * 0.62, cy - ry * 0.8, cx - rx * 0.05, cy - ry * 0.3, fill=skin_hi, outline="")
+    # Blush
+    for side in (-1, 1):
+        canvas.create_oval(cx + side * rx * 0.62 - rx * 0.2, cy + ry * 0.22, cx + side * rx * 0.62 + rx * 0.2, cy + ry * 0.42,
+                           fill=blush, outline="")
+    # Freckles (large sizes only)
+    if s >= 0.6:
+        for dx, dy in ((-0.46, 0.3), (-0.36, 0.37), (-0.52, 0.4), (0.42, 0.32), (0.5, 0.4), (0.36, 0.4)):
+            r = max(0.7, hr * 0.02)
+            canvas.create_oval(cx + rx * dx - r, cy + ry * dy - r, cx + rx * dx + r, cy + ry * dy + r, fill="#c2825c", outline="")
+
+    # ── Nose: one confident ink stroke ───────────────────────────────
+    canvas.create_line(cx + hr * 0.04, cy - hr * 0.02, cx + hr * 0.16, cy + hr * 0.3, cx - hr * 0.04, cy + hr * 0.34,
+                       fill="#8a5a3c", width=lw(2), smooth=True)
+
+    # ── Mouth ────────────────────────────────────────────────────────
+    my = cy + ry * 0.6
+    mw = hr * 0.42
+    if expression in ("happy", "proud"):
+        wide = mw * (1.15 if expression == "proud" else 1.0)
+        canvas.create_arc(cx - wide, my - hr * 0.26, cx + wide, my + hr * 0.22, start=195, extent=150,
+                          style="chord", fill="#6e2424", outline=ink, width=lw(2))
+        canvas.create_arc(cx - wide * 0.82, my - hr * 0.18, cx + wide * 0.82, my - hr * 0.0, start=195, extent=150,
+                          style="chord", fill="#fbf7f0", outline="")
+        canvas.create_oval(cx - wide * 0.4, my + hr * 0.02, cx + wide * 0.4, my + hr * 0.2, fill="#c9484f", outline="")
+        canvas.create_arc(cx - wide, my - hr * 0.26, cx + wide, my + hr * 0.22, start=195, extent=150,
+                          style="arc", outline=ink, width=lw(2))
+    elif expression == "shocked":
+        canvas.create_oval(cx - mw * 0.42, my - hr * 0.12, cx + mw * 0.42, my + hr * 0.26, fill="#6e2424", outline=ink, width=lw(2))
+        canvas.create_oval(cx - mw * 0.26, my - hr * 0.08, cx + mw * 0.26, my + hr * 0.02, fill="#fbf7f0", outline="")
+    elif expression == "thinking":
+        canvas.create_line(cx - mw * 0.6, my + hr * 0.04, cx + mw * 0.15, my - hr * 0.02, cx + mw * 0.6, my - hr * 0.16,
+                           fill=ink, width=lw(2.2), smooth=True)
+    elif expression == "sleepy":
+        canvas.create_line(cx - mw * 0.5, my, cx + mw * 0.5, my + hr * 0.03, fill=ink, width=lw(2))
+    elif expression == "wink":
+        canvas.create_line(cx - mw * 0.8, my - hr * 0.04, cx - mw * 0.2, my + hr * 0.1, cx + mw * 0.85, my - hr * 0.12,
+                           fill=ink, width=lw(2.4), smooth=True)
     else:
-        canvas.create_arc(cx - head_r * 0.3, cy_head + head_r * 0.32,
-                          cx + head_r * 0.34, cy_head + head_r * 0.64,
-                          start=205, extent=130, style="arc",
-                          outline=skin_sh, width=1)
+        # The smirk: flat on the left, kicking up on the right
+        canvas.create_line(cx - mw * 0.7, my + hr * 0.02, cx + mw * 0.1, my + hr * 0.06, cx + mw * 0.8, my - hr * 0.12,
+                           fill=ink, width=lw(2.4), smooth=True)
+        canvas.create_line(cx + mw * 0.8, my - hr * 0.12, cx + mw * 0.92, my - hr * 0.02, fill=ink, width=lw(1.6))
+    # Chin crease
+    canvas.create_arc(cx - hr * 0.22, jaw_y - hr * 0.42, cx + hr * 0.22, jaw_y - hr * 0.1, start=200, extent=140,
+                      style="arc", outline=skin_sh, width=lw(1.5))
 
-    # ── Eyes — left normal, right wink ──────────────────────────────
-    lex, ley = cx - head_r * 0.28, cy_head + head_r * 0.02
-    rex, rey = cx + head_r * 0.28, cy_head + head_r * 0.02
+    # ── Eyes ─────────────────────────────────────────────────────────
+    eox, eoy = hr * 0.4, cy - hr * 0.02
+    ew, eh = hr * 0.3, hr * 0.2
+    if expression == "shocked":
+        eh *= 1.3
+    iris_r = hr * 0.13
+    lid_w = lw(2.6)
 
-    # Eye geometry scales with head size, not fixed pixels
-    eye_hw = max(3.0, head_r * 0.21)   # sclera half-width
-    eye_hh = max(2.0, head_r * 0.15)   # sclera half-height
-    iris_r = max(1.5, head_r * 0.09)
-    pup_r  = max(1.0, head_r * 0.05)
-    hl_r   = max(0.8, head_r * 0.04)
+    def _open_eye(ex: float, half: bool = False):
+        almond = [(ex - ew, eoy + eh * 0.1), (ex - ew * 0.5, eoy - eh), (ex + ew * 0.55, eoy - eh * 0.95),
+                  (ex + ew, eoy + eh * 0.15), (ex + ew * 0.45, eoy + eh), (ex - ew * 0.5, eoy + eh * 0.9)]
+        canvas.create_polygon(almond, fill="#fbf8f3", outline="", smooth=True, splinesteps=8)
+        # Iris (3-step gradient) + pupil + highlights
+        for i, (f, col) in enumerate(((1.0, "#4a2512"), (0.8, "#8a4a22"), (0.55, "#b86a33"))):
+            r = iris_r * f
+            canvas.create_oval(ex - r, eoy + eh * 0.05 - r, ex + r, eoy + eh * 0.05 + r, fill=col, outline="")
+        pr = iris_r * 0.42
+        canvas.create_oval(ex - pr, eoy + eh * 0.05 - pr, ex + pr, eoy + eh * 0.05 + pr, fill="#120b07", outline="")
+        canvas.create_oval(ex - iris_r * 0.55, eoy - eh * 0.55, ex - iris_r * 0.05, eoy - eh * 0.1, fill="#ffffff", outline="")
+        canvas.create_oval(ex + iris_r * 0.3, eoy + eh * 0.25, ex + iris_r * 0.55, eoy + eh * 0.5, fill="#ffffff", outline="")
+        # Heavy upper lid line + lower lid hint
+        canvas.create_line(ex - ew, eoy + eh * 0.1, ex - ew * 0.5, eoy - eh, ex + ew * 0.55, eoy - eh * 0.95, ex + ew, eoy + eh * 0.15,
+                           fill=ink, width=lid_w, smooth=True)
+        canvas.create_line(ex - ew * 0.5, eoy + eh * 0.9, ex + ew * 0.45, eoy + eh, ex + ew, eoy + eh * 0.15,
+                           fill="#b98a66", width=lw(1.2), smooth=True)
+        if half:
+            canvas.create_polygon([(ex - ew * 1.05, eoy + eh * 0.1), (ex - ew * 0.5, eoy - eh * 1.1), (ex + ew * 0.6, eoy - eh * 1.05),
+                                   (ex + ew * 1.05, eoy + eh * 0.15), (ex + ew * 0.5, eoy + eh * 0.15), (ex - ew * 0.5, eoy + eh * 0.15)],
+                                  fill=skin, outline="", smooth=True, splinesteps=6)
+            canvas.create_line(ex - ew, eoy + eh * 0.12, ex, eoy + eh * 0.2, ex + ew, eoy + eh * 0.15, fill=ink, width=lid_w, smooth=True)
 
-    def _draw_eye(cx_e: float, cy_e: float):
-        canvas.create_oval(cx_e - eye_hw, cy_e - eye_hh,
-                           cx_e + eye_hw, cy_e + eye_hh,
-                           fill="#f4f0ec", outline=skin_mid, width=1)
-        canvas.create_oval(cx_e - iris_r, cy_e - iris_r,
-                           cx_e + iris_r, cy_e + iris_r,
-                           fill="#6b4226", outline="")
-        canvas.create_oval(cx_e - pup_r, cy_e - pup_r,
-                           cx_e + pup_r, cy_e + pup_r,
-                           fill="#1a1a1a", outline="")
-        canvas.create_oval(cx_e + hl_r * 0.6, cy_e - hl_r * 2,
-                           cx_e + hl_r * 2, cy_e - hl_r * 0.6,
-                           fill="#ffffff", outline="")
+    def _closed_eye(ex: float, happy: bool):
+        if happy:
+            canvas.create_line(ex - ew, eoy + eh * 0.2, ex - ew * 0.3, eoy - eh * 0.9, ex + ew * 0.4, eoy - eh * 0.9, ex + ew, eoy + eh * 0.2,
+                               fill=ink, width=lid_w, smooth=True)
+        else:
+            canvas.create_line(ex - ew, eoy + eh * 0.1, ex, eoy + eh * 0.3, ex + ew, eoy + eh * 0.1, fill=ink, width=lid_w, smooth=True)
+        canvas.create_line(ex + ew * 0.95, eoy + eh * 0.12, ex + ew * 1.2, eoy + eh * 0.5, fill=ink, width=lw(1.5))
 
-    _draw_eye(lex, ley)
-    if expression == "wink":
-        canvas.create_line(rex - eye_hw * 0.86, rey, rex + eye_hw * 0.86, rey,
-                           fill=skin_mid, width=max(1, int(round(2 * s))))
-        # Cheeky uptick
-        canvas.create_line(rex + eye_hw * 0.57, rey,
-                           rex + eye_hw,         rey - eye_hh * 0.6,
-                           fill=skin_mid, width=max(1, int(round(2 * s))))
+    lex, rex = cx - eox, cx + eox
+    if blink:
+        _closed_eye(lex, False); _closed_eye(rex, False)
+    elif expression == "proud":
+        _closed_eye(lex, True); _closed_eye(rex, True)
+    elif expression == "wink":
+        _open_eye(lex); _closed_eye(rex, True)
+    elif expression == "sleepy":
+        _open_eye(lex, half=True); _open_eye(rex, half=True)
     else:
-        _draw_eye(rex, rey)
+        _open_eye(lex); _open_eye(rex)
 
-    # Left eyebrow — raised (soft)
-    brow_hw = max(3.0, head_r * 0.24)
-    brow_hh = max(2.0, head_r * 0.14)
-    canvas.create_arc(lex - brow_hw, ley - brow_hh * 2.0,
-                      lex + brow_hw, ley - brow_hh * 0.6,
-                      start=20, extent=140, style="arc",
-                      outline="#6b4420", width=1)
-    # Right eyebrow — lowered (cheeky, soft)
-    canvas.create_arc(rex - brow_hw, rey - brow_hh * 1.6,
-                      rex + brow_hw, rey - brow_hh * 0.4,
-                      start=20, extent=140, style="arc",
-                      outline="#6b4420", width=1)
+    # ── Eyebrows: filled, tapered, expressive ────────────────────────
+    bw, bh = hr * 0.36, hr * 0.11
+    lifts = {"thinking": (-hr * 0.2, hr * 0.02), "shocked": (-hr * 0.22, -hr * 0.22), "happy": (-hr * 0.1, -hr * 0.1),
+             "proud": (-hr * 0.08, -hr * 0.08), "sleepy": (hr * 0.04, hr * 0.04)}.get(expression, (-hr * 0.12, hr * 0.0))
+    for side, lift in ((-1, lifts[0]), (1, lifts[1])):
+        bx = cx + side * eox
+        byy = eoy - eh * 1.7 + lift
+        inner, outer = bx - side * bw * 0.9, bx + side * bw
+        pts = [(inner, byy + bh * 0.4), (inner + side * bw * 0.4, byy - bh * 0.9), (outer, byy - bh * 0.2), (outer, byy + bh * 0.6)]
+        canvas.create_polygon(pts, fill="#4d2412", outline=ink, width=lw(1), smooth=True, splinesteps=4)
 
-    # ── Hair — messy auburn spikes ──────────────────────────────────
-    hx, hy = cx, cy_head - head_r * 0.48
-    hair_c = "#8b3a1a"
-    hair_h = "#a0441e"
-    # Main hair mass
-    canvas.create_arc(cx - head_r * 1.08, hy - head_r * 0.15,
-                      cx + head_r * 1.08, hy + head_r * 0.75,
-                      fill=hair_c, outline="",
-                      start=0, extent=180, style="pieslice")
-    # Spikes — offsets expressed as head_r ratios so they scale cleanly
-    #   (sx_r, sw_r, sh_r, col) — ratios relative to head_r
-    spike_specs = [
-        (-0.41, 0.20, -0.82, hair_h),
-        (-0.12, 0.18, -1.05, hair_c),
-        ( 0.18, 0.20, -0.88, hair_h),
-        ( 0.47, 0.15, -0.64, hair_c),
-        (-0.64, 0.15, -0.53, hair_c),
+    # ── Hair: swept tousled fringe with a side part ──────────────────
+    top = cy - ry
+    fringe = [
+        (cx - rx * 1.1, cy - ry * 0.05), (cx - rx * 1.0, cy - ry * 0.7), (cx - rx * 0.6, cy - ry * 1.22),
+        (cx - rx * 0.1, cy - ry * 1.4), (cx + rx * 0.5, cy - ry * 1.28), (cx + rx * 0.98, cy - ry * 0.86),
+        (cx + rx * 1.1, cy - ry * 0.25),
+        (cx + rx * 0.82, cy - ry * 0.5), (cx + rx * 0.5, cy - ry * 0.76), (cx + rx * 0.18, cy - ry * 0.58),
+        (cx - rx * 0.12, cy - ry * 0.8), (cx - rx * 0.48, cy - ry * 0.52), (cx - rx * 0.86, cy - ry * 0.28),
     ]
-    for sx_r, sw_r, sh_r, col in spike_specs:
-        sx, sw, sh = head_r * sx_r, head_r * sw_r, head_r * sh_r
-        canvas.create_polygon(
-            hx + sx - sw, hy + p(4), hx + sx, hy + sh,
-            hx + sx + sw, hy + p(4),
-            fill=col, outline="", smooth=True, splinesteps=4)
-    # Side flicks
-    canvas.create_arc(cx - head_r * 1.1, cy_head - head_r * 0.2,
-                      cx - head_r * 0.5, cy_head + head_r * 0.3,
-                      fill=hair_c, outline="",
-                      start=80, extent=100, style="pieslice")
-    canvas.create_arc(cx + head_r * 0.5, cy_head - head_r * 0.2,
-                      cx + head_r * 1.1, cy_head + head_r * 0.3,
-                      fill=hair_c, outline="",
-                      start=0, extent=100, style="pieslice")
+    canvas.create_polygon(fringe, fill=hair_c, outline=ink, width=lw(2), smooth=True, splinesteps=8)
+    # Tufts breaking the silhouette
+    tufts = [((cx - rx * 0.62, top - ry * 0.18), (cx - rx * 0.92, top - ry * 0.62), (cx - rx * 0.3, top - ry * 0.3)),
+             ((cx - rx * 0.1, top - ry * 0.36), (cx - rx * 0.05, top - ry * 0.86), (cx + rx * 0.3, top - ry * 0.28)),
+             ((cx + rx * 0.5, top - ry * 0.26), (cx + rx * 0.9, top - ry * 0.56), (cx + rx * 0.78, top - ry * 0.02))]
+    for a, b, c in tufts:
+        canvas.create_polygon([a, b, c], fill=hair_c, outline=ink, width=lw(2), smooth=True, splinesteps=4)
+    # Highlight band + dark underside
+    canvas.create_polygon([(cx - rx * 0.86, cy - ry * 0.78), (cx - rx * 0.4, cy - ry * 1.16), (cx + rx * 0.2, cy - ry * 1.22),
+                           (cx + rx * 0.62, cy - ry * 1.02), (cx + rx * 0.5, cy - ry * 0.92), (cx + rx * 0.1, cy - ry * 1.06),
+                           (cx - rx * 0.4, cy - ry * 1.0), (cx - rx * 0.78, cy - ry * 0.66)],
+                          fill=hair_h, outline="", smooth=True, splinesteps=6)
+    canvas.create_polygon([(cx + rx * 0.5, cy - ry * 0.76), (cx + rx * 0.82, cy - ry * 0.5), (cx + rx * 1.08, cy - ry * 0.3),
+                           (cx + rx * 1.02, cy - ry * 0.62), (cx + rx * 0.74, cy - ry * 0.74)],
+                          fill=hair_dk, outline="", smooth=True, splinesteps=4)
+    # Side part line
+    canvas.create_line(cx + rx * 0.18, cy - ry * 0.58, cx + rx * 0.42, cy - ry * 1.1, fill=hair_dk, width=lw(1.5), smooth=True)
+    # Sideburns
+    for side in (-1, 1):
+        canvas.create_polygon([(cx + side * rx * 1.0, cy - ry * 0.3), (cx + side * rx * 1.02, cy + ry * 0.22),
+                               (cx + side * rx * 0.86, cy + ry * 0.1), (cx + side * rx * 0.86, cy - ry * 0.2)],
+                              fill=hair_c, outline=ink, width=lw(1.5), smooth=True, splinesteps=4)
 
 
 # Gerald's tutorial dialogue — each step is (title, tab_key_or_None, lines)
@@ -3152,6 +4616,11 @@ class Fund:
     contribution_mode: str = "auto"
     fixed_amount: float = 0.0
     category: str = "Fund"
+    # Savings challenge bookkeeping (empty for ordinary funds)
+    challenge: str = ""
+    challenge_started: Optional[str] = None
+    challenge_claimed: List[int] = field(default_factory=list)
+    challenge_ticks: int = 0
 
     def to_dict(self):
         d = asdict(self)
@@ -3170,6 +4639,10 @@ class Fund:
             data.get("contribution_mode", "auto"),
             float(data.get("fixed_amount", 0.0)),
             data.get("category", "Fund"),
+            str(data.get("challenge", "") or ""),
+            data.get("challenge_started") or None,
+            list(data.get("challenge_claimed", [])),
+            int(data.get("challenge_ticks", 0)),
         )
 
 
@@ -3251,6 +4724,48 @@ class GameStats:
     arcade_daily_date: str = ""      # YYYY-MM-DD — rolls over at calendar day
     arcade_gold_today: int = 0
     arcade_gems_today: int = 0
+    # Homestead (living scene) — tier is derived, claimed tiers award companions
+    homestead_tier: int = 0
+    homestead_claimed_tiers: List[int] = field(default_factory=list)
+    # Daily Vault + engagement hooks
+    vault_last_opened: str = ""        # YYYY-MM-DD
+    vault_visit_streak: int = 0        # consecutive days the vault was opened
+    last_real_action_date: str = ""    # YYYY-MM-DD of the last pay/import/sort — doubles the vault
+    packs_since_epic: int = 0          # pity timer: epic+ guaranteed on the 5th dry pack
+    # Daily Pulse (daily run), no-spend run, weekly challenges, day-one head start
+    pulse_last_date: str = ""
+    pulse_streak: int = 0
+    pulse_best: int = 0
+    pulse_days_total: int = 0
+    pulse_freezes: int = 0
+    pulse_freeze_log: List[str] = field(default_factory=list)
+    pulse_broken_len: int = 0
+    pulse_broken_date: str = ""
+    pulse_progress: dict = field(default_factory=dict)
+    vault_last_tier: str = ""
+    vault_force_tier: str = ""
+    no_spend_streak: int = 0
+    no_spend_best: int = 0
+    no_spend_last: str = ""
+    no_spend_days_total: int = 0
+    weekly_week: str = ""
+    weekly_challenges: List[dict] = field(default_factory=list)
+    weekly_reward_claimed: bool = False
+    day_one_done: bool = False
+    # Phase B: idle accrual, records, milestones, pacts, challenges
+    mill_last_collected: str = ""
+    mill_gold_total: int = 0
+    plot_timers: Dict[str, str] = field(default_factory=dict)
+    pack_fragments: int = 0
+    harvests_total: int = 0
+    records: Dict[str, dict] = field(default_factory=dict)
+    money_milestones: List[str] = field(default_factory=list)
+    active_pact: dict = field(default_factory=dict)
+    pact_history: List[dict] = field(default_factory=list)
+    pacts_won: int = 0
+    pacts_lost: int = 0
+    no_spend_dates: List[str] = field(default_factory=list)
+    nospend_challenge: dict = field(default_factory=dict)
 
     def to_dict(self):
         return asdict(self)
@@ -3297,6 +4812,44 @@ class GameStats:
             arcade_daily_date=str(data.get("arcade_daily_date", "")),
             arcade_gold_today=int(data.get("arcade_gold_today", 0)),
             arcade_gems_today=int(data.get("arcade_gems_today", 0)),
+            homestead_tier=int(data.get("homestead_tier", 0)),
+            homestead_claimed_tiers=list(data.get("homestead_claimed_tiers", [])),
+            vault_last_opened=str(data.get("vault_last_opened", "")),
+            vault_visit_streak=int(data.get("vault_visit_streak", 0)),
+            last_real_action_date=str(data.get("last_real_action_date", "")),
+            packs_since_epic=int(data.get("packs_since_epic", 0)),
+            pulse_last_date=str(data.get("pulse_last_date", "")),
+            pulse_streak=int(data.get("pulse_streak", 0)),
+            pulse_best=int(data.get("pulse_best", 0)),
+            pulse_days_total=int(data.get("pulse_days_total", 0)),
+            pulse_freezes=int(data.get("pulse_freezes", 0)),
+            pulse_freeze_log=list(data.get("pulse_freeze_log", [])),
+            pulse_broken_len=int(data.get("pulse_broken_len", 0)),
+            pulse_broken_date=str(data.get("pulse_broken_date", "")),
+            pulse_progress=dict(data.get("pulse_progress", {}) or {}),
+            vault_last_tier=str(data.get("vault_last_tier", "")),
+            vault_force_tier=str(data.get("vault_force_tier", "")),
+            no_spend_streak=int(data.get("no_spend_streak", 0)),
+            no_spend_best=int(data.get("no_spend_best", 0)),
+            no_spend_last=str(data.get("no_spend_last", "")),
+            no_spend_days_total=int(data.get("no_spend_days_total", 0)),
+            weekly_week=str(data.get("weekly_week", "")),
+            weekly_challenges=list(data.get("weekly_challenges", [])),
+            weekly_reward_claimed=bool(data.get("weekly_reward_claimed", False)),
+            day_one_done=bool(data.get("day_one_done", False)),
+            mill_last_collected=str(data.get("mill_last_collected", "")),
+            mill_gold_total=int(data.get("mill_gold_total", 0)),
+            plot_timers=dict(data.get("plot_timers", {}) or {}),
+            pack_fragments=int(data.get("pack_fragments", 0)),
+            harvests_total=int(data.get("harvests_total", 0)),
+            records=dict(data.get("records", {}) or {}),
+            money_milestones=list(data.get("money_milestones", [])),
+            active_pact=dict(data.get("active_pact", {}) or {}),
+            pact_history=list(data.get("pact_history", [])),
+            pacts_won=int(data.get("pacts_won", 0)),
+            pacts_lost=int(data.get("pacts_lost", 0)),
+            no_spend_dates=list(data.get("no_spend_dates", [])),
+            nospend_challenge=dict(data.get("nospend_challenge", {}) or {}),
         )
 
 
@@ -3344,6 +4897,7 @@ class TransactionRecord:
     needs_review: bool = True
     user_verified: bool = False
     notes: str = ""
+    flagged: bool = False   # user flagged for follow-up (e.g. forgotten subscription)
 
     def amount(self) -> float:
         return self.money_in if self.money_in > 0 else self.money_out
@@ -3373,6 +4927,7 @@ class TransactionRecord:
             bool(data.get("needs_review", True)),
             bool(data.get("user_verified", False)),
             data.get("notes", ""),
+            bool(data.get("flagged", False)),
         )
 
 
@@ -3443,6 +4998,22 @@ class AppState:
     gerald_aliases: Dict[str, str] = field(default_factory=dict)
     # Gerald reminders: [{"id": int, "text": str, "due_date": "YYYY-MM-DD", "created": "YYYY-MM-DD", "dismissed": bool}]
     gerald_reminders: List[Dict] = field(default_factory=list)
+    # Starting position: snapshot balances per transfer account key
+    # ("spending", "bills", "savings", "invest") entered in the setup wizard.
+    account_balances: Dict[str, float] = field(default_factory=dict)
+    starting_position_set: bool = False
+    # "YYYY-MM" of the last month whose end-of-month report was viewed/dismissed
+    last_month_report_seen: str = ""
+    # Investing rules (mode / value / minimum buffer) — persisted so they
+    # survive a restart (they used to live only in memory).
+    investment_rules: Dict = field(default_factory=dict)
+    # Bank statement pages for one-click access: [{name, url, every_days, last_opened}]
+    bank_links: List[Dict] = field(default_factory=list)
+    last_import_date: str = ""   # YYYY-MM-DD of the last statement import (drives 'statement time')
+    # History cutoff: imported rows dated before max(starting_position_date, last logged pay)
+    # are history — kept for Analysis, never allocated. No position and no pays = no cutoff.
+    starting_position_date: str = ""
+    first_launch_date: str = ""
     # Collapsible-section open/closed state, keyed "<tab>.<section>".
     # True = open. Missing key => the section's call-site default.
     # NOTE: must stay the LAST field — from_dict passes args positionally.
@@ -3480,6 +5051,14 @@ class AppState:
             "pending_income_confirmations": list(self.pending_income_confirmations),
             "gerald_aliases": dict(self.gerald_aliases),
             "gerald_reminders": list(self.gerald_reminders),
+            "account_balances": {k: float(v) for k, v in self.account_balances.items()},
+            "starting_position_set": self.starting_position_set,
+            "last_month_report_seen": self.last_month_report_seen,
+            "investment_rules": dict(self.investment_rules),
+            "bank_links": [dict(l) for l in self.bank_links],
+            "last_import_date": self.last_import_date,
+            "starting_position_date": self.starting_position_date,
+            "first_launch_date": self.first_launch_date,
             "ui_prefs": dict(self.ui_prefs),
         }
 
@@ -3549,6 +5128,14 @@ class AppState:
             list(data.get("pending_income_confirmations", [])),
             dict(data.get("gerald_aliases", {})),
             list(data.get("gerald_reminders", [])),
+            {k: float(v) for k, v in (data.get("account_balances") or {}).items()},
+            bool(data.get("starting_position_set", False)),
+            str(data.get("last_month_report_seen", "") or ""),
+            dict(data.get("investment_rules", {}) or {}),
+            [dict(l) for l in (data.get("bank_links") or [])],
+            str(data.get("last_import_date", "") or ""),
+            str(data.get("starting_position_date", "") or ""),
+            str(data.get("first_launch_date", "") or ""),
             dict(data.get("ui_prefs", {}) or {}),
         )
 
@@ -3581,12 +5168,40 @@ class BudgetEngine:
         return round(max(bill.amount - bill.current_saved, 0.0) / self.pays_until(bill.due_date), 2)
 
     def fund_recommended_allocation(self, fund: Fund) -> float:
-        remaining = max(fund.target_amount - fund.current_saved, 0.0)
-        if fund.contribution_mode == "fixed":
-            return min(round(fund.fixed_amount, 2), remaining)
+        """Per-pay contribution for a sinking fund.
+
+        contribution_mode:
+          auto    — save target_amount by target_date (spread over remaining pays)
+          fixed   — fixed_amount each pay; target_amount optional (0 = no end)
+          ongoing — fixed_amount each pay, forever (no target, no date)
+          buffer  — keep current_saved topped up to target_amount; fixed_amount
+                    (if > 0) caps how much one pay puts in
+        """
+        mode = fund.contribution_mode
+        if mode == "ongoing":
+            return round(max(fund.fixed_amount, 0.0), 2)
+        unlimited = fund.target_amount <= 0
+        remaining = float("inf") if unlimited else max(fund.target_amount - fund.current_saved, 0.0)
+        if mode == "fixed":
+            return round(min(max(fund.fixed_amount, 0.0), remaining), 2)
+        if mode == "buffer":
+            gap = 0.0 if unlimited else remaining
+            cap = fund.fixed_amount if fund.fixed_amount > 0 else gap
+            return round(min(gap, cap), 2)
+        if unlimited:
+            return round(max(fund.fixed_amount, 0.0), 2)
         return round(remaining / self.pays_until(fund.target_date), 2)
 
+    @staticmethod
+    def has_end_target(item) -> bool:
+        """False for open-ended funds/goals (no target amount to complete)."""
+        if isinstance(item, Fund) and item.contribution_mode == "ongoing":
+            return False
+        return float(getattr(item, "target_amount", 0.0) or 0.0) > 0
+
     def goal_remaining(self, goal: Goal) -> float:
+        if goal.target_amount <= 0:
+            return float("inf")   # open-ended goal — never "full"
         return max(goal.target_amount - goal.current_saved, 0.0)
 
     def next_due_date(self, due_date: date, frequency: str) -> date:
@@ -3596,6 +5211,13 @@ class BudgetEngine:
             year = due_date.year + (1 if due_date.month == 12 else 0)
             day = min(due_date.day, calendar.monthrange(year, month)[1])
             return due_date.replace(year=year, month=month, day=day)
+        if frequency == "quarterly":
+            import calendar
+            month0 = due_date.month - 1 + 3
+            year = due_date.year + month0 // 12
+            month = month0 % 12 + 1
+            day = min(due_date.day, calendar.monthrange(year, month)[1])
+            return due_date.replace(year=year, month=month, day=day)
         return {
             "weekly": due_date + timedelta(days=7),
             "fortnightly": due_date + timedelta(days=14),
@@ -3603,12 +5225,25 @@ class BudgetEngine:
         }.get(frequency, due_date)
 
     def mark_bill_paid(self, bill: Bill):
+        """Reset what's set aside and move a recurring bill to its next occurrence —
+        always at least one cycle on (paying early counts), then past today."""
         bill.current_saved = 0.0
         if bill.frequency != "one-off":
+            bill.due_date = self.next_due_date(bill.due_date, bill.frequency)
             while bill.due_date <= date.today():
-                bill.due_date = self.next_due_date(bill.due_date, bill.frequency)
+                nxt = self.next_due_date(bill.due_date, bill.frequency)
+                if nxt <= bill.due_date:
+                    break
+                bill.due_date = nxt
 
-    def allocate_pay(self, pay_amount: float, *, apply: bool = False, investment_mode: str = "fixed", investment_value: float = 0.0, minimum_buffer: float = 0.0) -> dict:
+    def allocate_pay(self, pay_amount: float, *, apply: bool = False, investment_mode: str = "fixed", investment_value: float = 0.0, minimum_buffer: float = 0.0, overrides: Optional[dict] = None) -> dict:
+        """Split a pay across bills → funds → goals → investing.
+
+        overrides: optional user edits from the allocation editor, keyed
+        "bill:<idx>", "fund:<idx>", "goal:<idx>" or "invest". An override
+        replaces the calculated recommendation for that line (still capped at
+        what's left of the pay) and suppresses the underfunded warning for it."""
+        overrides = overrides or {}
         remaining = round(pay_amount, 2)
         rb = rf = rg = ri = 0.0
         bill_breakdown: list = []
@@ -3617,35 +5252,49 @@ class BudgetEngine:
         warnings: list[str] = []
         priority_order = {"essential": 0, "important": 1, "optional": 2}
 
+        def _want(key: str, calculated: float) -> float:
+            if key in overrides:
+                try:
+                    return max(float(overrides[key]), 0.0)
+                except (TypeError, ValueError):
+                    return calculated
+            return calculated
+
         for idx, bill in sorted(enumerate(self.state.bills), key=lambda x: (priority_order.get(x[1].priority, 9), x[1].due_date)):
             rec = self.bill_recommended_allocation(bill)
-            actual = round(min(rec, max(remaining, 0.0)), 2)
+            key = f"bill:{idx}"
+            actual = round(min(_want(key, rec), max(remaining, 0.0)), 2)
             rb += actual
             remaining -= actual
             bill_breakdown.append((idx, bill.name, actual, rec))
-            if actual + 0.009 < rec:
+            if key not in overrides and actual + 0.009 < rec:
                 warnings.append(f"Bill underfunded this pay: {bill.name} needs ${rec:.2f}, allocated ${actual:.2f}.")
 
         for idx, fund in sorted(enumerate(self.state.funds), key=lambda x: (priority_order.get(x[1].priority, 9), self.days_until(x[1].target_date))):
             rec = self.fund_recommended_allocation(fund)
-            actual = round(min(rec, max(remaining, 0.0)), 2)
+            key = f"fund:{idx}"
+            actual = round(min(_want(key, rec), max(remaining, 0.0)), 2)
             rf += actual
             remaining -= actual
             fund_breakdown.append((idx, fund.name, actual, rec))
-            if actual + 0.009 < rec:
+            if key not in overrides and actual + 0.009 < rec:
                 warnings.append(f"Fund behind recommended contribution: {fund.name} needs ${rec:.2f}, allocated ${actual:.2f}.")
 
         for idx, goal in sorted(enumerate(self.state.goals), key=lambda x: x[1].priority):
             target = goal.value if goal.mode == "fixed" else max(remaining, 0.0) * (goal.value / 100.0)
-            actual = round(min(target, self.goal_remaining(goal), max(remaining, 0.0)), 2)
+            key = f"goal:{idx}"
+            want = _want(key, target)
+            actual = round(min(want, self.goal_remaining(goal), max(remaining, 0.0)), 2)
             rg += actual
             remaining -= actual
             goal_breakdown.append((idx, goal.name, actual, target))
-            if target > 0 and actual + 0.009 < target:
+            if key not in overrides and target > 0 and actual + 0.009 < target:
                 warnings.append(f"Goal contribution reduced this pay: {goal.name} target was ${target:.2f}, allocated ${actual:.2f}.")
 
         invest_base = max(remaining - minimum_buffer, 0.0)
-        if investment_mode == "percent":
+        if "invest" in overrides:
+            ri = round(min(_want("invest", 0.0), invest_base), 2)
+        elif investment_mode == "percent":
             ri = round(min(invest_base * (investment_value / 100.0), invest_base), 2)
         else:
             ri = round(min(investment_value, invest_base), 2)
@@ -3655,9 +5304,13 @@ class BudgetEngine:
             for idx, _, actual, _ in bill_breakdown:
                 self.state.bills[idx].current_saved = round(min(self.state.bills[idx].amount, self.state.bills[idx].current_saved + actual), 2)
             for idx, _, actual, _ in fund_breakdown:
-                self.state.funds[idx].current_saved = round(min(self.state.funds[idx].target_amount, self.state.funds[idx].current_saved + actual), 2)
+                f = self.state.funds[idx]
+                cap = f.target_amount if (f.target_amount > 0 and f.contribution_mode != "ongoing") else float("inf")
+                f.current_saved = round(min(cap, f.current_saved + actual), 2)
             for idx, _, actual, _ in goal_breakdown:
-                self.state.goals[idx].current_saved = round(min(self.state.goals[idx].target_amount, self.state.goals[idx].current_saved + actual), 2)
+                g = self.state.goals[idx]
+                cap = g.target_amount if g.target_amount > 0 else float("inf")
+                g.current_saved = round(min(cap, g.current_saved + actual), 2)
 
         self.state.last_reserved_total = round(rb, 2)
         self.state.last_fund_total = round(rf, 2)
@@ -3684,7 +5337,10 @@ class BudgetGameEngine:
         self.state = state
 
     def level_from_score(self, score: int) -> int:
-        return max(1, score // 250 + 1)
+        lvl = 1
+        while score >= level_threshold(lvl + 1):
+            lvl += 1
+        return lvl
 
     def _expense_mix_match_bonus(self) -> tuple[int, list[str]]:
         """Bonus for how close last calendar month's spending mix was to a *submitted* target mix.
@@ -3793,22 +5449,28 @@ class BudgetGameEngine:
         return {"tier_name": tier_name, "reward_type": reward_type, "reward_amount": reward_amount}
 
     def generate_daily_challenges(self):
-        """Generate 3 daily challenges if not already done today."""
+        """3 challenges a day, every one doable today. When a pay is expected
+        (±1 day) one slot is swapped for a pay-day challenge."""
         import random
         g = self.state.game
         today_str = date.today().isoformat()
         if g.daily_challenges_date == today_str and len(g.daily_challenges) == 3:
             return
-        picked = random.sample(CHALLENGE_POOL, min(3, len(CHALLENGE_POOL)))
+        picked = random.sample(CHALLENGE_POOL, 3)
+        if self.is_pay_day_window():
+            picked[0] = random.choice(PAYDAY_CHALLENGES)
         g.daily_challenges = [
             {"id": c[0], "description": c[1], "trigger": c[2],
              "reward_type": c[3], "reward_amount": c[4], "completed": False}
             for c in picked
         ]
         g.daily_challenges_date = today_str
+        self.ensure_weekly()
 
     def complete_challenge(self, trigger: str) -> List[dict]:
-        """Mark matching incomplete challenges done and award rewards."""
+        """Mark matching incomplete daily challenges done and award rewards.
+        Also advances the weekly trio (completed ones land in
+        `self.last_weekly_done` so the UI can toast them)."""
         g = self.state.game
         completed = []
         for ch in g.daily_challenges:
@@ -3822,6 +5484,7 @@ class BudgetGameEngine:
                     g.lifetime_gems_earned += ch["reward_amount"]
                 self.add_season_xp(15)
                 completed.append(dict(ch))
+        self.last_weekly_done = self._advance_weekly(trigger)
         return completed
 
     def draw_fortune_card(self) -> dict:
@@ -3901,6 +5564,780 @@ class BudgetGameEngine:
             result[sid] = (owned_count, total, complete, claimed)
         return result
 
+    HOMESTEAD_COMPANIONS = {1: "comp_hen", 2: "comp_cat", 3: "comp_fox", 4: "comp_owl", 5: "comp_dragonet"}
+
+    # ── Daily Pulse + variable Vault ─────────────────────────────────────
+    # The Pulse is the daily unit of real behaviour: (1) yesterday's cash
+    # spending or a no-spend tick, (2) one imported row sorted, (3) open the
+    # vault. Finishing it extends the daily run. Freezes are earned every
+    # 7 days (bank of 2) and absorb missed days; a broken run can be
+    # repaired within 48 h for Gems.
+    VAULT_CHESTS = {
+        # tier: (gold, gems, season_xp, label)
+        "bronze": (6, 0, 10, "Bronze chest"),
+        "silver": (12, 0, 10, "Silver chest"),
+        "gold":   (20, 1, 15, "Gold chest"),
+        "mythic": (40, 3, 40, "Mythic chest"),
+    }
+    PULSE_MILESTONES = (3, 7, 14, 21, 30, 60, 100, 200, 365)
+    PULSE_FREEZE_CAP = 2
+
+    def mark_real_action(self):
+        self.state.game.last_real_action_date = date.today().isoformat()
+
+    @staticmethod
+    def vault_odds(day: int) -> dict:
+        """Chest odds (percent) for run day `day`. Every 7th day guarantees Gold+."""
+        d = max(1, int(day))
+        if d % 7 == 0:
+            return {"bronze": 0, "silver": 0, "gold": 70 if d % 14 else 55, "mythic": 30 if d % 14 else 45}
+        k = min(d, 6) - 1
+        bronze = max(0, 55 - 9 * k)
+        silver = 30 + 5 * k
+        gold = 12 + 3 * k
+        mythic = 3 + k
+        return {"bronze": bronze, "silver": silver, "gold": gold, "mythic": mythic}
+
+    def _pulse_missed_days(self, last: date, today: date) -> int:
+        skip_weekends = bool(self.state.ui_prefs.get("pulse.skip_weekends", False))
+        missed = 0
+        d = last + timedelta(days=1)
+        while d < today:
+            if not (skip_weekends and d.weekday() >= 5):
+                missed += 1
+            d += timedelta(days=1)
+        return missed
+
+    def ensure_pulse(self):
+        """Roll the daily run forward: consume freezes for missed days or break
+        the run (remembering it for a 48 h repair window). Idempotent."""
+        g = self.state.game
+        today = date.today()
+        if not g.pulse_last_date:
+            return
+        try:
+            last = date.fromisoformat(g.pulse_last_date)
+        except ValueError:
+            g.pulse_last_date = ""
+            return
+        if last >= today:
+            return
+        missed = self._pulse_missed_days(last, today)
+        if missed == 0:
+            return
+        if g.pulse_streak > 0 and missed <= g.pulse_freezes:
+            g.pulse_freezes -= missed
+            g.pulse_freeze_log = (g.pulse_freeze_log + [today.isoformat()] * missed)[-20:]
+            g.pulse_last_date = (today - timedelta(days=1)).isoformat()
+            return
+        if g.pulse_streak > 0:
+            g.pulse_broken_len = g.pulse_streak
+            g.pulse_broken_date = today.isoformat()
+        g.pulse_streak = 0
+        g.pulse_last_date = (today - timedelta(days=1)).isoformat()   # don't re-break tomorrow
+
+    def _pulse_progress_today(self) -> dict:
+        g = self.state.game
+        t = date.today().isoformat()
+        if g.pulse_progress.get("date") != t:
+            g.pulse_progress = {"date": t, "spend": False, "sort": False, "no_spend": False, "logged": 0.0, "note": ""}
+        return g.pulse_progress
+
+    def pulse_mark_beat(self, beat: str, **extra):
+        p = self._pulse_progress_today()
+        p[beat] = True
+        for k, v in extra.items():
+            p[k] = v
+
+    def repair_cost(self) -> int:
+        g = self.state.game
+        return int(min(6, 2 + g.pulse_broken_len // 7))
+
+    def pulse_repairable(self) -> Optional[dict]:
+        g = self.state.game
+        if g.pulse_broken_len <= 0 or not g.pulse_broken_date:
+            return None
+        try:
+            broke = date.fromisoformat(g.pulse_broken_date)
+        except ValueError:
+            return None
+        hours_left = 48 - int((datetime.now() - datetime.combine(broke, datetime.min.time())).total_seconds() // 3600)
+        if hours_left <= 0:
+            g.pulse_broken_len = 0
+            g.pulse_broken_date = ""
+            return None
+        return {"length": g.pulse_broken_len, "cost": self.repair_cost(), "hours_left": hours_left}
+
+    def repair_pulse(self) -> tuple:
+        g = self.state.game
+        rep = self.pulse_repairable()
+        if not rep:
+            return False, "Nothing to repair."
+        if g.gems < rep["cost"]:
+            return False, f"Need {rep['cost']} Gems (have {g.gems})."
+        g.gems -= rep["cost"]
+        g.pulse_streak = rep["length"]
+        g.pulse_broken_len = 0
+        g.pulse_broken_date = ""
+        if g.pulse_last_date != date.today().isoformat():
+            g.pulse_last_date = (date.today() - timedelta(days=1)).isoformat()
+        return True, f"Run restored to {g.pulse_streak} days."
+
+    def vault_status(self) -> dict:
+        """Everything the Pulse card needs. `day` is the run day the vault
+        would be (or was) opened on today."""
+        self.ensure_pulse()
+        g = self.state.game
+        t = date.today().isoformat()
+        p = self._pulse_progress_today()
+        opened_today = g.pulse_last_date == t and g.pulse_streak > 0
+        streak = g.pulse_streak
+        day = streak if opened_today else streak + 1
+        odds = self.vault_odds(day)
+        bonus = g.last_real_action_date == t
+        ready = bool(p.get("spend")) and bool(p.get("sort"))
+        return {"opened_today": opened_today, "streak": streak, "day": day, "odds": odds,
+                "bonus": bonus, "ready": ready, "progress": dict(p), "freezes": g.pulse_freezes,
+                "best": g.pulse_best, "last_tier": g.vault_last_tier if opened_today else "",
+                "repair": self.pulse_repairable(), "guaranteed": day % 7 == 0,
+                "gold_with_bonus": self.VAULT_CHESTS["silver"][0] * (2 if bonus else 1)}
+
+    def open_vault(self, force_tier: Optional[str] = None) -> Optional[dict]:
+        """Final Pulse beat. Rolls the chest, extends the run, earns freezes."""
+        import random
+        st = self.vault_status()
+        if st["opened_today"]:
+            return None
+        g = self.state.game
+        today = date.today()
+        tier = force_tier or g.vault_force_tier or random.choices(
+            list(st["odds"].keys()), weights=list(st["odds"].values()), k=1)[0]
+        g.vault_force_tier = ""
+        gold, gems, xp, label = self.VAULT_CHESTS.get(tier, self.VAULT_CHESTS["bronze"])
+        if st["bonus"]:
+            gold *= 2
+        g.pulse_streak = st["streak"] + 1
+        g.pulse_best = max(g.pulse_best, g.pulse_streak)
+        self.update_record("pulse_run", g.pulse_best)
+        g.pulse_days_total += 1
+        g.pulse_last_date = today.isoformat()
+        g.pulse_broken_len = 0
+        g.pulse_broken_date = ""
+        g.vault_last_opened = today.isoformat()
+        g.vault_visit_streak = g.pulse_streak
+        g.vault_last_tier = tier
+        freeze_earned = False
+        if g.pulse_streak % 7 == 0 and g.pulse_freezes < self.PULSE_FREEZE_CAP:
+            g.pulse_freezes += 1
+            freeze_earned = True
+        g.total_score += gold
+        g.level = self.level_from_score(g.total_score)
+        if gems:
+            g.gems += gems
+            g.lifetime_gems_earned += gems
+        self.add_season_xp(xp)
+        completed = self.complete_challenge("pulse")
+        milestone = g.pulse_streak if g.pulse_streak in self.PULSE_MILESTONES else 0
+        return {"tier": tier, "label": label, "gold": gold, "gems": gems, "xp": xp, "day": st["day"],
+                "streak": g.pulse_streak, "bonus": st["bonus"], "freeze_earned": freeze_earned,
+                "milestone": milestone, "completed_challenges": completed}
+
+    def record_no_spend_day(self) -> int:
+        """Yesterday was a no-spend day. Returns the new no-spend run length."""
+        g = self.state.game
+        y = (date.today() - timedelta(days=1)).isoformat()
+        if g.no_spend_last == y:
+            return g.no_spend_streak
+        prev = date.fromisoformat(g.no_spend_last) if g.no_spend_last else None
+        if prev and (date.fromisoformat(y) - prev).days == 1:
+            g.no_spend_streak += 1
+        else:
+            g.no_spend_streak = 1
+        g.no_spend_last = y
+        g.no_spend_best = max(g.no_spend_best, g.no_spend_streak)
+        g.no_spend_days_total += 1
+        g.no_spend_dates = (g.no_spend_dates + [y])[-120:]
+        self.update_record("no_spend_run", g.no_spend_best)
+        self.complete_challenge("no_spend")
+        return g.no_spend_streak
+
+    # ── Weekly challenges ────────────────────────────────────────────────
+    def ensure_weekly(self):
+        g = self.state.game
+        week = date.today().strftime("%G-W%V")
+        if g.weekly_week == week and len(g.weekly_challenges) == len(WEEKLY_CHALLENGES):
+            return
+        g.weekly_week = week
+        g.weekly_reward_claimed = False
+        g.weekly_challenges = [{"id": c[0], "description": c[1], "trigger": c[2], "goal": c[3],
+                                "progress": 0, "completed": False} for c in WEEKLY_CHALLENGES]
+
+    def _advance_weekly(self, trigger: str) -> List[dict]:
+        self.ensure_weekly()
+        done = []
+        for ch in self.state.game.weekly_challenges:
+            if ch["trigger"] == trigger and not ch["completed"]:
+                ch["progress"] = min(ch["goal"], ch["progress"] + 1)
+                if ch["progress"] >= ch["goal"]:
+                    ch["completed"] = True
+                    done.append(dict(ch))
+        return done
+
+    def weekly_all_done(self) -> bool:
+        self.ensure_weekly()
+        return all(ch["completed"] for ch in self.state.game.weekly_challenges)
+
+    def claim_weekly_reward(self) -> Optional[dict]:
+        g = self.state.game
+        if not self.weekly_all_done() or g.weekly_reward_claimed:
+            return None
+        g.weekly_reward_claimed = True
+        return self.open_pack("gem", free=True)
+
+    def is_pay_day_window(self) -> bool:
+        s = self.state
+        if not s.incomes:
+            return False
+        last = max(i.received_on for i in s.incomes)
+        cycle = BudgetEngine.PAY_CYCLE_DAYS.get(s.pay_frequency, 14)
+        return abs(((last + timedelta(days=cycle)) - date.today()).days) <= 1
+
+    # ── Day-one head start ───────────────────────────────────────────────
+    def day_one_head_start(self, *, award_pack: bool = True) -> dict:
+        """Endowed progress for a new profile: Founder card, a free pack,
+        season XP head start, and today's Pulse beats pre-done so the first
+        vault opens with a guaranteed Gold chest. Idempotent."""
+        g = self.state.game
+        if g.day_one_done:
+            return {}
+        g.day_one_done = True
+        out = {"founder": False, "pack": None}
+        if FOUNDER_CARD_ID not in g.cards_owned:
+            g.cards_owned.append(FOUNDER_CARD_ID)
+            out["founder"] = True
+        g.season_xp = max(g.season_xp, 30)
+        self.mark_real_action()
+        self.pulse_mark_beat("spend", note="Setting up your plan counts as today's real work.")
+        self.pulse_mark_beat("sort")
+        if not g.pulse_last_date:
+            g.vault_force_tier = "gold"
+        if award_pack:
+            out["pack"] = self.open_pack("standard", free=True)
+        return out
+
+    # ── Homestead idle accrual (appointment mechanic) ───────────────────
+    # The windmill mills Gold while the app is closed (rate by Homestead
+    # tier, quartered while a bill is overdue, capped at 8 h of production);
+    # a contribution plants a plot that ripens 12 h later into a pack
+    # fragment. Five fragments open a free Standard Pack. All timestamp
+    # based — nothing runs in the background.
+    MILL_CAP_HOURS = 8.0
+    PLOT_RIPEN_HOURS = 12.0
+    FRAGMENTS_PER_PACK = 5
+
+    def mill_rate(self) -> float:
+        g = self.state.game
+        rate = 2.0 + 2.0 * max(0, min(5, g.homestead_tier))
+        today = date.today()
+        if any(b.due_date < today and b.current_saved + 0.01 < b.amount for b in self.state.bills):
+            rate *= 0.25
+        return rate
+
+    def mill_status(self, now: Optional[datetime] = None) -> dict:
+        g = self.state.game
+        now = now or datetime.now()
+        if not g.mill_last_collected:
+            g.mill_last_collected = now.isoformat(timespec="minutes")
+        try:
+            last = datetime.fromisoformat(g.mill_last_collected)
+        except ValueError:
+            last = now
+            g.mill_last_collected = now.isoformat(timespec="minutes")
+        hours = max(0.0, (now - last).total_seconds() / 3600.0)
+        capped = hours >= self.MILL_CAP_HOURS
+        hours = min(hours, self.MILL_CAP_HOURS)
+        rate = self.mill_rate()
+        gold = int(hours * rate)
+        return {"gold": gold, "hours": hours, "capped": capped, "rate": rate, "ready": gold >= 1,
+                "hours_to_cap": max(0.0, self.MILL_CAP_HOURS - hours)}
+
+    def collect_mill(self, now: Optional[datetime] = None) -> int:
+        g = self.state.game
+        now = now or datetime.now()
+        st = self.mill_status(now)
+        if st["gold"] < 1:
+            return 0
+        gold = st["gold"]
+        g.total_score += gold
+        g.level = self.level_from_score(g.total_score)
+        g.mill_last_collected = now.isoformat(timespec="minutes")
+        g.mill_gold_total += gold
+        self.update_record("mill_haul", gold)
+        return gold
+
+    def plant(self, kind: str, name: str, now: Optional[datetime] = None) -> bool:
+        """A contribution plants `kind:name`; returns False if already growing."""
+        g = self.state.game
+        key = f"{kind}:{name}"
+        if key in g.plot_timers:
+            return False
+        now = now or datetime.now()
+        g.plot_timers[key] = (now + timedelta(hours=self.PLOT_RIPEN_HOURS)).isoformat(timespec="minutes")
+        return True
+
+    def plot_status(self, now: Optional[datetime] = None) -> List[dict]:
+        g = self.state.game
+        now = now or datetime.now()
+        live = {f"fund:{f.name}" for f in self.state.funds} | {f"goal:{x.name}" for x in self.state.goals}
+        for key in [k for k in g.plot_timers if k not in live]:
+            del g.plot_timers[key]
+        out = []
+        for key, iso in sorted(g.plot_timers.items()):
+            try:
+                ripe_at = datetime.fromisoformat(iso)
+            except ValueError:
+                ripe_at = now
+            left = (ripe_at - now).total_seconds() / 3600.0
+            kind, _, name = key.partition(":")
+            out.append({"key": key, "kind": kind, "name": name, "ripe": left <= 0, "hours_left": max(0.0, left)})
+        return out
+
+    def harvest(self, key: str, now: Optional[datetime] = None) -> Optional[dict]:
+        g = self.state.game
+        st = next((p for p in self.plot_status(now) if p["key"] == key), None)
+        if not st or not st["ripe"]:
+            return None
+        del g.plot_timers[key]
+        g.pack_fragments += 1
+        g.harvests_total += 1
+        pack = None
+        if g.pack_fragments >= self.FRAGMENTS_PER_PACK:
+            g.pack_fragments -= self.FRAGMENTS_PER_PACK
+            pack = self.open_pack("standard", free=True)
+        return {"name": st["name"], "fragments": g.pack_fragments, "pack": pack}
+
+    def harvest_all(self, now: Optional[datetime] = None) -> dict:
+        names, packs = [], []
+        for p in [p for p in self.plot_status(now) if p["ripe"]]:
+            r = self.harvest(p["key"], now)
+            if r:
+                names.append(r["name"])
+                if r["pack"]:
+                    packs.append(r["pack"])
+        return {"names": names, "packs": packs, "fragments": self.state.game.pack_fragments}
+
+    # ── Personal records + money milestones ──────────────────────────────
+    RECORD_DEFS = {
+        "savings_rate":         ("Best savings rate on a pay",      "{:.0%}"),
+        "biggest_contribution": ("Biggest single contribution",     "${:,.0f}"),
+        "reserved_total":       ("Most set aside at once",          "${:,.0f}"),
+        "pulse_run":            ("Longest Daily Pulse run",         "{} days"),
+        "no_spend_run":         ("Longest no-spend run",            "{} days"),
+        "pay_streak":           ("Longest pay streak",              "{} pays"),
+        "mill_haul":            ("Biggest windmill haul",           "{} Gold"),
+    }
+
+    def update_record(self, key: str, value, when: Optional[date] = None) -> Optional[str]:
+        """Returns 'new' when a previous record was beaten, 'first' when set
+        for the first time, else None."""
+        g = self.state.game
+        if key not in self.RECORD_DEFS or value is None:
+            return None
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        if v <= 0:
+            return None
+        prev = g.records.get(key)
+        when = when or date.today()
+        if prev is None:
+            g.records[key] = {"value": v, "date": when.isoformat()}
+            return "first"
+        if v > float(prev.get("value", 0)) + 1e-9:
+            g.records[key] = {"value": v, "date": when.isoformat(), "prev": float(prev.get("value", 0))}
+            return "new"
+        return None
+
+    def record_text(self, key: str) -> str:
+        label, fmt = self.RECORD_DEFS[key]
+        rec = self.state.game.records.get(key)
+        if not rec:
+            return "—"
+        v = rec["value"]
+        return fmt.format(v if "{:" in fmt and "." in fmt else int(round(v)))
+
+    MONEY_DOLLAR_STEPS = ((100, 10), (500, 25), (1000, 50), (2500, 75), (5000, 100), (10000, 150), (25000, 250))
+    MONEY_PCT_STEPS = ((25, 15), (50, 25), (75, 35), (100, 60))
+
+    def _reserved_total(self) -> float:
+        s = self.state
+        return sum(min(b.current_saved, b.amount) for b in s.bills) + sum(f.current_saved for f in s.funds) + sum(x.current_saved for x in s.goals)
+
+    def check_money_milestones(self, award: bool = True) -> List[dict]:
+        """Award (or, with award=False, silently seed) every dollar / percent
+        milestone the plan has already crossed. Returns the new ones."""
+        g = self.state.game
+        claimed = set(g.money_milestones)
+        new = []
+
+        def hit(key, label, gold):
+            if key in claimed:
+                return
+            claimed.add(key)
+            g.money_milestones.append(key)
+            if award:
+                g.total_score += gold
+                new.append({"key": key, "label": label, "gold": gold})
+
+        for kind, items in (("fund", self.state.funds), ("goal", self.state.goals)):
+            for obj in items:
+                saved = float(obj.current_saved)
+                for step, gold in self.MONEY_DOLLAR_STEPS:
+                    if saved + 0.005 >= step:
+                        hit(f"{kind}:{obj.name}:${step}", f"{obj.name} passed ${step:,}", gold)
+                if BudgetEngine.has_end_target(obj) and obj.target_amount > 0:
+                    pct = saved / obj.target_amount * 100.0
+                    for step, gold in self.MONEY_PCT_STEPS:
+                        if pct + 1e-6 >= step:
+                            hit(f"{kind}:{obj.name}:pct{step}", f"{obj.name} {'is fully funded' if step == 100 else f'is {step}% there'}", gold)
+        total = self._reserved_total()
+        k = int(total // 1000)
+        for n in range(1, k + 1):
+            hit(f"total:{n}000", f"${n:,}k set aside across the plan", 30)
+        if new:
+            g.level = self.level_from_score(g.total_score)
+        new.sort(key=lambda m: -m["gold"])
+        return new
+
+    def final_stretch_bonus(self, pre_ratios: dict) -> int:
+        """+15 Gold for each fund/goal that was ≥80% funded before this pay
+        and received money from it (goal-gradient reward). Cap 45."""
+        g = self.state.game
+        bonus = 0
+        for kind, items in (("fund", self.state.funds), ("goal", self.state.goals)):
+            for obj in items:
+                key = f"{kind}:{obj.name}"
+                pre = pre_ratios.get(key)
+                if pre is None:
+                    continue
+                ratio, saved_before = pre
+                if ratio >= 0.8 and obj.current_saved > saved_before + 0.005:
+                    bonus += 15
+        bonus = min(bonus, 45)
+        if bonus:
+            g.total_score += bonus
+            g.last_score_gain += bonus
+            g.level = self.level_from_score(g.total_score)
+        return bonus
+
+    def pre_pay_ratios(self) -> dict:
+        out = {}
+        for kind, items in (("fund", self.state.funds), ("goal", self.state.goals)):
+            for obj in items:
+                if BudgetEngine.has_end_target(obj) and obj.target_amount > 0:
+                    out[f"{kind}:{obj.name}"] = (obj.current_saved / obj.target_amount, obj.current_saved)
+        return out
+
+    # ── Pacts with Gerald (commitment contracts in Gems) ─────────────────
+    PACT_KINDS = {
+        "reserve": {"title": "Reserve {pct}% of my next pay", "card": "p_oath_reserve", "days": 21},
+        "cap":     {"title": "Keep {cat} under ${cap:,.0f} this week", "card": "p_oath_cap", "days": 7},
+        "fund":    {"title": "Get {name} to ${target:,.0f} by {date}", "card": "p_oath_fund", "days": None},
+        "nospend": {"title": "{n} no-spend days in the next 7", "card": "p_oath_nospend", "days": 7},
+    }
+    PACT_MAX_STAKE = 6
+
+    def pact_title(self, pact: dict) -> str:
+        kind = pact.get("kind", "")
+        p = dict(pact.get("params", {}))
+        spec = self.PACT_KINDS.get(kind)
+        if not spec:
+            return "Pact"
+        if kind == "fund":
+            p["date"] = pact.get("deadline", "")
+            try:
+                p["date"] = date.fromisoformat(pact["deadline"]).strftime("%d %b")
+            except (ValueError, KeyError):
+                pass
+        try:
+            return spec["title"].format(**p)
+        except (KeyError, ValueError):
+            return spec["title"]
+
+    def make_pact(self, kind: str, params: dict, stake: int, today: Optional[date] = None) -> tuple:
+        g = self.state.game
+        today = today or date.today()
+        if g.active_pact:
+            return False, "One pact at a time — settle the current one first."
+        if kind not in self.PACT_KINDS:
+            return False, "Unknown pact."
+        stake = int(stake)
+        if stake < 1 or stake > self.PACT_MAX_STAKE:
+            return False, f"Stake 1 to {self.PACT_MAX_STAKE} Gems."
+        if g.gems < stake:
+            return False, f"You have {g.gems} Gems — stake less."
+        spec = self.PACT_KINDS[kind]
+        if kind == "fund":
+            try:
+                deadline = date.fromisoformat(str(params.get("deadline", "")))
+            except ValueError:
+                return False, "Pick a date for the pact."
+            if deadline <= today:
+                return False, "The date has to be in the future."
+            if not any(f.name == params.get("name") for f in self.state.funds) and not any(x.name == params.get("name") for x in self.state.goals):
+                return False, "Pick a fund or goal."
+        else:
+            days = spec["days"]
+            if kind == "reserve":
+                days = max(7, int(BudgetEngine.PAY_CYCLE_DAYS.get(self.state.pay_frequency, 14) * 1.5))
+            deadline = today + timedelta(days=days)
+        g.gems -= stake
+        g.active_pact = {"kind": kind, "params": dict(params), "stake": stake, "start": today.isoformat(),
+                         "deadline": deadline.isoformat(), "status": "open", "created": datetime.now().isoformat(timespec="minutes")}
+        return True, "Pact made."
+
+    def _pact_spent_in_cap(self, pact: dict) -> float:
+        cat = str(pact["params"].get("cat", "")).lower()
+        start = date.fromisoformat(pact["start"]); end = date.fromisoformat(pact["deadline"])
+        return sum(t.money_out for t in self.state.transactions
+                   if t.money_out > 0 and (t.category or "").lower() == cat and start <= t.tx_date <= end)
+
+    def pact_progress(self, today: Optional[date] = None) -> Optional[dict]:
+        """{'text','pct','done','failed','days_left'} for the active pact."""
+        g = self.state.game
+        pact = g.active_pact
+        if not pact:
+            return None
+        today = today or date.today()
+        deadline = date.fromisoformat(pact["deadline"])
+        days_left = (deadline - today).days
+        kind, p = pact["kind"], pact["params"]
+        done = failed = False
+        if kind == "reserve":
+            ratio = pact.get("result_ratio")
+            if ratio is None:
+                text = f"Waiting for your next pay (by {deadline:%d %b})."
+                pct = 0.0
+                failed = days_left < 0
+            else:
+                pct = min(1.0, ratio / (p["pct"] / 100.0))
+                done = ratio * 100 + 1e-6 >= p["pct"]
+                failed = not done
+                text = f"Reserved {ratio:.0%} of ${pact.get('result_pay', 0):,.0f}."
+        elif kind == "cap":
+            spent = self._pact_spent_in_cap(pact)
+            cap = float(p["cap"])
+            pct = min(1.0, spent / cap) if cap else 1.0
+            text = f"${spent:,.0f} of ${cap:,.0f} spent on {p['cat']}."
+            failed = spent > cap + 0.005
+            done = (not failed) and days_left < 0
+        elif kind == "fund":
+            obj = next((f for f in self.state.funds if f.name == p.get("name")), None) or \
+                  next((x for x in self.state.goals if x.name == p.get("name")), None)
+            saved = float(obj.current_saved) if obj else 0.0
+            target = float(p["target"])
+            pct = min(1.0, saved / target) if target else 1.0
+            text = f"{p.get('name')}: ${saved:,.0f} of ${target:,.0f}."
+            done = saved + 0.005 >= target
+            failed = (not done) and days_left < 0
+        else:  # nospend
+            start = date.fromisoformat(pact["start"])
+            n = sum(1 for d in g.no_spend_dates if start <= date.fromisoformat(d) <= deadline)
+            goal = int(p["n"])
+            pct = min(1.0, n / goal)
+            text = f"{n} of {goal} no-spend days."
+            done = n >= goal
+            failed = (not done) and days_left < 0
+        return {"text": text, "pct": pct, "done": done, "failed": failed, "days_left": days_left,
+                "title": self.pact_title(pact), "stake": pact["stake"]}
+
+    def pact_note_pay(self, pay_amount: float, reserved: float):
+        pact = self.state.game.active_pact
+        if pact and pact.get("kind") == "reserve" and pact.get("result_ratio") is None:
+            pact["result_ratio"] = (reserved / pay_amount) if pay_amount > 0 else 0.0
+            pact["result_pay"] = float(pay_amount)
+
+    def settle_pacts(self, today: Optional[date] = None) -> Optional[dict]:
+        """Resolve the active pact if it is decided. Returns the outcome or None."""
+        g = self.state.game
+        prog = self.pact_progress(today)
+        if not prog or not (prog["done"] or prog["failed"]):
+            return None
+        pact = dict(g.active_pact)
+        won = bool(prog["done"])
+        stake = int(pact["stake"])
+        card_awarded = ""
+        if won:
+            g.gems += stake * 2
+            g.lifetime_gems_earned += stake
+            g.total_score += 50
+            g.level = self.level_from_score(g.total_score)
+            self.add_season_xp(50)
+            g.pacts_won += 1
+            cid = self.PACT_KINDS[pact["kind"]]["card"]
+            if cid not in g.cards_owned:
+                g.cards_owned.append(cid)
+                card_awarded = cid
+        else:
+            g.pacts_lost += 1
+        pact["status"] = "won" if won else "lost"
+        pact["settled"] = (today or date.today()).isoformat()
+        g.pact_history = (g.pact_history + [pact])[-20:]
+        g.active_pact = {}
+        return {"won": won, "stake": stake, "title": self.pact_title(pact), "card": card_awarded, "text": prog["text"]}
+
+    def cancel_pact(self) -> bool:
+        """Call it off: the stake is forfeited (a pact is a pact)."""
+        g = self.state.game
+        if not g.active_pact:
+            return False
+        pact = dict(g.active_pact)
+        pact["status"] = "cancelled"
+        g.pact_history = (g.pact_history + [pact])[-20:]
+        g.pacts_lost += 1
+        g.active_pact = {}
+        return True
+
+    # ── Savings challenges ───────────────────────────────────────────────
+    def challenge_spec(self, cid: str) -> Optional[dict]:
+        return next((c for c in SAVINGS_CHALLENGES if c["id"] == cid), None)
+
+    def challenge_fund(self, cid: str):
+        return next((f for f in self.state.funds if getattr(f, "challenge", "") == cid), None)
+
+    def challenge_active(self, cid: str) -> bool:
+        spec = self.challenge_spec(cid)
+        if not spec:
+            return False
+        if spec["kind"] == "fund":
+            return self.challenge_fund(cid) is not None
+        if spec["kind"] == "nospend":
+            return bool(self.state.game.nospend_challenge.get("started"))
+        if spec["kind"] == "goal":
+            return any(x.name == spec["goal"]["name"] for x in self.state.goals)
+        return False
+
+    def start_challenge(self, cid: str, today: Optional[date] = None) -> tuple:
+        spec = self.challenge_spec(cid)
+        if not spec:
+            return False, "Unknown challenge."
+        if self.challenge_active(cid):
+            return False, "Already running."
+        today = today or date.today()
+        if spec["kind"] == "fund":
+            fs = spec["fund"]
+            td = today + timedelta(days=fs.get("days", 0)) if fs.get("days") else None
+            f = Fund(spec["name"], float(fs.get("target", 0.0)), td, "important", 0.0, fs.get("mode", "fixed"),
+                     float(fs.get("fixed", 0.0)), "Fund")
+            f.challenge = cid
+            f.challenge_started = today.isoformat()
+            self.state.funds.append(f)
+            self.sync_challenge_funds(today)
+        elif spec["kind"] == "goal":
+            gs = spec["goal"]
+            self.state.goals.append(Goal(gs["name"], float(gs.get("target", 0.0)), None, 5, 0.0, gs.get("mode", "percent_surplus"), float(gs.get("value", 10))))
+        else:
+            self.state.game.nospend_challenge = {"started": today.isoformat(), "claimed": []}
+        return True, f"{spec['name']} started."
+
+    def sync_challenge_funds(self, today: Optional[date] = None):
+        """52-week: this pay's amount = the sum of the week numbers that fall in the next cycle."""
+        today = today or date.today()
+        cycle_weeks = max(1, round(BudgetEngine.PAY_CYCLE_DAYS.get(self.state.pay_frequency, 14) / 7))
+        for f in self.state.funds:
+            if getattr(f, "challenge", "") != "52week" or not f.challenge_started:
+                continue
+            start = date.fromisoformat(f.challenge_started)
+            week = min(52, max(1, (today - start).days // 7 + 1))
+            # weeks already covered by what's saved
+            covered = self.challenge_filled("52week", f)
+            nxt = max(week, covered + 1)
+            f.fixed_amount = float(sum(range(nxt, min(52, nxt + cycle_weeks - 1) + 1)))
+
+    def challenge_filled(self, cid: str, obj=None) -> int:
+        """How many grid cells are filled for a challenge."""
+        spec = self.challenge_spec(cid)
+        if not spec:
+            return 0
+        if spec["kind"] == "nospend":
+            ch = self.state.game.nospend_challenge
+            if not ch.get("started"):
+                return 0
+            start = date.fromisoformat(ch["started"]); end = start + timedelta(days=spec["cells"] - 1)
+            return sum(1 for d in self.state.game.no_spend_dates if start <= date.fromisoformat(d) <= end)
+        f = obj or self.challenge_fund(cid)
+        if f is None:
+            return 0
+        if cid == "52week":
+            n = 0
+            while n < 52 and (n + 1) * (n + 2) / 2 <= f.current_saved + 0.005:
+                n += 1
+            return n
+        if cid == "fiver":
+            return min(spec["cells"], int(f.current_saved // 5))
+        if cid == "roundup":
+            return min(spec["cells"], int(getattr(f, "challenge_ticks", 0)))
+        return 0
+
+    def check_challenge_rewards(self) -> List[dict]:
+        """25% → +50 Gold, 50% → +2 Gems, 100% → +5 Gems + the Champion card."""
+        g = self.state.game
+        out = []
+        for spec in SAVINGS_CHALLENGES:
+            if spec["kind"] == "goal" or not self.challenge_active(spec["id"]):
+                continue
+            filled = self.challenge_filled(spec["id"])
+            pct = filled / float(spec["cells"]) * 100.0
+            if spec["kind"] == "nospend":
+                claimed = g.nospend_challenge.setdefault("claimed", [])
+            else:
+                f = self.challenge_fund(spec["id"])
+                claimed = f.challenge_claimed
+            for step in (25, 50, 100):
+                if pct + 1e-6 >= step and step not in claimed:
+                    claimed.append(step)
+                    if step == 25:
+                        g.total_score += 50; reward = "+50 Gold"
+                    elif step == 50:
+                        g.gems += 2; g.lifetime_gems_earned += 2; reward = "+2 Gems"
+                    else:
+                        g.gems += 5; g.lifetime_gems_earned += 5; reward = "+5 Gems"
+                        if CHAMPION_CARD_ID not in g.cards_owned:
+                            g.cards_owned.append(CHAMPION_CARD_ID); reward += " + the Champion card"
+                    out.append({"challenge": spec["name"], "step": step, "reward": reward})
+        if out:
+            g.level = self.level_from_score(g.total_score)
+        return out
+
+    def roundup_for_spend(self, amount: float) -> Optional[tuple]:
+        """If a round-up jar is running, move the change up to the next $5 into it."""
+        f = self.challenge_fund("roundup")
+        if f is None or amount <= 0:
+            return None
+        diff = round(math.ceil(amount / 5.0) * 5.0 - amount, 2)
+        if diff <= 0:
+            return None
+        f.current_saved = round(f.current_saved + diff, 2)
+        f.challenge_ticks = int(getattr(f, "challenge_ticks", 0)) + 1
+        return f, diff
+
+    def check_homestead_tiers(self, tier: int) -> list:
+        """Record the Homestead tier and award any companion not yet claimed.
+        Returns the list of newly awarded item ids."""
+        g = self.state.game
+        g.homestead_tier = max(0, min(5, int(tier)))
+        awarded = []
+        for n in range(1, g.homestead_tier + 1):
+            if n in g.homestead_claimed_tiers:
+                continue
+            iid = self.HOMESTEAD_COMPANIONS.get(n)
+            g.homestead_claimed_tiers.append(n)
+            if iid and iid not in g.character_items_owned:
+                g.character_items_owned.append(iid)
+                awarded.append(iid)
+        return awarded
+
     def buy_avatar_item(self, item_id: str) -> tuple:
         """Buy an avatar cosmetic. Returns (success, message)."""
         g = self.state.game
@@ -3923,12 +6360,14 @@ class BudgetGameEngine:
             if t == "card_set":
                 # Card set items can't be bought — auto-awarded on set completion
                 return False, f"Complete the '{v.replace('set_', '').title()}' card set to unlock."
+            if t == "homestead":
+                return False, f"Reach Homestead Tier {v} — it's awarded automatically."
         ct, cost = item["cost_type"], item["cost"]
         if ct == "gold":
             if g.total_score < cost:
                 return False, f"Need {cost} Gold (have {g.total_score})."
             g.total_score -= cost
-            g.level = max(1, g.total_score // 250 + 1)
+            g.level = self.level_from_score(g.total_score)
         elif ct == "gems":
             if g.gems < cost:
                 return False, f"Need {cost} Gems (have {g.gems})."
@@ -3955,7 +6394,7 @@ class BudgetGameEngine:
         g.character_equipped[slot] = ""
         return True, f"Unequipped {slot}."
 
-    def open_pack(self, pack_type_id: str) -> dict:
+    def open_pack(self, pack_type_id: str, free: bool = False) -> dict:
         """Purchase and open a card pack. Returns {success, message, cards, cost_type, cost}."""
         import random
         g = self.state.game
@@ -3964,12 +6403,14 @@ class BudgetGameEngine:
             return {"success": False, "message": "Unknown pack type.", "cards": []}
         _, name, _, cost_type, cost, card_count, rarity_weights, _ = pack_data
         # Check affordability
-        if cost_type == "gold":
+        if free:
+            pass
+        elif cost_type == "gold":
             if g.total_score < cost:
                 return {"success": False, "message": f"Need {cost} Gold (you have {g.total_score}).", "cards": []}
             g.total_score -= cost
             # Recalc level
-            g.level = max(1, g.total_score // 250 + 1)
+            g.level = self.level_from_score(g.total_score)
         else:  # gems
             if g.gems < cost:
                 return {"success": False, "message": f"Need {cost} Gems (you have {g.gems}).", "cards": []}
@@ -3979,10 +6420,16 @@ class BudgetGameEngine:
         weights = list(rarity_weights.values())
         pool_by_rarity: dict = {}
         for cid, cname, crarity, *_ in CARD_POOL:
+            if cid in EXCLUSIVE_CARD_IDS:
+                continue
             pool_by_rarity.setdefault(crarity, []).append((cid, cname, crarity) + tuple(_))
         drawn = []
-        for _ in range(card_count):
+        # Pity timer: the 5th pack without an Epic+ is guaranteed one.
+        pity_used = g.packs_since_epic >= 4
+        for n_card in range(card_count):
             chosen_rarity = random.choices(rarities, weights=weights, k=1)[0]
+            if pity_used and n_card == 0:
+                chosen_rarity = "legendary" if random.random() < 0.2 else "epic"
             pool = pool_by_rarity.get(chosen_rarity, [])
             if not pool:
                 # fallback to common
@@ -4013,6 +6460,10 @@ class BudgetGameEngine:
                     except Exception:
                         pass
         g.packs_opened += 1
+        if any(c[2] in ("epic", "legendary") for c in drawn):
+            g.packs_since_epic = 0
+        else:
+            g.packs_since_epic += 1
         # Achievement: first pack
         if g.packs_opened == 1 and "Pack Hunter" not in g.achievements:
             g.achievements.append("Pack Hunter")
@@ -4023,7 +6474,7 @@ class BudgetGameEngine:
         set_completions = self.check_card_set_completions()
         return {"success": True, "message": f"Opened {name}!", "cards": drawn,
                 "cost_type": cost_type, "cost": cost,
-                "set_completions": set_completions}
+                "set_completions": set_completions, "pity_used": pity_used}
 
     def recycle_duplicate(self, card_id: str) -> dict:
         """Recycle one duplicate copy of a card for 1 Gem."""
@@ -4139,6 +6590,7 @@ class BudgetGameEngine:
         g.total_score += points
         g.streak_pays = g.streak_pays + 1 if is_good_pay else 0
         g.best_streak = max(g.best_streak, g.streak_pays)
+        self.update_record("pay_streak", g.best_streak)
         g.streak_history.append(is_good_pay)
         if len(g.streak_history) > 30:
             g.streak_history = g.streak_history[-30:]  # keep last 30
@@ -4223,8 +6675,16 @@ class PDFTransactionImporter:
 
         # Fallback — pdfminer.six. More tolerant of broken xref/trailer.
         try:
-            from pdfminer.high_level import extract_text  # type: ignore
+            from pdfminer.high_level import extract_pages  # type: ignore
+            from pdfminer.layout import LAParams, LTTextContainer, LTTextLine  # type: ignore
         except ImportError:
+            if getattr(sys, "frozen", False):
+                raise RuntimeError(
+                    "Couldn't read this PDF with pypdf"
+                    + (f" ({pypdf_err})" if pypdf_err else "")
+                    + ".\n\nThe fallback parser isn't bundled in this build of the "
+                    "app. Update to the latest version and try again."
+                )
             raise RuntimeError(
                 "Couldn't read this PDF with pypdf"
                 + (f" ({pypdf_err})" if pypdf_err else "")
@@ -4233,7 +6693,7 @@ class PDFTransactionImporter:
                 "Then try again."
             )
         try:
-            text = extract_text(str(path)) or ""
+            text = self._pdfminer_rows(path, extract_pages, LAParams, LTTextContainer, LTTextLine)
             if text.strip():
                 return text
             raise RuntimeError("empty text")
@@ -4249,6 +6709,250 @@ class PDFTransactionImporter:
                 "in a PDF viewer and use 'Print to PDF' (Microsoft Print "
                 "to PDF works well) to produce a clean copy."
             )
+
+    @staticmethod
+    def _pdfminer_rows(path: Path, extract_pages, LAParams, LTTextContainer, LTTextLine,
+                       y_tol: float = 3.0) -> str:
+        """Rebuild statement rows from text coordinates.
+
+        pdfminer's plain extract_text emits bank tables column by column (all
+        the dates, then all the descriptions, then all the amounts), which the
+        line parser can't use. Grouping text lines by their vertical position
+        and sorting each group left-to-right gives back one line per row:
+        "12 Sep 2026  WOOLWORTHS 1234  -$45.00  $1,234.56"."""
+        out_lines: List[str] = []
+        for page in extract_pages(str(path), laparams=LAParams(boxes_flow=None)):
+            items = []
+            for el in page:
+                if isinstance(el, LTTextContainer):
+                    for ln in el:
+                        if isinstance(ln, LTTextLine):
+                            s = ln.get_text().strip()
+                            if s:
+                                items.append((ln.y1, ln.x0, s))
+            items.sort(key=lambda t: (-t[0], t[1]))
+            row: List[str] = []
+            row_y = None
+            for y, _x, s in items:
+                if row_y is None or abs(y - row_y) > y_tol:
+                    if row:
+                        out_lines.append(" ".join(row))
+                    row, row_y = [s], y
+                else:
+                    row.append(s)
+            if row:
+                out_lines.append(" ".join(row))
+        return "\n".join(out_lines)
+
+    # ── CSV / OFX statements ─────────────────────────────────────────────
+    # Every Australian bank exports CSV and OFX/QFX from internet banking,
+    # and both parse far more reliably than PDF. Records come out identical
+    # to the PDF path (same fingerprint), so cross-format dedup just works.
+    _CSV_DATE_FORMATS = ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d %b %Y", "%d-%m-%Y", "%d %B %Y",
+                         "%d-%b-%Y", "%d-%b-%y", "%Y/%m/%d", "%Y%m%d", "%d.%m.%Y", "%m/%d/%Y")
+
+    def extract_any(self, path: Path) -> tuple[list[TransactionRecord], list[str]]:
+        """Dispatch on file type: .pdf, .csv, .ofx/.qfx."""
+        ext = path.suffix.lower()
+        if ext == ".pdf":
+            return self.extract_transactions(path)
+        if ext in (".csv", ".txt"):
+            return self.extract_csv(path)
+        if ext in (".ofx", ".qfx"):
+            return self.extract_ofx(path)
+        raise RuntimeError(f"Unsupported file type '{ext}'. Use a PDF, CSV or OFX/QFX export from your bank.")
+
+    @classmethod
+    def _parse_csv_date(cls, raw: str) -> Optional[date]:
+        s = (raw or "").strip().strip('"').strip()
+        if not s:
+            return None
+        if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+            s = s[:10]
+        for fmt in cls._CSV_DATE_FORMATS:
+            try:
+                return datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        toks = s.split()
+        if len(toks) >= 3:
+            try:
+                return datetime.strptime(" ".join(toks[:3]), "%d %b %Y").date()
+            except ValueError:
+                pass
+        return None
+
+    @staticmethod
+    def _parse_csv_money(raw: str) -> Optional[float]:
+        s = (raw or "").strip().strip('"').replace("$", "").replace(",", "").replace(" ", "")
+        if not s or s in ("-", "--", "—"):
+            return None
+        neg = False
+        if s.startswith("(") and s.endswith(")"):
+            neg, s = True, s[1:-1]
+        up = s.upper()
+        if up.endswith("CR"):
+            s = s[:-2]
+        elif up.endswith("DR"):
+            neg, s = True, s[:-2]
+        if s.startswith("+"):
+            s = s[1:]
+        try:
+            v = float(s)
+        except ValueError:
+            return None
+        return -abs(v) if neg else v
+
+    def extract_csv(self, path: Path) -> tuple[list[TransactionRecord], list[str]]:
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+        lines = [ln for ln in raw.splitlines() if ln.strip()]
+        if not lines:
+            return [], ["CSV is empty"]
+        try:
+            dialect = csv.Sniffer().sniff("\n".join(lines[:10]), delimiters=",;\t|")
+        except csv.Error:
+            dialect = csv.excel
+        rows = [r for r in csv.reader(lines, dialect) if any(c.strip() for c in r)]
+        if not rows:
+            return [], ["CSV has no data rows"]
+        qa: List[str] = []
+        header = None
+        first = [c.strip().lower() for c in rows[0]]
+        header_words = ("date", "desc", "amount", "debit", "credit", "balance", "narrat", "detail", "memo", "payee", "transaction")
+        if not any(self._parse_csv_date(c) for c in rows[0]) and any(any(k in c for k in header_words) for c in first):
+            header, rows = first, rows[1:]
+
+        col: Dict[str, Optional[int]] = {}
+        if header:
+            def find(*keys):
+                for i, name in enumerate(header):
+                    if any(re.search(r"\b" + k + r"\b", name) for k in keys):
+                        return i
+                return None
+            col["date"] = find("date", "posted", "when", "time", "settled", "created")
+            if col["date"] is None:
+                # Header had no date-ish name — take the first column that parses as a date
+                for i in range(len(header)):
+                    if sum(1 for r in rows[:10] if i < len(r) and self._parse_csv_date(r[i])) >= max(1, min(len(rows), 10) // 2):
+                        col["date"] = i
+                        break
+            col["desc"] = find("description", "narrative", "details", "memo", "payee", "particulars", "transaction details", "transaction")
+            col["debit"] = find("debit", "withdrawal", "withdrawals", "money out", "out")
+            col["credit"] = find("credit", "deposit", "deposits", "money in", "in")
+            # A generic amount column must not be the debit/credit column
+            # ("Debit Amount" also contains the word "amount").
+            col["amount"] = None
+            for i, name in enumerate(header):
+                if i in (col["debit"], col["credit"]):
+                    continue
+                if re.search(r"\bamount\b", name) or re.search(r"\bvalue\b", name):
+                    col["amount"] = i
+                    break
+            col["balance"] = find("balance")
+            if col["desc"] == col["date"]:
+                col["desc"] = None
+        else:
+            sample = rows[:25]
+            ncols = max(len(r) for r in sample)
+
+            def _is_date(v): return self._parse_csv_date(v) is not None
+            def _is_num(v): return self._parse_csv_money(v) is not None and not _is_date(v)
+            date_scores = [sum(1 for r in sample if i < len(r) and _is_date(r[i])) for i in range(ncols)]
+            num_scores = [sum(1 for r in sample if i < len(r) and _is_num(r[i])) for i in range(ncols)]
+            text_len = [sum(len(r[i]) for r in sample if i < len(r) and not _is_num(r[i]) and not _is_date(r[i])) for i in range(ncols)]
+            col["date"] = max(range(ncols), key=lambda i: date_scores[i]) if max(date_scores) else None
+            col["desc"] = max(range(ncols), key=lambda i: text_len[i]) if max(text_len) else None
+            nums = [i for i in range(ncols) if num_scores[i] >= len(sample) * 0.6 and i not in (col["date"], col["desc"])]
+            col["amount"] = nums[0] if nums else None
+            col["balance"] = nums[-1] if len(nums) >= 2 else None
+            col["debit"] = col["credit"] = None
+        if col.get("date") is None or col.get("desc") is None or all(col.get(k) is None for k in ("amount", "debit", "credit")):
+            return [], [f"Couldn't work out the CSV columns (header: {header or 'none'}). "
+                        "Expected date, description and amount (or debit/credit) columns."]
+
+        out: List[TransactionRecord] = []
+        seen = set()
+        for r in rows:
+            def cell(k):
+                i = col.get(k)
+                return r[i] if i is not None and i < len(r) else ""
+            d = self._parse_csv_date(cell("date"))
+            if d is None:
+                qa.append(f"Skipped row, bad date: {' | '.join(r[:3])[:60]}")
+                continue
+            desc = self.normalize_desc(cell("desc")) or "Unknown Transaction"
+            amount, direction = None, "out"
+            if col.get("debit") is not None or col.get("credit") is not None:
+                dv = self._parse_csv_money(cell("debit"))
+                cv = self._parse_csv_money(cell("credit"))
+                if dv:
+                    amount, direction = abs(dv), "out"
+                elif cv:
+                    amount, direction = abs(cv), "in"
+            if amount is None and col.get("amount") is not None:
+                v = self._parse_csv_money(cell("amount"))
+                if v is not None:
+                    amount, direction = abs(v), ("out" if v < 0 else "in")
+            if not amount:
+                qa.append(f"Skipped row, no amount: {desc[:40]}")
+                continue
+            bal = self._parse_csv_money(cell("balance")) if col.get("balance") is not None else None
+            fp = self.fingerprint(d, desc, amount, direction)
+            if (fp, bal) in seen:
+                continue
+            seen.add((fp, bal))
+            out.append(TransactionRecord(d, desc, money_in=amount if direction == "in" else 0.0,
+                                         money_out=amount if direction == "out" else 0.0, balance=bal,
+                                         source_file=path.name, fingerprint=fp))
+        qa.insert(0, f"Rows detected: {len(rows)}")
+        qa.insert(1, f"Transactions parsed: {len(out)}")
+        if header:
+            qa.insert(2, "Columns: " + ", ".join(f"{k}={header[i]}" for k, i in col.items() if i is not None))
+        return out, qa
+
+    def extract_ofx(self, path: Path) -> tuple[list[TransactionRecord], list[str]]:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        chunks = re.split(r"<STMTTRN>", raw, flags=re.I)[1:]
+        qa: List[str] = []
+        out: List[TransactionRecord] = []
+        seen = set()
+        for ch in chunks:
+            ch = re.split(r"</STMTTRN>", ch, flags=re.I)[0]
+
+            def tag(t):
+                m = re.search(rf"<{t}>([^<\r\n]*)", ch, re.I)
+                return m.group(1).strip() if m else ""
+            dt = tag("DTPOSTED")[:8]
+            try:
+                d = datetime.strptime(dt, "%Y%m%d").date()
+            except ValueError:
+                qa.append(f"Skipped transaction, bad date: {dt!r}")
+                continue
+            try:
+                amt = float(tag("TRNAMT").replace(",", ""))
+            except ValueError:
+                qa.append("Skipped transaction, bad amount")
+                continue
+            if amt == 0:
+                continue
+            name, memo = tag("NAME"), tag("MEMO")
+            desc_raw = name + ((" " + memo) if memo and memo.lower() not in name.lower() else "")
+            desc = self.normalize_desc(desc_raw) or "Unknown Transaction"
+            direction = "out" if amt < 0 else "in"
+            amount = abs(amt)
+            fp = self.fingerprint(d, desc, amount, direction)
+            key = (fp, tag("FITID"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(TransactionRecord(d, desc, money_in=amount if direction == "in" else 0.0,
+                                         money_out=amount if direction == "out" else 0.0, balance=None,
+                                         source_file=path.name, fingerprint=fp))
+        qa.insert(0, f"Rows detected: {len(chunks)}")
+        qa.insert(1, f"Transactions parsed: {len(out)}")
+        if not chunks:
+            qa.append("No <STMTTRN> blocks found — is this an OFX/QFX export?")
+        return out, qa
 
     def parse_amount(self, text: str) -> float:
         return float(text.replace("$", "").replace(",", "").strip())
@@ -4302,9 +7006,13 @@ class PDFTransactionImporter:
             desc = self.normalize_desc(desc) or "Unknown Transaction"
             direction = "out" if amount_text.strip().startswith("-") else "in"
             fp = self.fingerprint(tx_date, desc, amount, direction)
-            if fp in seen:
+            # Within one statement, two identical purchases on the same day
+            # (same merchant, same amount) are real — the running balance
+            # tells them apart. Cross-import dedup still uses the fingerprint.
+            seen_key = (fp, balance)
+            if seen_key in seen:
                 continue
-            seen.add(fp)
+            seen.add(seen_key)
             rec = TransactionRecord(tx_date, desc, money_in=amount if direction == "in" else 0.0, money_out=amount if direction == "out" else 0.0, balance=balance, source_file=path.name, fingerprint=fp)
             out.append(rec)
         qa.insert(0, f"Rows detected: {len(candidates)}")
@@ -4396,6 +7104,10 @@ class TransactionMatcher:
 
     def match(self, tx: TransactionRecord) -> TransactionRecord:
         desc_l = tx.description.lower()
+        # Rules saved by the Sort Unrecognised flow use the merchant key (numbers and
+        # bank noise stripped), so "contains" also checks that normalised form —
+        # "ACME WIDGETS 5555 SYDNEY" still hits a rule for "acme widgets sydney".
+        merchant_l = merchant_group_key(tx.description)
         for rule in self.state.advanced_match_rules:
             if not rule.is_active:
                 continue
@@ -4403,9 +7115,9 @@ class TransactionMatcher:
             matched = False
             if rule.rule_type == "exact" and kw and desc_l == kw:
                 matched = True
-            elif rule.rule_type == "contains" and kw and kw in desc_l:
+            elif rule.rule_type == "contains" and kw and (kw in desc_l or kw in merchant_l):
                 matched = True
-            elif rule.rule_type == "amount_contains" and kw and kw in desc_l and abs(tx.amount() - rule.amount) <= 2.0:
+            elif rule.rule_type == "amount_contains" and kw and (kw in desc_l or kw in merchant_l) and abs(tx.amount() - rule.amount) <= 2.0:
                 matched = True
             if matched:
                 tx.matched_type = rule.matched_type
@@ -4466,6 +7178,99 @@ class TransactionMatcher:
         return tx
 
 
+class HomesteadEngine:
+    """Derives the Homestead scene from real financial state. Stateless —
+    nothing here is tracked separately; the scene is a view of the plan.
+
+    snapshot() returns a dict the renderer and the page both read:
+      time_of_day, weather, house_stage, lit_windows, plots, trees, fence,
+      path_stones, mailbox_flag, windmill_spin, weeds, checks, tier
+    """
+
+    TIER_LABELS = {
+        1: "Hen", 2: "Cat", 3: "Fox", 4: "Owl", 5: "Dragonet",
+    }
+
+    def __init__(self, state: AppState):
+        self.state = state
+
+    @staticmethod
+    def _milestone_stage(amount: float, steps=(100.0, 500.0, 1000.0, 2500.0)) -> int:
+        return sum(1 for m in steps if amount >= m)
+
+    @staticmethod
+    def _target_stage(saved: float, target: float) -> int:
+        if saved <= 0:
+            return 0
+        pct = saved / max(target, 0.01)
+        if pct >= 0.999:
+            return 4
+        return min(3, 1 + int(pct * 3))
+
+    def snapshot(self, now: Optional[datetime] = None) -> dict:
+        s = self.state
+        g = s.game
+        now = now or datetime.now()
+        today = now.date()
+        hour = now.hour
+        time_of_day = "day" if 7 <= hour < 17 else "evening" if 17 <= hour < 20 else "night"
+        streak = g.streak_pays
+        weather = "clear" if streak >= 3 else "cloud" if streak >= 1 else "overcast"
+        lvl = g.level
+        house_stage = 5 if lvl >= 15 else 4 if lvl >= 10 else 3 if lvl >= 6 else 2 if lvl >= 3 else 1
+        overdue = [b for b in s.bills if b.due_date < today and b.current_saved + 0.01 < b.amount]
+
+        plots = []
+        for f in s.funds[:8]:
+            if BudgetEngine.has_end_target(f):
+                stage = self._target_stage(f.current_saved, f.target_amount)
+            else:
+                stage = self._milestone_stage(f.current_saved)
+            plots.append({"name": f.name, "stage": stage, "saved": f.current_saved})
+        trees = []
+        for gl in s.goals[:6]:
+            if BudgetEngine.has_end_target(gl):
+                stage = self._target_stage(gl.current_saved, gl.target_amount)
+            else:
+                stage = self._milestone_stage(gl.current_saved, (1000.0, 2500.0, 5000.0, 10000.0))
+            trees.append({"name": gl.name, "stage": stage, "saved": gl.current_saved})
+        fence = [{"name": b.name, "ok": not (b.due_date < today and b.current_saved + 0.01 < b.amount)}
+                 for b in sorted(s.bills, key=lambda b: b.due_date)[:10]]
+        path_stones = min(12, len({t.source_file for t in s.transactions if t.source_file}))
+        mailbox_flag = any(getattr(t, "flagged", False) for t in s.transactions)
+        cycle = BudgetEngine.PAY_CYCLE_DAYS.get(s.pay_frequency, 14)
+        last_pay = max((i.received_on for i in s.incomes), default=None)
+        weeds = bool(last_pay) and (today - last_pay).days > cycle * 1.5
+        windmill_spin = streak > 0 and not overdue
+        grown = sum(1 for p in plots if p["stage"] >= 3)
+        checks = {
+            "house": (house_stage >= 3, "House is a cottage or better (Level 6+)",
+                      f"Level {lvl} · stage {house_stage}/5"),
+            "plots": (len(plots) >= 2 and grown >= max(1, (len(plots) + 1) // 2),
+                      "At least half your set-asides are well grown (2+ funds)",
+                      f"{grown} of {len(plots)} plots grown"),
+            "fence": (bool(fence) and all(f["ok"] for f in fence),
+                      "Fence complete — no bill overdue",
+                      f"{sum(1 for f in fence if f['ok'])} of {len(fence)} posts standing"),
+            "path": (path_stones >= 6, "Path laid — 6 statements imported",
+                     f"{path_stones} of 6 stones"),
+            "mailbox": (bool(s.transactions) and not mailbox_flag,
+                        "Mailbox flag down — no unresolved follow-ups",
+                        "flag up" if mailbox_flag else ("flag down" if s.transactions else "no mail yet")),
+        }
+        tier = sum(1 for ok, _, _ in checks.values() if ok)
+        mill_ready = False
+        try:
+            mill_ready = BudgetGameEngine(s).mill_status(now)["gold"] >= 5
+        except Exception:
+            pass
+        return {
+            "time_of_day": time_of_day, "weather": weather, "house_stage": house_stage,
+            "lit_windows": not overdue, "plots": plots, "trees": trees, "fence": fence,
+            "path_stones": path_stones, "mailbox_flag": mailbox_flag, "windmill_spin": windmill_spin,
+            "weeds": weeds, "checks": checks, "tier": tier, "streak": streak, "level": lvl, "mill_ready": mill_ready,
+        }
+
 # -----------------------------
 # Gerald — Conversational Setup Assistant (rule-based)
 # -----------------------------
@@ -4475,6 +7280,7 @@ _GERALD_FREQ_PATTERNS = [
     (r"\b(fortnightly|bi[- ]?weekly|every (?:two|2) weeks?|every fortnight|fortnight)\b", "fortnightly"),
     (r"\b(weekly|per week|each week|every week|a week)\b", "weekly"),
     (r"\b(monthly|per month|each month|every month|a month)\b", "monthly"),
+    (r"\b(quarterly|per quarter|each quarter|every quarter|every (?:three|3) months)\b", "quarterly"),
     (r"\b(yearly|annually|per year|each year|every year|a year|annual)\b", "yearly"),
 ]
 
@@ -5079,11 +7885,24 @@ class GeraldAssistant:
         if intent == "claim_tier":    return self._handle_claim_tier(text)
         if intent == "prestige":      return self._handle_prestige(text)
         if intent == "import":        return self._handle_import()
+        if intent == "cost_guide":    return self._handle_cost_guide(text)
+        if intent == "invest_help":   return self._handle_invest_help()
+        if intent == "pact":          return self._handle_pact(text)
+        if intent == "open_bank":     return self._handle_open_bank(text)
         return self._handle_unknown(text)
 
     # ── Intent classification ────────────────────────────────────────────
 
     def _classify_intent(self, lower: str) -> str:
+        # Cost guide / investing helper — "how much is rego?", "how much should I invest?"
+        if re.search(r"\bhow much\b", lower) and re.search(r"\b(invest|investing|investment|put away|put aside)\b", lower):
+            return "invest_help"
+        if re.search(r"\b(pact|wager|i bet|bet you|stake .* gems?|shake on it)\b", lower):
+            return "pact"
+        if re.search(r"\b(open|go to|take me to|launch)\b", lower) and re.search(r"\b(bank|netbank|commbank|nab|anz|westpac|ing|macquarie|statements?)\b", lower):
+            return "open_bank"
+        if re.search(r"\b(how much|what does|what do|cost of|typical|average)\b", lower) and _guide_lookup(lower):
+            return "cost_guide"
         # Tutor / glossary — "what is X" / "explain X" — must come first so it beats
         # keyword-matched intents like prestige on "what is prestige".
         if re.match(r"^\s*(explain|define|teach me about|tell me about)\s+\S+", lower):
@@ -6241,6 +9060,11 @@ class GeraldAssistant:
             new_saved = cap
             capped = True
         item.current_saved = round(new_saved, 2)
+        try:
+            self.app._fire_trigger("contribute")
+            self.app._after_money_change([(tk, item, amount)])
+        except Exception:
+            pass
         self.undo_stack.append({"kind": "contrib", "target_kind": tk, "index": idx, "prev_saved": prev_saved,
                                  "label": f"+${amount:,.0f} → {tk} \"{item.name}\""})
         toast = f"+${amount:,.2f} → {item.name}"
@@ -7718,6 +10542,57 @@ class GeraldAssistant:
 
     # ── Smarter unknown (did-you-mean) ───────────────────────────────────
 
+    def _handle_cost_guide(self, text: str):
+        """Answer 'how much is rego?' from the cost guide, with a way to use it."""
+        hits = _guide_lookup(text.lower())
+        if not hits:
+            return ("I don't have a typical figure for that yet. Open Setup and tap 'Not sure? Cost guide' to browse what I do know.", "thinking")
+        e = hits[0]
+        amt = self.app._guide_amount_for(e) if hasattr(self.app, "_guide_amount_for") else e["typical"]
+        if e["kind"] == "bill":
+            how = f"≈ ${amt:,.0f} {e.get('frequency', '')} (typically ${e.get('low', 0):,.0f}–${e.get('high', 0):,.0f})"
+            tip = f"Say \"add bill {e['name'].split(' (')[0]} ${amt:,.0f} {e.get('frequency', 'monthly')}\" and I'll set it up."
+        elif e["kind"] == "fund":
+            how = f"≈ ${amt:,.0f} to set aside (typically ${e.get('low', 0):,.0f}–${e.get('high', 0):,.0f})"
+            tip = "Open Setup → Funds → 'Not sure? Cost guide' to drop it straight into the form."
+        else:
+            how = f"≈ ${amt:,.0f} target"
+            tip = "Open Setup → Goals → 'Not sure? Cost guide' to drop it straight into the form."
+        return (f"{e['name']}: {how}. {e['note']} {tip}", "normal")
+
+    def _handle_open_bank(self, text: str):
+        app = self.app
+        links = app.state.bank_links
+        if not links:
+            app.after(150, app._show_bank_links_editor)
+            return ("No bank link saved yet — pick your bank and I'll keep the address for one-click access.", "thinking")
+        lower = text.lower()
+        idx = next((i for i, l in enumerate(links) if l.get("name", "").split()[0].lower() in lower), 0)
+        app.after(150, lambda i=idx: app._open_bank_link(i))
+        return (f"Opening {links[idx].get('name', 'your bank')}. Download the statement and I'll offer to import it from Downloads.", "wink")
+
+    def _handle_pact(self, text: str):
+        """'make a pact' / 'bet you I can…' → open the pact maker."""
+        app = self.app
+        g = app.state.game
+        if g.active_pact:
+            prog = app.game_engine.pact_progress()
+            return (f"We already shook on one: \"{prog['title']}\" — {prog['text']} {prog['days_left']} day(s) left. Finish that first.", "thinking")
+        if g.gems < 1:
+            return ("A pact needs a stake and you're out of Gems. The Daily Pulse, streaks and weekly challenges all pay them.", "normal")
+        try:
+            app.after(150, app._show_pact_maker)
+        except Exception:
+            pass
+        return ("Now we're talking. Pick the promise and the stake — keep it and I pay double.", "wink")
+
+    def _handle_invest_help(self):
+        try:
+            self.app._show_invest_helper()
+            return ("Depends on your buffer, debt and horizon — I've opened the four-question helper. Answer those and I'll suggest a percentage of surplus.", "wink")
+        except Exception:
+            return ("Rule of thumb: build one month of bills in a buffer first, clear any debt above ~7%, then 10–20% of each pay's surplus into investing. Setup → Investments → 'Help me choose'.", "normal")
+
     def _handle_unknown(self, text: str):
         lower = text.lower()
         # Density-based guesser
@@ -8036,8 +10911,14 @@ class BudgetApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(self.APP_TITLE)
-        self.geometry("1520x920")
-        self.minsize(1280, 820)
+        # Fit the default window to the screen (a 1366×768 laptop can't show
+        # 920px tall) and allow a smaller minimum so overlays can adapt.
+        try:
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        except tk.TclError:
+            sw, sh = 1520, 920
+        self.geometry(f"{min(1520, max(1100, sw - 40))}x{min(920, max(640, sh - 90))}")
+        self.minsize(1100, 640)
         self._apply_window_icon()
         self.updater = AppUpdater(self)
 
@@ -8046,12 +10927,21 @@ class BudgetApp(tk.Tk):
         self.game_engine = BudgetGameEngine(self.state)
         self.importer = PDFTransactionImporter()
         self.matcher = TransactionMatcher(self.state)
+        self.homestead = HomesteadEngine(self.state)
         self.last_allocation = None
         self.last_game_result = None
         self.latest_import: List[TransactionRecord] = []
         self.latest_import_qa: List[str] = []
         self.transaction_insights: dict = {"recurring": [], "unusual": [], "new_merchants": []}
         self.rule_settings = {"investment_mode": "fixed", "investment_value": 0.0, "minimum_buffer": 0.0}
+        try:
+            saved_rules = dict(getattr(self.state, "investment_rules", {}) or {})
+            if saved_rules.get("investment_mode") in ("fixed", "percent"):
+                self.rule_settings["investment_mode"] = saved_rules["investment_mode"]
+            self.rule_settings["investment_value"] = float(saved_rules.get("investment_value", 0.0) or 0.0)
+            self.rule_settings["minimum_buffer"] = float(saved_rules.get("minimum_buffer", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pass
         self._target_drag_boundary_idx: Optional[int] = None
         self._scroll_canvases: list = []
         self._scroll_canvas_page: dict = {}  # canvas → page key (for wheel routing)
@@ -8062,17 +10952,19 @@ class BudgetApp(tk.Tk):
         self.current_page_key = "today"
         self.nav_compact_labels = {
             "income": "Log Pay",
-            "transactions": "Txns",
+            "transactions": "Statements",
             "collection": "Cards",
             "character": "Avatar",
             "investments": "Invest",
-            "review": "Review",
+            "review": "Analysis",
         }
         self._configure_styles()
         self._build_ui()
+        _dark_titlebar(self)
         self._show_page(self.current_page_key)
         self.game_engine.generate_daily_challenges()
         self.game_engine.ensure_season()
+        self._startup_progression_migration()
         self.refresh_all_views()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -8097,6 +10989,8 @@ class BudgetApp(tk.Tk):
         else:
             # Gerald proactive alert — 1.5s after UI settles
             self.after(1500, self._gerald_startup_alert)
+            # End-of-month report prompt (once per month, after the UI settles)
+            self.after(2200, self._maybe_prompt_monthly_report)
         # Background update check — non-blocking, silent on failure.
         self.after(5000, self._check_for_updates_silent)
 
@@ -8393,6 +11287,10 @@ class BudgetApp(tk.Tk):
         tmp.replace(DATA_FILE)
 
     def on_close(self):
+        try:
+            self._remember_window_prefs()
+        except Exception:
+            pass
         self.save_state()
         self.destroy()
 
@@ -8429,9 +11327,9 @@ class BudgetApp(tk.Tk):
         style.configure("TEntry",
                         fieldbackground=UI_SURFACE2,
                         foreground=UI_TEXT,
-                        bordercolor=UI_BORDER,
-                        lightcolor=UI_BORDER,
-                        darkcolor=UI_BORDER,
+                        bordercolor=UI_BORDER_LT,
+                        lightcolor=UI_BORDER_LT,
+                        darkcolor=UI_BORDER_LT,
                         insertcolor=UI_ACCENT,
                         font=FONT_BODY,
                         padding=(10, 8))
@@ -8443,9 +11341,9 @@ class BudgetApp(tk.Tk):
                         fieldbackground=UI_SURFACE2,
                         foreground=UI_TEXT,
                         background=UI_SURFACE2,
-                        bordercolor=UI_BORDER,
-                        lightcolor=UI_BORDER,
-                        darkcolor=UI_BORDER,
+                        bordercolor=UI_BORDER_LT,
+                        lightcolor=UI_BORDER_LT,
+                        darkcolor=UI_BORDER_LT,
                         arrowcolor=UI_MUTED,
                         arrowsize=14,
                         padding=(10, 7))
@@ -8460,15 +11358,23 @@ class BudgetApp(tk.Tk):
                         background=UI_SURFACE3,
                         troughcolor=UI_BG,
                         bordercolor=UI_BG,
+                        lightcolor=UI_SURFACE3,
+                        darkcolor=UI_SURFACE3,
                         arrowcolor=UI_MUTED,
+                        arrowsize=0,
+                        gripcount=0,
                         relief="flat",
                         borderwidth=0,
-                        width=10)
+                        width=8)
         style.map("TScrollbar",
-                  background=[("active", UI_BORDER_LT), ("!active", UI_SURFACE3)])
+                  background=[("active", UI_BORDER_LT), ("!active", UI_SURFACE3)],
+                  lightcolor=[("active", UI_BORDER_LT)], darkcolor=[("active", UI_BORDER_LT)])
+        # No arrows, no grip: a flat thumb in a dark trough
+        style.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [("Vertical.Scrollbar.thumb", {"sticky": "nswe"})]})])
+        style.layout("Horizontal.TScrollbar", [("Horizontal.Scrollbar.trough", {"sticky": "we", "children": [("Horizontal.Scrollbar.thumb", {"sticky": "nswe"})]})])
 
         # ── Buttons — refined hierarchy ──────────────────────────────────────
-        # Tier 1  Primary.TButton    near-white fill, dark text   (page hero CTA)
+        # Tier 1  Primary.TButton    indigo fill, white text      (page hero CTA)
         # Tier 2  Accent.TButton     subtle filled, bright text   (section CTA)
         # Tier 3  Secondary.TButton  quieter filled, muted text   (form actions)
         # Tier 4  TButton            very quiet filled            (list / inline)
@@ -8476,7 +11382,7 @@ class BudgetApp(tk.Tk):
         #
         # Weight comes from contrast & border, not bright colour.
 
-        # Tier 1 — Primary CTA (near-white fill, Linear/Vercel style)
+        # Tier 1 — Primary CTA (indigo fill — the single saturated element on a page)
         style.configure("Primary.TButton",
                         font=FONT_BODY_BOLD,
                         padding=(16, 8),
@@ -8485,7 +11391,7 @@ class BudgetApp(tk.Tk):
                         anchor="center")
         style.map(
             "Primary.TButton",
-            background=[("pressed", "#d6d9df"), ("active", UI_PRIMARY_HOVER),
+            background=[("pressed", UI_PRIMARY_PRESSED), ("active", UI_PRIMARY_HOVER),
                         ("!disabled", UI_PRIMARY_BG), ("disabled", UI_SURFACE2)],
             foreground=[("!disabled", UI_PRIMARY_FG), ("disabled", UI_MUTED)],
             relief=[("pressed", "flat"), ("!pressed", "flat")],
@@ -8780,6 +11686,9 @@ class BudgetApp(tk.Tk):
             req_h = content.winfo_reqheight()
             if req_h > 0 and req_h != canvas.winfo_height():
                 canvas.configure(height=req_h)
+            # Pages build their labels with bg=UI_HERO; on the hero that reads
+            # as a box around every title. Retint anything hero-coloured.
+            self._debounce_after(f"herotint_{id(canvas)}", 40, lambda: self._retint_hero(content, tc))
         canvas.bind("<Configure>", _on_canvas_resize)
         content.bind("<Configure>", _on_content_resize)
         # Paint an initial gradient once the canvas is laid out, so there's
@@ -8791,6 +11700,22 @@ class BudgetApp(tk.Tk):
             canvas.tag_lower("gradient"),
         ))
         return canvas, content
+
+    def _retint_hero(self, content, tc):
+        """Give every hero-coloured descendant the hero's own background."""
+        boxy = {UI_HERO, UI_GRADIENT_TOP, UI_GRADIENT_BOT}
+        def walk(w):
+            for ch in w.winfo_children():
+                try:
+                    if isinstance(ch, (tk.Label, tk.Frame, tk.Canvas)) and str(ch.cget("bg")) in boxy and str(ch.cget("bg")) != tc:
+                        ch.configure(bg=tc)
+                except tk.TclError:
+                    pass
+                walk(ch)
+        try:
+            walk(content)
+        except tk.TclError:
+            pass
 
     def _apply_zebra(self, tree):
         """Apply alternating row colors to a Treeview for better readability."""
@@ -9071,7 +11996,7 @@ class BudgetApp(tk.Tk):
         wrap = tk.Frame(parent, bg=UI_PANEL_ALT, cursor="hand2")
         wrap.columnconfigure(1, weight=1)
         # Left active-state indicator — 2px, invisible except when current
-        accent_bar = tk.Frame(wrap, bg=UI_PANEL_ALT, width=2)
+        accent_bar = tk.Frame(wrap, bg=UI_PANEL_ALT, width=4)
         accent_bar.grid(row=0, column=0, sticky="ns")
         accent_bar.grid_propagate(False)
         # Content area
@@ -9204,6 +12129,12 @@ class BudgetApp(tk.Tk):
         self.current_page_key = key
         self._update_nav_badges()
         self.page_frames[key].tkraise()
+        if key == "today" and hasattr(self, "_today_get_started_overlay"):
+            # Setup changes elsewhere (e.g. adding a bill) must show up in the
+            # welcome checklist and health card the moment Today is opened.
+            self._render_today_get_started()
+            self._refresh_setup_completeness()
+            self._render_flagged_followups()
         # Refresh scrollregion for the raised page so mousewheel works immediately
         for c in self._scroll_canvases:
             if self._scroll_canvas_page.get(id(c)) == key:
@@ -9213,6 +12144,16 @@ class BudgetApp(tk.Tk):
             self._stop_avatar_anim()
         elif key == "character" and hasattr(self, "avatar_canvas"):
             self._start_avatar_anim()
+        if key == "settings" and hasattr(self, "_settings_data_var"):
+            self._refresh_settings_tab()
+        # Homestead scene animates only while its page is showing
+        if key == "homestead" and hasattr(self, "game_engine"):
+            self._fire_trigger("homestead")
+        if key == "homestead" and hasattr(self, "_homestead_canvas"):
+            self.refresh_homestead_tab()
+            self._start_homestead_anim()
+        elif hasattr(self, "_homestead_anim_active"):
+            self._stop_homestead_anim()
         # Focus Gerald input when opening the chat
         if key == "gerald" and hasattr(self, "_gerald_entry"):
             self._gerald_entry.focus_set()
@@ -9225,10 +12166,10 @@ class BudgetApp(tk.Tk):
             active = page_key == key
             primary = meta["primary"]
             if active:
-                bg = UI_NAV_ACTIVE
-                accent_bg = UI_TEXT_BRIGHT
-                title_fg = UI_TEXT_BRIGHT
-                subtitle_fg = UI_MUTED
+                bg = UI_NAV_ACTIVE_BG
+                accent_bg = UI_NAV_ACTIVE_BAR
+                title_fg = "#ffffff"
+                subtitle_fg = UI_NAV_ACTIVE_SUB
             else:
                 bg = UI_PANEL_ALT
                 accent_bg = UI_PANEL_ALT
@@ -9257,11 +12198,29 @@ class BudgetApp(tk.Tk):
             w = self.winfo_containing(x, y)
         except Exception:
             w = None
+        overlay_canvases = [c for c in getattr(self, "_overlay_wheel_canvases", []) if c.winfo_exists()]
         while w is not None and w is not self:
             if isinstance(w, (ttk.Treeview, tk.Text)):
                 # Let the widget's built-in scroll handle it
                 w.yview_scroll(delta, "units")
                 return
+            if w in overlay_canvases:
+                w.yview_scroll(delta, "units")
+                return
+            # Any nested canvas that scrolls its own content (grids, lists in
+            # cards, overlay areas) wins over the page canvas while the
+            # cursor is inside it — but only if it actually has overflow.
+            if isinstance(w, tk.Canvas) and w not in self._scroll_canvases:
+                try:
+                    if str(w.cget("yscrollcommand")):
+                        sr = w.cget("scrollregion")
+                        if sr:
+                            y0, y1 = float(str(sr).split()[1]), float(str(sr).split()[3])
+                            if (y1 - y0) > w.winfo_height() + 1:
+                                w.yview_scroll(delta, "units")
+                                return
+                except (tk.TclError, ValueError, IndexError):
+                    pass
             try:
                 w = w.master
             except Exception:
@@ -9350,6 +12309,9 @@ class BudgetApp(tk.Tk):
         margin_bottom = 20 + (pill_h + SP_SM if pill_h else 0)
         gap = 6
         y_offset = margin_bottom
+        # Drop toasts whose widget is already gone (e.g. destroyed with an
+        # overlay) so a stale handle can't break every later toast.
+        self._toast_stack = [t for t in self._toast_stack if t.winfo_exists()]
         for toast in reversed(self._toast_stack):
             toast.update_idletasks()
             tw = toast.winfo_reqwidth()
@@ -9472,24 +12434,29 @@ class BudgetApp(tk.Tk):
         self.setup_tab = self._create_page_frame(pages_host, "setup")
         self.review_tab = self._create_page_frame(pages_host, "review")
         self.gerald_tab = self._create_page_frame(pages_host, "gerald")
+        self.homestead_tab = self._create_page_frame(pages_host, "homestead")
+        self.settings_tab = self._create_page_frame(pages_host, "settings")
 
         nav_sections = [
             ("Core", [
                 ("today", "Today", "Dashboard & plan", True),
                 ("income", "Log Pay", "Add income", True),
-                ("transactions", "Review", "Import / verify", True),
+                ("transactions", "Statements", "Import & sort", True),
                 ("score", "Score", "Progress", True),
             ]),
             ("Build", [
                 ("setup", "Setup", "Bills · Funds · Goals", False),
                 ("gerald", "Ask Gerald", "Talk to set up", True),
+                ("settings", "Settings", "Backup · data · shortcuts", False),
             ]),
             ("Explore", [
+                ("homestead", "Homestead", "Your living plan", False),
                 ("collection", "Cards", "Packs & sets", False),
                 ("character", "Avatar", "Equip & profile", False),
                 ("review", "Analysis", "Monthly review", False),
             ]),
         ]
+        self._nav_rail = nav
 
         row_idx = 1
         for section_title, items in nav_sections:
@@ -9510,6 +12477,11 @@ class BudgetApp(tk.Tk):
                 btn = self._create_nav_button(section, key, label, subtitle, primary)
                 btn.grid(row=item_idx, column=0, sticky="ew", pady=(0, 3))
             row_idx += 1
+        # Focus mode toggle — hides the game layers for people who just want the budget
+        self._focus_btn = tk.Label(nav, text="◎ Focus mode: off — hide the game", bg=UI_PANEL_ALT, fg=UI_MUTED,
+                                   font=FONT_CAPTION, cursor="hand2", anchor="w", wraplength=170, justify="left")
+        self._focus_btn.grid(row=row_idx, column=0, sticky="ew", padx=SP_SM, pady=(SP_SM, 0))
+        self._focus_btn.bind("<Button-1>", lambda _e: self._toggle_focus_mode())
 
         self._build_game_tab()
         self._build_collection_tab()
@@ -9520,6 +12492,8 @@ class BudgetApp(tk.Tk):
         self._build_transactions_tab()
         self._build_setup_tab()
         self._build_gerald_tab()
+        self._build_homestead_tab()
+        self._build_settings_tab()
         self._bind_tree_context_menus()
 
         # Global mousewheel routing — position-based, no Enter/Leave glitch
@@ -9530,6 +12504,11 @@ class BudgetApp(tk.Tk):
         self.bind_all("<Control-g>", self._toggle_gerald_overlay)
         # Ctrl+K → toggle command palette from anywhere
         self.bind_all("<Control-k>", self._toggle_command_palette)
+        # Ctrl+I → import a statement from anywhere; Ctrl+/ → shortcut sheet
+        self.bind_all("<Control-i>", lambda e: (self._show_page("transactions"), self.import_pdf_transactions()))
+        self.bind_all("<Control-slash>", lambda e: self._show_shortcuts())
+        self.after(50, self._apply_focus_mode)
+        self.after(120, self._restore_window_prefs)
         self.bind_all("<Escape>", lambda e: self._hide_gerald_overlay()
                       if getattr(self, "_gerald_overlay_visible", False) else None)
         # Floating launcher pill (bottom-right of root)
@@ -9703,9 +12682,9 @@ class BudgetApp(tk.Tk):
             card.grid(row=i, column=0, sticky="ew", pady=(0 if i == 0 else SP_SM, 0))
             card.columnconfigure(0, weight=1)
             tk.Label(card, textvariable=dv, bg=UI_SURFACE2, fg=UI_TEXT,
-                     font=FONT_SMALL_BOLD, anchor="w").grid(row=0, column=0, sticky="w")
+                     font=FONT_SMALL_BOLD, anchor="w", wraplength=230, justify="left").grid(row=0, column=0, sticky="w")
             tk.Label(card, textvariable=hv, bg=UI_SURFACE2, fg=UI_MUTED,
-                     font=FONT_CAPTION, anchor="w").grid(row=1, column=0, sticky="w")
+                     font=FONT_CAPTION, anchor="w", wraplength=230, justify="left").grid(row=1, column=0, sticky="w")
             tk.Label(card, textvariable=rv, bg=UI_SURFACE2, fg=UI_GOLD,
                      font=FONT_BODY_BOLD, anchor="w").grid(row=2, column=0, sticky="w")
             tk.Label(card, textvariable=sv, bg=UI_SURFACE2, fg=UI_EMERALD,
@@ -9716,6 +12695,8 @@ class BudgetApp(tk.Tk):
             self._challenge_reward_vars.append(rv)
             self._challenge_done_vars.append(sv)
             self._challenge_hint_vars.append(hv)
+        self._weekly_host = tk.Frame(dc_frame, bg=UI_BG)
+        self._weekly_host.grid(row=3, column=0, sticky="ew", pady=(SP_SM, 0))
 
         # Season Pass
         sp_frame = ttk.LabelFrame(grind_row, text="Season Pass", padding=SP_MD)
@@ -9747,8 +12728,8 @@ class BudgetApp(tk.Tk):
             tk.Label(col_f, text=f"{xp} XP", bg=UI_BG, fg=UI_MUTED,
                      font=FONT_SMALL_BOLD).pack(anchor="center")
             tk.Label(col_f, text=tname, bg=UI_BG, fg=UI_MUTED,
-                     font=FONT_MICRO).pack(anchor="center")
-            btn = ttk.Button(col_f, text=reward_str, width=10,
+                     font=FONT_MICRO, wraplength=88, justify="center").pack(anchor="center")
+            btn = ttk.Button(col_f, text=reward_str, width=8,
                              command=lambda idx=i: self._claim_season_tier(idx))
             btn.pack(anchor="center", pady=(3, 0))
             self._season_tier_btns.append(btn)
@@ -9889,6 +12870,8 @@ class BudgetApp(tk.Tk):
         self._achievements_frame = tk.Frame(ach_inner, bg=UI_SURFACE)
         self._achievements_frame.grid(row=2, column=0, sticky="nsew")
 
+        self._build_records_section(frame)
+
         # ── Arcade section (hosts Budget Sprint + future mini-games) ─────────
         self._build_score_arcade_section(self._score_arcade_host)
         self._show_score_section("progress")
@@ -9908,16 +12891,16 @@ class BudgetApp(tk.Tk):
             lbl = tk.Label(wrap, text=label, bg=UI_BG, fg=UI_MUTED,
                            font=FONT_BODY_BOLD, pady=SP_SM + 2)
             lbl.pack()
-            # 2px underline indicator — lights up only when active
-            underline = tk.Frame(wrap, bg=UI_BG, height=2)
+            # Underline indicator — lights up gold only when active
+            underline = tk.Frame(wrap, bg=UI_BG, height=3)
             underline.pack(fill="x")
             def _on_enter(_e, k=key):
                 meta = self._score_section_pills[k]
-                if meta["underline"].cget("bg") != UI_TEXT_BRIGHT:
+                if meta["underline"].cget("bg") != UI_SUBTAB_ACTIVE:
                     meta["label"].configure(fg=UI_TEXT)
             def _on_leave(_e, k=key):
                 meta = self._score_section_pills[k]
-                if meta["underline"].cget("bg") != UI_TEXT_BRIGHT:
+                if meta["underline"].cget("bg") != UI_SUBTAB_ACTIVE:
                     meta["label"].configure(fg=UI_MUTED)
             for w in (wrap, lbl, underline):
                 w.bind("<Button-1>", lambda _e, k=key: self._show_score_section(k))
@@ -9934,11 +12917,11 @@ class BudgetApp(tk.Tk):
         else:
             self._score_progress_host.grid_remove()
             self._score_arcade_host.grid()
-        # Update underline-style pills: active gets bright label + white underline.
+        # Update underline-style pills: active gets gold label + gold underline.
         for key, meta in self._score_section_pills.items():
             if key == section:
-                meta["label"].configure(fg=UI_TEXT_BRIGHT)
-                meta["underline"].configure(bg=UI_TEXT_BRIGHT)
+                meta["label"].configure(fg=UI_SUBTAB_ACTIVE)
+                meta["underline"].configure(bg=UI_SUBTAB_ACTIVE)
             else:
                 meta["label"].configure(fg=UI_MUTED)
                 meta["underline"].configure(bg=UI_BG)
@@ -11815,13 +14798,13 @@ class BudgetApp(tk.Tk):
         hero_canvas, hero = self._gradient_hero(frame, height=150)
         hero_canvas.grid(row=0, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(SP_XL, SP_MD))
         hero.configure(padx=SP_XL, pady=SP_XL)
-        hero.columnconfigure(0, weight=1)
-        hero.columnconfigure(1, weight=1)
-        hero.columnconfigure(2, weight=1)
+        for _c in range(4):
+            hero.columnconfigure(_c, weight=1, uniform="hero")
 
         self.today_safe_to_spend_var = tk.StringVar(value="$0.00")
         self.today_daily_pace_var = tk.StringVar(value="$0.00 / day")
-        self.today_pending_reviews_var = tk.StringVar(value="0 needing review")
+        self.today_pending_reviews_var = tk.StringVar(value="0 to review")
+        self.today_homestead_var = tk.StringVar(value="Tier 0 of 5")
         self.today_velocity_var = tk.StringVar(value="Log a pay to get started.")
         self.today_actions_summary_var = tk.StringVar(value="No immediate actions yet.")
         self.today_workflow_summary_var = tk.StringVar(value="Preview 0  •  Verified 0  •  Need review 0  •  Committed 0")
@@ -11834,19 +14817,24 @@ class BudgetApp(tk.Tk):
                             "next pay. Use it as a daily ceiling so you don't run out "
                             "before next pay day."),
             "Pending Reviews": ("Imported transactions waiting for you to verify and "
-                                 "commit. Head to the Transactions tab to clear them."),
+                                 "commit. Click Sort Unrecognised on the Transactions tab to clear them."),
+            "Homestead": ("Your living plan. Funds grow as plots, goals as trees, bills build "
+                          "the fence. Click to open it."),
         }
 
         cards = [
             ("Safe to Spend", self.today_safe_to_spend_var, UI_EMERALD),
             ("Daily Pace", self.today_daily_pace_var, UI_SAPPHIRE),
             ("Pending Reviews", self.today_pending_reviews_var, UI_GOLD),
+            ("Homestead", self.today_homestead_var, UI_AMETHYST),
         ]
         self._safe_sparkline_canvas = None
         self._pace_sparkline_canvas = None
+        self._today_hero_cards = []
         for idx, (title, var, accent) in enumerate(cards):
             glow = tk.Frame(hero, bg=accent, padx=1, pady=1)
             glow.grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else SP_MD, 0))
+            self._today_hero_cards.append(glow)
             box = tk.Frame(glow, bg=UI_SURFACE, padx=SP_XL, pady=SP_XL)
             box.pack(fill="both", expand=True)
             title_row = tk.Frame(box, bg=UI_SURFACE)
@@ -11857,28 +14845,41 @@ class BudgetApp(tk.Tk):
             self._info_icon(title_row, hero_tooltips[title],
                             bg=UI_SURFACE).pack(side="left", padx=(SP_XS, 0))
             tk.Label(box, textvariable=var, bg=UI_SURFACE, fg=accent,
-                     font=FONT_DISPLAY_LG,
+                     font=FONT_DISPLAY_LG if idx < 2 else (FONT_DISPLAY_MD if idx == 2 else FONT_SUBHEADING),
                      anchor="w").pack(fill="x")
+            if idx == 3:
+                self._today_homestead_canvas = tk.Canvas(box, bg=UI_SURFACE, height=58, width=10, bd=0,
+                                                         highlightthickness=0, cursor="hand2")
+                self._today_homestead_canvas.pack(fill="x", pady=(SP_SM, 0))
+                self._today_homestead_canvas.bind("<Configure>",
+                                                  lambda _e: self._debounce_after("home_mini", 80, self._draw_today_homestead))
+                for wdg in (box, self._today_homestead_canvas):
+                    wdg.bind("<Button-1>", lambda _e: self._show_page("homestead"))
+                self._today_harvest_var = tk.StringVar(value="")
+                self._today_harvest_lbl = tk.Label(box, textvariable=self._today_harvest_var, bg=UI_SURFACE, fg=UI_MUTED,
+                                                   font=FONT_CAPTION, wraplength=180, justify="left", anchor="w", cursor="hand2")
+                self._today_harvest_lbl.pack(fill="x", pady=(SP_XS, 0))
+                self._today_harvest_lbl.bind("<Button-1>", lambda _e: self._collect_all_ui() if self._harvest_summary()[2] else self._show_page("homestead"))
             if idx == 0:
                 self._safe_sparkline_canvas = tk.Canvas(box, bg=UI_SURFACE,
-                                                         height=36, bd=0,
+                                                         height=36, width=10, bd=0,
                                                          highlightthickness=0)
                 self._safe_sparkline_canvas.pack(fill="x", pady=(SP_SM, 0))
                 self._safe_sparkline_canvas.bind("<Configure>",
                                                   lambda _e: self._redraw_hero_sparklines())
                 tk.Label(box, textvariable=self.today_velocity_var, bg=UI_SURFACE, fg=UI_MUTED,
-                         font=FONT_CAPTION, wraplength=320,
+                         font=FONT_CAPTION, wraplength=220,
                          justify="left", anchor="w").pack(fill="x", pady=(SP_SM, 0))
             elif idx == 1:
                 self._pace_sparkline_canvas = tk.Canvas(box, bg=UI_SURFACE,
-                                                         height=36, bd=0,
+                                                         height=36, width=10, bd=0,
                                                          highlightthickness=0)
                 self._pace_sparkline_canvas.pack(fill="x", pady=(SP_SM, 0))
                 self._pace_sparkline_canvas.bind("<Configure>",
                                                   lambda _e: self._redraw_hero_sparklines())
             elif idx == 2:
                 tk.Label(box, textvariable=self.today_actions_summary_var, bg=UI_SURFACE, fg=UI_MUTED,
-                         font=FONT_CAPTION, wraplength=260,
+                         font=FONT_CAPTION, wraplength=190,
                          justify="left", anchor="w").pack(fill="x", pady=(SP_SM, 0))
 
         # ── Row 1: Quick Actions ─────────────────────────────────────────────
@@ -11890,19 +14891,37 @@ class BudgetApp(tk.Tk):
         tk.Frame(quick, bg=UI_ACCENT, height=3).grid(row=0, column=0, sticky="ew")
         quick_inner = tk.Frame(quick, bg=UI_SURFACE, padx=SP_LG, pady=SP_LG)
         quick_inner.grid(row=1, column=0, sticky="ew")
-        tk.Label(quick_inner, text="QUICK ACTIONS", bg=UI_SURFACE, fg=UI_ACCENT,
-                 font=FONT_CAPTION_BOLD).pack(anchor="w")
+        qa_lbl = tk.Label(quick_inner, text="QUICK ACTIONS", bg=UI_SURFACE, fg=UI_ACCENT,
+                          font=FONT_CAPTION_BOLD)
+        qa_lbl.pack(anchor="w")
+        self._qa_lbl = qa_lbl
+        # "Do this now" — the single most useful action, computed each refresh
+        self._do_now_host = tk.Frame(quick_inner, bg=UI_SURFACE)
+        # Engagement row sits above the quick actions: Daily Vault + Next Up.
+        self._hook_row = tk.Frame(quick_inner, bg=UI_SURFACE)
+        self._hook_row.pack(fill="x", pady=(0, SP_MD), before=qa_lbl)
+        self._hook_row.columnconfigure(0, weight=1, uniform="hook")
+        self._hook_row.columnconfigure(1, weight=1, uniform="hook")
+        self._vault_host = tk.Frame(self._hook_row, bg=UI_SURFACE2, highlightthickness=1,
+                                    highlightbackground=UI_GOLD, padx=SP_MD, pady=SP_SM)
+        self._vault_host.grid(row=0, column=0, sticky="nsew", padx=(0, SP_MD))
+        self._next_up_host = tk.Frame(self._hook_row, bg=UI_SURFACE2, highlightthickness=1,
+                                      highlightbackground=UI_BORDER, padx=SP_MD, pady=SP_SM)
+        self._next_up_host.grid(row=0, column=1, sticky="nsew")
         # Pay-overdue nudge — populated when expected pay date has passed by
         # the per-frequency grace window with no income logged since.
         self._pay_overdue_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         # Income confirmation callout — populated when imported transactions are
         # classified as income and awaiting user confirmation to log as pay.
         self._confirm_income_host = tk.Frame(quick_inner, bg=UI_SURFACE)
+        self._flagged_host = tk.Frame(quick_inner, bg=UI_SURFACE)
+        self._month_report_host = tk.Frame(quick_inner, bg=UI_SURFACE)
+        self._pact_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         quick_mode_row = tk.Frame(quick_inner, bg=UI_SURFACE)
         quick_mode_row.pack(anchor="w", pady=(SP_MD, 0), fill="x")
         ttk.Button(quick_mode_row, text="Log Pay", style="Primary.TButton",
                    command=lambda: self._show_page("income")).pack(side="left")
-        ttk.Button(quick_mode_row, text="Import / Review", style="Secondary.TButton",
+        ttk.Button(quick_mode_row, text="Import statement", style="Secondary.TButton",
                    command=lambda: self._show_page("transactions")).pack(side="left", padx=(SP_SM, 0))
         ttk.Button(quick_mode_row, text="Setup Hub", style="Secondary.TButton",
                    command=lambda: self._show_page("setup")).pack(side="left", padx=(SP_SM, 0))
@@ -11910,8 +14929,9 @@ class BudgetApp(tk.Tk):
                    command=self._open_perk_shop).pack(side="left", padx=(SP_SM, 0))
         quick_tools_row = tk.Frame(quick_inner, bg=UI_SURFACE)
         quick_tools_row.pack(anchor="w", pady=(SP_SM, 0), fill="x")
-        ttk.Button(quick_tools_row, text="Suggest Matches",
-                   command=self.auto_match_imported).pack(side="left")
+        ttk.Button(quick_tools_row, text="Sort Unrecognised",
+                   command=lambda: (self._show_page("transactions"),
+                                    self.open_review_queue())).pack(side="left")
         ttk.Button(quick_tools_row, text="Commit Reviewed",
                    command=self.commit_imported_transactions).pack(side="left", padx=(SP_SM, 0))
         tk.Label(quick_inner, textvariable=self.today_workflow_summary_var, bg=UI_SURFACE,
@@ -11921,7 +14941,7 @@ class BudgetApp(tk.Tk):
         # ── Row 1.5: Gerald commentator (collapsible) ────────────────────────
         self.today_gerald_summary_var = tk.StringVar(value="")
         gerald_wrap, gerald_content = self._collapsible_section(
-            frame, "Gerald's Take", "today.gerald",
+            frame, "Gerald's Take", "today.gerald", default_open=False,
             summary_var=self.today_gerald_summary_var)
         gerald_wrap.grid(row=2, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
         gerald_glow = tk.Frame(gerald_content, bg=UI_EMERALD, padx=1, pady=1)
@@ -11943,8 +14963,10 @@ class BudgetApp(tk.Tk):
         self._gerald_quip_var = tk.StringVar(value="Hey — welcome back. Let's see where things stand.")
         tk.Label(bubble, textvariable=self._gerald_quip_var, bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SMALL, wraplength=600, justify="left", anchor="w").pack(anchor="w", fill="x")
-        # Draw Gerald face immediately
+        # Draw Gerald face immediately, then start the idle blink loop
+        self._gerald_today_expr = "normal"
         _draw_gerald(self._gerald_canvas, w=60, h=80, expression="normal")
+        self.after(4000, self._gerald_blink_tick)
 
         # ── Row 3: Compact distribution metrics bar ──────────────────────────
         self.dash_bills_var = tk.StringVar(value="$0.00")
@@ -11956,7 +14978,7 @@ class BudgetApp(tk.Tk):
         # ── Row 3: Setup health + At-Risk cards (collapsible) ────────────────
         self.today_health_summary_var = tk.StringVar(value="")
         health_wrap, health_content = self._collapsible_section(
-            frame, "Setup & At Risk", "today.health",
+            frame, "Setup & At Risk", "today.health", default_open=False,
             summary_var=self.today_health_summary_var)
         health_wrap.grid(row=3, column=0, columnspan=2, sticky="ew",
                          padx=SP_XL, pady=(0, SP_MD))
@@ -11965,7 +14987,7 @@ class BudgetApp(tk.Tk):
         # ── Row 4: Compact metrics strip (collapsible) ───────────────────────
         self.today_metrics_summary_var = tk.StringVar(value="")
         metrics_wrap, metrics_content = self._collapsible_section(
-            frame, "Totals & Streak", "today.metrics",
+            frame, "Totals & Streak", "today.metrics", default_open=False,
             summary_var=self.today_metrics_summary_var)
         metrics_wrap.grid(row=4, column=0, columnspan=2, sticky="ew",
                           padx=SP_XL, pady=(0, SP_MD))
@@ -12122,6 +15144,7 @@ class BudgetApp(tk.Tk):
         """Return list of (label, done) tuples for the checklist."""
         s = self.state
         steps = [
+            ("Starting position set", bool(s.starting_position_set)),
             (f"Pay frequency · {s.pay_frequency or 'not set'}",
              bool(s.pay_frequency)),
             ("First bill added", len(s.bills) > 0),
@@ -13094,8 +16117,8 @@ class BudgetApp(tk.Tk):
                  bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_DISPLAY_XL).pack(anchor="w")
         tk.Label(card,
-                 text="Let's get you set up. Work through these in order — the app "
-                      "comes alive once you log your first pay.",
+                 text="Let's get you set up. Start with where your money is right now, "
+                      "then add what's upcoming. No need to wait for pay day.",
                  bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_BODY, wraplength=640, justify="left").pack(
             anchor="w", pady=(SP_XS, SP_LG))
@@ -13106,8 +16129,8 @@ class BudgetApp(tk.Tk):
 
         # Close hint
         tk.Label(card,
-                 text="This checklist will disappear once you've logged a pay "
-                      "and added at least one bill.",
+                 text="This checklist disappears once your starting position is set "
+                      "and at least one bill is added.",
                  bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_MICRO, wraplength=640,
                  justify="left").pack(anchor="w", pady=(SP_LG, 0))
@@ -13120,11 +16143,14 @@ class BudgetApp(tk.Tk):
             return
         has_pay = bool(self.state.incomes)
         has_bill = bool(self.state.bills)
+        has_position = bool(self.state.starting_position_set)
         has_savings = bool(self.state.funds) or bool(self.state.goals)
         has_import = bool(self.state.transactions) or bool(self.latest_import)
 
-        # Auto-hide once the two mandatory steps are complete.
-        if has_pay and has_bill:
+        # Auto-hide once the two mandatory steps are complete: the user has
+        # told us where they stand and what's upcoming. Logging a pay is not
+        # required — it happens whenever pay day arrives.
+        if has_position and has_bill:
             overlay.place_forget()
             return
         overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -13134,20 +16160,30 @@ class BudgetApp(tk.Tk):
             w.destroy()
 
         steps = [
-            ("Log your first pay",
-             "Income tab → enter amount + date. Triggers allocation and starts your streak.",
-             has_pay, "income"),
-            ("Add your first bill",
-             "Setup → Bills. Recurring expenses (rent, subs, utilities) auto-allocate per pay.",
-             has_bill, "setup"),
+            ("Create your profile", "Done — The Vault knows you now.", True, lambda: None),
+            ("Hatch your avatar + claim the Founder card",
+             "Finishing the money plan unlocks a free pack and today's Gold chest.",
+             bool(self.state.game.day_one_done), lambda: self._show_page("collection") if self.state.game.day_one_done else self._show_setup_wizard()),
+            ("Set up your money plan",
+             "Bills, things to set aside for, goals, your accounts — then where your money is "
+             "right now. A few minutes, and you can come back to it.",
+             has_position, self._show_setup_wizard),
+            ("Add your bills",
+             "Setup → Bills. Everything upcoming: rent, subscriptions, utilities. "
+             "The plan and the 'short by' warnings are built from these.",
+             has_bill, lambda: self._show_page("bills")),
             ("Add a savings goal or sinking fund",
              "Setup → Funds or Goals. Optional but unlocks the full progression loop.",
-             has_savings, "setup"),
+             has_savings, lambda: self._show_page("funds")),
+            ("Log a pay when it arrives",
+             "Income tab. You'll see the calculated split and can adjust any line before it's applied.",
+             has_pay, lambda: self._show_page("income")),
             ("Import a bank statement (optional)",
-             "Transactions tab → Import PDF. Classifies spending so Analysis works.",
-             has_import, "transactions"),
+             "Transactions tab → Import PDF. Sorts spending so Analysis works.",
+             has_import, lambda: self._show_page("transactions")),
         ]
-        for title, desc, done, target_tab in steps:
+        first_open = True
+        for title, desc, done, action in steps:
             row = tk.Frame(host, bg=UI_SURFACE, cursor="hand2")
             row.pack(fill="x", pady=SP_XS)
             mark = "✅" if done else "○"
@@ -13164,11 +16200,12 @@ class BudgetApp(tk.Tk):
                      wraplength=540, justify="left").pack(anchor="w", fill="x")
             if not done:
                 ttk.Button(row, text="Go →",
-                           style="Primary.TButton" if target_tab == "income" else "Secondary.TButton",
-                           command=lambda t=target_tab: self._show_page(t)).pack(side="right")
+                           style="Primary.TButton" if first_open else "Secondary.TButton",
+                           command=action).pack(side="right")
+                first_open = False
             for widget in (row, text_box):
                 widget.bind("<Button-1>",
-                             lambda _e, t=target_tab, d=done: None if d else self._show_page(t))
+                             lambda _e, a=action, d=done: None if d else a())
 
     def _render_pay_overdue_nudge(self):
         host = getattr(self, "_pay_overdue_host", None)
@@ -13275,7 +16312,7 @@ class BudgetApp(tk.Tk):
                  wraplength=520).pack(anchor="w", pady=(2, 0))
         btns = tk.Frame(row, bg=UI_SURFACE2)
         btns.pack(side="right")
-        ttk.Button(btns, text="Log as pay", style="Primary.TButton",
+        ttk.Button(btns, text="Looks right — log it ✓", style="Primary.TButton",
                    command=lambda f=fp: self._confirm_income_log(f)).pack(side="left")
         ttk.Button(btns, text="Dismiss", style="Ghost.TButton",
                    command=lambda f=fp: self._confirm_income_dismiss(f)).pack(side="left", padx=(SP_SM, 0))
@@ -13588,6 +16625,8 @@ class BudgetApp(tk.Tk):
             return [
                 (f"Contribute to {fund.name}…",
                  lambda i=idx: self._contribute_to_target("fund", i)),
+                (f"Record spending from {fund.name}…",
+                 lambda i=idx: self._spend_from_fund(i)),
                 None,
                 ("Edit in form", lambda i=iid: (self.fund_tree.selection_set(i), self.on_fund_select())),
                 ("Delete", lambda i=iid: (self.fund_tree.selection_set(i), self.delete_selected_fund())),
@@ -13651,6 +16690,32 @@ class BudgetApp(tk.Tk):
         _bind(getattr(self, "goal_tree", None), _goal_menu)
         _bind(getattr(self, "today_due_tree", None), _today_due_menu)
 
+    def _spend_from_fund(self, idx: int):
+        """Record money taken out of a sinking fund (undoable). Buffer and
+        ongoing funds rely on this so the next pay knows what to top up."""
+        try:
+            fund = self.state.funds[idx]
+        except IndexError:
+            return
+        from tkinter import simpledialog
+        amt = simpledialog.askfloat(
+            "Spend from fund",
+            f"How much did you spend from '{fund.name}'?\n"
+            f"Currently saved: ${fund.current_saved:,.2f}",
+            parent=self, minvalue=0.01)
+        if not amt:
+            return
+        prev = fund.current_saved
+        fund.current_saved = round(max(prev - amt, 0.0), 2)
+        self.refresh_funds(); self.refresh_today_tab(); self.save_state()
+
+        def _undo():
+            fund.current_saved = prev
+            self.refresh_funds(); self.refresh_today_tab(); self.save_state()
+            self._show_toast(f"{fund.name} restored to ${prev:,.2f}.", "info", 2500)
+        self._show_toast(f"Spent ${amt:,.2f} from {fund.name} — ${fund.current_saved:,.2f} left.",
+                         "success", duration=6000, action_label="Undo", action_cb=_undo)
+
     def _contribute_to_target(self, kind: str, idx: int):
         """Prompt for an amount and add it to the target's current_saved (undoable)."""
         if kind == "bill":
@@ -13678,6 +16743,8 @@ class BudgetApp(tk.Tk):
             return
         prev = obj.current_saved
         obj.current_saved = prev + amt
+        self._fire_trigger("contribute")
+        self._after_money_change([(kind, obj, amt)])
         if kind == "bill":
             self.refresh_bills()
         elif kind == "fund":
@@ -13967,6 +17034,20 @@ class BudgetApp(tk.Tk):
         self._render_today_get_started()
         self._render_pay_overdue_nudge()
         self._render_income_confirmations()
+        self._render_flagged_followups()
+        if hasattr(self, "_pact_host"):
+            self._settle_pacts_ui()
+            self._render_pact_card()
+            self._update_today_harvest()
+        if hasattr(self, "_month_report_host"):
+            self._render_month_report_card()
+        if hasattr(self, "_vault_host"):
+            self._render_daily_vault()
+            self._render_next_up()
+        if hasattr(self, "_today_homestead_canvas"):
+            self._draw_today_homestead()
+        if hasattr(self, "_starting_position_summary_var"):
+            self._starting_position_summary_var.set(self._starting_position_summary())
         self._refresh_setup_completeness()
         self._refresh_at_risk()
         # Collapsed-header summary: setup completeness + at-risk count
@@ -13976,6 +17057,8 @@ class BudgetApp(tk.Tk):
         risk_part = f"{risk_count} at risk" if risk_count else "nothing at risk"
         self.today_health_summary_var.set(f"Setup {done}/{len(steps)} · {risk_part}")
         snapshot = self._next_actions_snapshot()
+        if hasattr(self, "_do_now_host"):
+            self._render_do_now(snapshot["actions"])
         pending_review = snapshot["pending_review"]
         pace = snapshot["pace"]
         forecast = snapshot["forecast"]
@@ -13990,7 +17073,7 @@ class BudgetApp(tk.Tk):
         self._tween_number(self.today_daily_pace_var,
                             float(pace["safe_per_day"]),
                             lambda v: f"${v:,.2f} / day", key="today_pace")
-        self.today_pending_reviews_var.set(f"{pending_review} needing review")
+        self.today_pending_reviews_var.set(f"{pending_review} to review")
         self.today_workflow_summary_var.set(self._format_transaction_workflow_summary())
 
         # Spending velocity subtitle
@@ -14005,8 +17088,10 @@ class BudgetApp(tk.Tk):
             )
         elif self.state.incomes:
             self.today_velocity_var.set(f"${remaining:,.0f} remaining this cycle")
+        elif self.state.starting_position_set:
+            self.today_velocity_var.set("Your spending-account balance. Log a pay when it arrives.")
         else:
-            self.today_velocity_var.set("Log a pay to get started.")
+            self.today_velocity_var.set("Set your starting position to get started.")
 
         top_action = actions[0]
         if top_action["priority"] >= 85:
@@ -14166,7 +17251,8 @@ class BudgetApp(tk.Tk):
         # Collapsed-header summary: truncated quip
         short = quip_text if len(quip_text) <= 70 else quip_text[:67].rstrip() + "…"
         self.today_gerald_summary_var.set(short)
-        # Update expression
+        # Update expression (remembered so the idle blink restores it)
+        self._gerald_today_expr = expression
         _draw_gerald(self._gerald_canvas, w=60, h=80, expression=expression)
 
     def _draw_streak_chain(self, canvas, history: list, current_streak: int, max_dots: int = 20):
@@ -14293,6 +17379,11 @@ class BudgetApp(tk.Tk):
             is_current = (self._review_month_offset == 0)
             if hasattr(self, "_review_month_label"):
                 label = f"{label_text}" + ("  (current)" if is_current else "")
+                if is_current:
+                    _d, _n = date.today().day, calendar.monthrange(date.today().year, date.today().month)[1]
+                    if _d < _n:
+                        _proj = float(data.get("outgoing_total", 0.0)) / max(_d, 1) * _n
+                        label += chr(10) + f"day {_d}/{_n}" + (f" · ~${_proj:,.0f} proj." if _proj > 0 else " · partial")
                 self._review_month_label.config(text=label)
         else:
             data = self._current_month_review_data(bounds=(start, end))
@@ -14433,9 +17524,13 @@ class BudgetApp(tk.Tk):
         # Section title
         tk.Label(form, text="Log a Pay", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_HEADING).grid(row=0, column=0, sticky="w", pady=(SP_SM, SP_XS))
-        tk.Label(form, text="Enter your pay to get your distribution plan.\nThe app shows you how to split it across accounts.",
+        intro = tk.Frame(form, bg=UI_SURFACE)
+        intro.grid(row=1, column=0, sticky="ew", pady=(0, SP_LG))
+        tk.Label(intro, text="Enter your pay to get your distribution plan.\nThe app shows you how to split it across accounts.",
                  bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL,
-                 justify="left").grid(row=1, column=0, sticky="w", pady=(0, SP_LG))
+                 justify="left").pack(anchor="w")
+        # "Same as last time" one-click pay (rendered by _render_quick_pay)
+        self._quick_pay_host = tk.Frame(intro, bg=UI_SURFACE)
         # Fields
         tk.Label(form, text="Amount ($)", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_SMALL_BOLD).grid(row=2, column=0, sticky="w", pady=(0, 2))
@@ -14456,7 +17551,8 @@ class BudgetApp(tk.Tk):
                         bg=UI_SURFACE).pack(side="left", padx=(SP_XS, 0))
         self.pay_date_entry = ttk.Entry(form, width=24)
         self.pay_date_entry.insert(0, date.today().isoformat())
-        self.pay_date_entry.grid(row=7, column=0, sticky="ew", pady=(0, SP_MD))
+        self.pay_date_entry.grid(row=7, column=0, sticky="ew", pady=(0, 2))
+        self._date_chips(form, self.pay_date_entry, bg=UI_SURFACE, wrap=3).grid(row=7, column=1, sticky="w", padx=(SP_SM, 0), pady=(0, 2))
         tk.Frame(form, bg=UI_BORDER, height=1).grid(row=8, column=0, sticky="ew", pady=(SP_XS, SP_LG))
         tk.Label(form, text="Pay Frequency", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_SMALL_BOLD).grid(row=9, column=0, sticky="w", pady=(0, 2))
@@ -14467,10 +17563,23 @@ class BudgetApp(tk.Tk):
         ttk.Button(form, text="Save Frequency", command=self.apply_pay_frequency).grid(
             row=11, column=0, sticky="ew", pady=(0, SP_XL))
         tk.Frame(form, bg=UI_BORDER, height=1).grid(row=12, column=0, sticky="ew", pady=(0, SP_LG))
+        self._review_alloc_var = tk.BooleanVar(
+            value=bool(self.state.ui_prefs.get("pay.review_allocation", True)))
+
+        def _save_review_pref():
+            self.state.ui_prefs["pay.review_allocation"] = bool(self._review_alloc_var.get())
+            self.save_state()
+        tk.Checkbutton(form, text="Review & adjust the split before it's applied",
+                       variable=self._review_alloc_var, command=_save_review_pref,
+                       bg=UI_SURFACE, fg=UI_MUTED, activebackground=UI_SURFACE,
+                       activeforeground=UI_TEXT, selectcolor=UI_SURFACE2,
+                       font=FONT_CAPTION, bd=0, highlightthickness=0, cursor="hand2",
+                       anchor="w", wraplength=200, justify="left").grid(
+            row=13, column=0, sticky="w", pady=(0, SP_SM))
         ttk.Button(form, text="Add Pay + Allocate", style="Primary.TButton",
-                   command=self.add_pay_and_allocate).grid(row=13, column=0, sticky="ew", pady=(0, SP_SM))
+                   command=self.add_pay_and_allocate).grid(row=14, column=0, sticky="ew", pady=(0, SP_SM))
         ttk.Button(form, text="Delete Selected Pay", style="Danger.TButton",
-                   command=self.delete_selected_income).grid(row=14, column=0, sticky="ew")
+                   command=self.delete_selected_income).grid(row=15, column=0, sticky="ew")
         # Right panel — history
         hist_wrap = tk.Frame(frame, bg=UI_BG, pady=SP_XL)
         hist_wrap.grid(row=0, column=1, sticky="nsew", padx=(0, SP_XL))
@@ -14522,20 +17631,24 @@ class BudgetApp(tk.Tk):
         tk.Frame(controls, bg=UI_BORDER, height=1).grid(row=2, column=0, sticky="ew", pady=(0, SP_SM))
         tk.Label(controls, text="IMPORT", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_BODY_BOLD).grid(row=3, column=0, sticky="w", pady=(0, SP_XS))
-        ttk.Button(controls, text="Import PDF", style="Primary.TButton",
+        ttk.Button(controls, text="Import Statement (PDF / CSV / OFX)", style="Primary.TButton",
                    command=self.import_pdf_transactions).grid(row=4, column=0, sticky="ew", pady=(0, SP_XS))
-        ttk.Button(controls, text="Suggest Matches",
-                   command=self.auto_match_imported).grid(row=5, column=0, sticky="ew", pady=(0, SP_XS))
-        ttk.Button(controls, text="Commit Reviewed", style="Accent.TButton",
+        self.tx_sort_btn_var = tk.StringVar(value="Sort Unrecognised")
+        ttk.Button(controls, textvariable=self.tx_sort_btn_var, style="Accent.TButton",
+                   command=self.open_review_queue).grid(row=5, column=0, sticky="ew", pady=(0, SP_XS))
+        ttk.Button(controls, text="Commit Reviewed", style="Secondary.TButton",
                    command=self.commit_imported_transactions).grid(row=6, column=0, sticky="ew", pady=(0, SP_XS))
         ttk.Button(controls, text="Clear Import", style="Ghost.TButton",
                    command=self.clear_current_import).grid(row=7, column=0, sticky="ew")
+        self._bank_links_host = tk.Frame(controls, bg=UI_SURFACE)
+        self._bank_links_host.grid(row=8, column=0, sticky="ew", pady=(SP_SM, 0))
+        self._render_bank_buttons()
 
         # Classify section (collapsible — auto-expands when a preview row is
         # selected, which is exactly when the toolbox is needed)
         classify_wrap, classify = self._collapsible_section(
-            controls, "Classify Selected", "tx.classify", bg=UI_SURFACE)
-        classify_wrap.grid(row=8, column=0, sticky="ew", pady=(SP_LG, 0))
+            controls, "Classify Selected (advanced)", "tx.classify", bg=UI_SURFACE)
+        classify_wrap.grid(row=9, column=0, sticky="ew", pady=(SP_LG, 0))   # row 8 = bank links
 
         tk.Label(classify, text="Match Type", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_SMALL_BOLD).grid(row=0, column=0, sticky="w", pady=(SP_XS, 1))
@@ -14580,9 +17693,9 @@ class BudgetApp(tk.Tk):
         tip_box.grid(row=16, column=0, sticky="ew", pady=(SP_MD, 0))
         tk.Label(tip_box, text="Workflow", bg=UI_INFO_SOFT, fg=UI_ACCENT,
                  font=FONT_CAPTION_BOLD).pack(anchor="w")
-        tk.Label(tip_box, text="1. Import PDF\n2. Suggest Matches\n3. Verify outgoing rows\n4. Commit Reviewed",
+        tk.Label(tip_box, text="1. Import a statement (PDF, CSV or OFX)\n2. Sort Unrecognised — one card per merchant\n3. Commit Reviewed",
                  bg=UI_INFO_SOFT, fg=UI_TEXT, font=FONT_CAPTION, justify="left").pack(anchor="w", pady=(SP_XS, 0))
-        tk.Label(tip_box, text="Tip: use Ctrl/Shift to multi-select preview rows. All outgoing rows must be verified before commit.",
+        tk.Label(tip_box, text="Tip: the Classify Selected toolbox below is for fine-tuning single rows (Ctrl/Shift multi-selects). All outgoing rows must be sorted before commit.",
                  bg=UI_INFO_SOFT, fg=UI_MUTED, font=FONT_CAPTION, justify="left", wraplength=210).pack(anchor="w", pady=(SP_XS, 0))
 
         # Preview panel (right)
@@ -14738,6 +17851,3317 @@ class BudgetApp(tk.Tk):
             lambda e: self._debounce_after("pie_expense", 80,
                                            lambda: self.refresh_expense_pie_chart(None)),
         )
+
+    # ── Homestead page ────────────────────────────────────────────────────
+    def _build_homestead_tab(self):
+        frame = self.homestead_tab
+        frame.columnconfigure(0, weight=1)
+
+        hero_canvas, hero = self._gradient_hero(frame, height=96)
+        hero_canvas.grid(row=0, column=0, sticky="ew", padx=SP_XL, pady=(SP_XL, SP_MD))
+        hero.configure(padx=SP_XL, pady=SP_LG)
+        hero.columnconfigure(0, weight=1)
+        tk.Label(hero, text="The Homestead", bg=UI_HERO, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_MD).grid(row=0, column=0, sticky="w")
+        tk.Label(hero, text="A living picture of your plan. Nothing here is a game stat — every plot, tree and fence post "
+                            "is a real fund, goal or bill. Tend the money and the place thrives.",
+                 bg=UI_HERO, fg=UI_MUTED, font=FONT_SMALL, wraplength=760, justify="left").grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self._homestead_tier_var = tk.StringVar(value="TIER 0 / 5")
+        tier_badge = tk.Frame(hero, bg=UI_AMETHYST, padx=SP_MD, pady=SP_XS)
+        tier_badge.grid(row=0, column=1, rowspan=2, sticky="e")
+        tk.Label(tier_badge, textvariable=self._homestead_tier_var, bg=UI_AMETHYST, fg=UI_HERO, font=FONT_BODY_BOLD).pack()
+
+        scene_wrap = tk.Frame(frame, bg=UI_BORDER, padx=1, pady=1)
+        scene_wrap.grid(row=1, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
+        self._homestead_canvas = tk.Canvas(scene_wrap, height=360, bg=UI_SURFACE, highlightthickness=0)
+        self._homestead_canvas.pack(fill="x")
+        self._homestead_canvas.bind("<Configure>", lambda _e: self._debounce_after("home_scene", 60, self._draw_homestead_canvas))
+        self._homestead_snap = None
+        self._homestead_frame = 0
+
+        body = tk.Frame(frame, bg=UI_BG)
+        body.grid(row=2, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
+        body.columnconfigure(0, weight=3, uniform="home")
+        body.columnconfigure(1, weight=2, uniform="home")
+
+        left = self._card_frame(body, padx=SP_LG, pady=SP_LG)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, SP_MD))
+        tk.Label(left, text="WHAT'S GROWING", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+        self._homestead_harvest_host = tk.Frame(left, bg=UI_SURFACE)
+        self._homestead_harvest_host.pack(fill="x", pady=(SP_SM, 0))
+        self._homestead_status_host = tk.Frame(left, bg=UI_SURFACE)
+        self._homestead_status_host.pack(fill="x", pady=(SP_SM, 0))
+
+        right = self._card_frame(body, padx=SP_LG, pady=SP_LG)
+        right.grid(row=0, column=1, sticky="nsew")
+        tk.Label(right, text="TIERS & COMPANIONS", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+        tk.Label(right, text="Each tier you hold awards a companion for your avatar's shoulder.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=300, justify="left").pack(anchor="w", pady=(2, SP_SM))
+        self._homestead_tier_host = tk.Frame(right, bg=UI_SURFACE)
+        self._homestead_tier_host.pack(fill="x")
+
+        self._homestead_how_summary = tk.StringVar(value="How each part of the scene is driven")
+        how_wrap, how = self._collapsible_section(frame, "How it grows", "homestead.how", default_open=False,
+                                                  summary_var=self._homestead_how_summary)
+        how_wrap.grid(row=3, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_XL))
+        rows = [
+            ("Sky & weather", "Clear at a 3-pay streak, cloudy at 1–2, overcast at 0. Day, evening and night follow your clock."),
+            ("House", "Grows with your Level: tent → cabin (3) → cottage (6) → farmhouse (10) → manor (15). Windows light up at night only when no bill is overdue."),
+            ("Garden plots", "One per sinking fund. Four growth stages by how funded it is; open-ended funds grow at $100 / $500 / $1k / $2.5k."),
+            ("Orchard trees", "One per goal. Fruit appears when the goal is reached; open-ended goals fruit at $1k / $2.5k / $5k / $10k."),
+            ("Fence", "One post per bill. An overdue bill is a leaning post with a gap in the rails."),
+            ("Path", "A flagstone for every statement you've imported, up to twelve."),
+            ("Mailbox", "Flag up while any 🚩 follow-up is unresolved."),
+            ("Windmill", "Turns while your streak is alive and nothing is overdue."),
+            ("Weeds", "Appear when a pay is more than one-and-a-half cycles late to be logged. One logged pay clears them."),
+        ]
+        for i, (k, v) in enumerate(rows):
+            line = tk.Frame(how, bg=UI_SURFACE, padx=SP_MD, pady=SP_XS)
+            line.grid(row=i, column=0, sticky="ew")
+            tk.Label(line, text=k, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD, width=14, anchor="w").pack(side="left")
+            tk.Label(line, text=v, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, wraplength=640, justify="left").pack(side="left", fill="x")
+
+    def refresh_homestead_tab(self):
+        snap = self.homestead.snapshot()
+        self._homestead_snap = snap
+        awarded = self.game_engine.check_homestead_tiers(snap["tier"])
+        if awarded:
+            names = ", ".join(AVATAR_ITEMS.get(i, {}).get("name", i) for i in awarded)
+            self.save_state()
+            try:
+                self.refresh_character_tab()
+            except Exception:
+                pass
+            self._show_toast(f"Homestead Tier {snap['tier']} — new companion: {names}. Equip it on the Avatar tab.", "success", 6000)
+            self.after(300, lambda t=snap["tier"], n=names: self._celebrate(f"Homestead Tier {t}!", f"{n} joins you", UI_AMETHYST))
+        self._homestead_tier_var.set(f"TIER {snap['tier']} / 5")
+        if hasattr(self, "today_homestead_var"):
+            self.today_homestead_var.set(f"Tier {snap['tier']} of 5")
+        self._draw_homestead_canvas()
+        self._render_homestead_harvest()
+
+        host = self._homestead_status_host
+        for w_ in host.winfo_children():
+            w_.destroy()
+        plots, trees, fence = snap["plots"], snap["trees"], snap["fence"]
+        stage_words = ["bare", "sprouting", "growing", "flowering", "fruiting"]
+        lines = [
+            ("🏠", f"House stage {snap['house_stage']}/5 · Level {snap['level']}", UI_TEXT),
+            ("🌱", (f"{len(plots)} plot{'s' if len(plots) != 1 else ''}: " + ", ".join(f"{p['name']} ({stage_words[p['stage']]})" for p in plots))
+                   if plots else "No plots yet — add a sinking fund under Setup.", UI_TEXT),
+            ("🌳", (f"{len(trees)} tree{'s' if len(trees) != 1 else ''}: " + ", ".join(f"{t['name']} ({stage_words[t['stage']]})" for t in trees))
+                   if trees else "No trees yet — add a goal under Setup.", UI_TEXT),
+            ("🪵", (f"Fence: {sum(1 for f in fence if f['ok'])} of {len(fence)} posts standing"
+                    + ("" if all(f['ok'] for f in fence) else " — " + ", ".join(f['name'] for f in fence if not f['ok']) + " overdue"))
+                   if fence else "No fence yet — add your bills.", UI_RUBY if fence and not all(f["ok"] for f in fence) else UI_TEXT),
+            ("🪨", f"Path: {snap['path_stones']} of 12 stones (statements imported)", UI_TEXT),
+            ("📬", "Mailbox flag is up — resolve the flagged follow-ups on Today." if snap["mailbox_flag"] else "Mailbox flag is down.", UI_RUBY if snap["mailbox_flag"] else UI_TEXT),
+            ("🌦", f"Weather: {snap['weather']} ({snap['streak']}-pay streak) · windmill {'turning' if snap['windmill_spin'] else 'still'}", UI_TEXT),
+        ]
+        if snap["weeds"]:
+            lines.append(("🌾", "Weeds — a pay is overdue to be logged. Log it and they clear.", UI_GOLD))
+        for icon, text, color in lines:
+            row = tk.Frame(host, bg=UI_SURFACE)
+            row.pack(fill="x", pady=(0, SP_XS))
+            tk.Label(row, text=icon, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY).pack(side="left", padx=(0, SP_SM))
+            tk.Label(row, text=text, bg=UI_SURFACE, fg=color, font=FONT_SMALL, wraplength=460, justify="left", anchor="w").pack(side="left", fill="x")
+
+        thost = self._homestead_tier_host
+        for w_ in thost.winfo_children():
+            w_.destroy()
+        order = ["house", "plots", "fence", "path", "mailbox"]
+        claimed = set(self.state.game.homestead_claimed_tiers)
+        for n, key in enumerate(order, start=1):
+            ok, desc, detail = snap["checks"][key]
+            comp_id = BudgetGameEngine.HOMESTEAD_COMPANIONS.get(n)
+            comp = AVATAR_ITEMS.get(comp_id, {})
+            row = tk.Frame(thost, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_EMERALD if ok else UI_BORDER)
+            row.pack(fill="x", pady=(0, SP_XS))
+            inner = tk.Frame(row, bg=UI_SURFACE2, padx=SP_SM, pady=SP_XS)
+            inner.pack(fill="x")
+            tk.Label(inner, text="✓" if ok else "○", bg=UI_SURFACE2, fg=UI_EMERALD if ok else UI_MUTED, font=FONT_BODY_BOLD, width=2).pack(side="left")
+            txt = tk.Frame(inner, bg=UI_SURFACE2)
+            txt.pack(side="left", fill="x", expand=True)
+            tk.Label(txt, text=desc, bg=UI_SURFACE2, fg=UI_TEXT if ok else UI_MUTED, font=FONT_SMALL_BOLD, anchor="w", wraplength=240, justify="left").pack(anchor="w")
+            tk.Label(txt, text=detail, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, anchor="w").pack(anchor="w")
+            tk.Label(inner, text=(comp.get("emoji", "") + " " + comp.get("name", "")) if n in claimed else f"{comp.get('emoji', '')} locked",
+                     bg=UI_SURFACE2, fg=UI_AMETHYST if n in claimed else UI_MUTED, font=FONT_CAPTION_BOLD).pack(side="right")
+
+    def _draw_homestead_canvas(self):
+        c = getattr(self, "_homestead_canvas", None)
+        if c is None or self._homestead_snap is None:
+            return
+        try:
+            w_ = c.winfo_width()
+            if w_ <= 1:
+                w_ = 760
+            draw_homestead(c, self._homestead_snap, w_, 360, self._homestead_frame)
+        except tk.TclError:
+            pass
+
+    def _draw_today_homestead(self):
+        c = getattr(self, "_today_homestead_canvas", None)
+        if c is None:
+            return
+        try:
+            snap = self.homestead.snapshot()
+            w_ = c.winfo_width()
+            if w_ <= 1:
+                w_ = 220
+            draw_homestead(c, snap, w_, 58, 0, mini=True)
+            self.today_homestead_var.set(f"Tier {snap['tier']} of 5")
+        except tk.TclError:
+            pass
+
+    def _start_homestead_anim(self):
+        self._stop_homestead_anim()
+        self._homestead_anim_active = True
+        self._tick_homestead_anim()
+
+    def _tick_homestead_anim(self):
+        if not getattr(self, "_homestead_anim_active", False):
+            return
+        self._homestead_frame += 1
+        self._draw_homestead_canvas()
+        try:
+            self._homestead_anim_id = self._homestead_canvas.after(120, self._tick_homestead_anim)
+        except tk.TclError:
+            self._homestead_anim_active = False
+
+    def _stop_homestead_anim(self):
+        self._homestead_anim_active = False
+        aid = getattr(self, "_homestead_anim_id", None)
+        if aid:
+            try:
+                self._homestead_canvas.after_cancel(aid)
+            except (tk.TclError, ValueError):
+                pass
+            self._homestead_anim_id = None
+
+    # ── Engagement hooks: celebrations, Daily Vault, Next Up ─────────────
+    def _celebrate(self, title: str, subtitle: str = "", color: str = UI_GOLD, duration_ms: int = 1700):
+        """Full-window confetti burst with a headline, over the app, for ~1.7 s.
+        Uses a transparent-colour Toplevel on Windows; click to dismiss early."""
+        import random
+        try:
+            self.update_idletasks()
+            x, y = self.winfo_rootx(), self.winfo_rooty()
+            w, h = self.winfo_width(), self.winfo_height()
+            if w < 80 or h < 80:
+                return
+            KEY = "#010203"
+            top = tk.Toplevel(self)
+            top.overrideredirect(True)
+            top.configure(bg=KEY)
+            try:
+                top.attributes("-transparentcolor", KEY)
+            except tk.TclError:
+                pass
+            try:
+                top.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            top.geometry(f"{w}x{h}+{x}+{y}")
+            c = tk.Canvas(top, bg=KEY, highlightthickness=0, width=w, height=h)
+            c.pack(fill="both", expand=True)
+        except tk.TclError:
+            return
+        palette = [UI_GOLD, UI_EMERALD, UI_SAPPHIRE, UI_AMETHYST, UI_RUBY, "#ffffff", color]
+        cx, cy = w / 2, h * 0.38
+        parts = []
+        for _ in range(80):
+            ang = random.uniform(0, math.tau)
+            spd = random.uniform(5, 17)
+            parts.append([cx, cy, math.cos(ang) * spd, math.sin(ang) * spd - 7,
+                          random.choice(palette), random.uniform(4, 9)])
+        big = FONT_HERO_NUM if len(title) <= 14 else FONT_DISPLAY_XL
+        c.create_text(cx + 3, cy + 3, text=title, fill="#000000", font=big, tags="t_shadow")
+        c.create_text(cx, cy, text=title, fill=color, font=big, tags="t_main")
+        if subtitle:
+            c.create_text(cx + 2, cy + 52, text=subtitle, fill="#000000", font=FONT_SUBHEADING, tags="s_shadow")
+            c.create_text(cx, cy + 50, text=subtitle, fill="#ffffff", font=FONT_SUBHEADING, tags="s_main")
+        frames = max(12, duration_ms // 40)
+        self._celebration_top = top
+
+        def _tick(i=0):
+            try:
+                if not top.winfo_exists():
+                    return
+                c.delete("p")
+                shrink = 1.0 - (i / frames) * 0.6
+                for p in parts:
+                    p[0] += p[2]
+                    p[1] += p[3]
+                    p[3] += 0.55
+                    p[2] *= 0.985
+                    s = p[5] * shrink
+                    c.create_rectangle(p[0] - s, p[1] - s * 0.6, p[0] + s, p[1] + s * 0.6, fill=p[4], outline="", tags="p")
+                if i > frames * 0.55:
+                    t = (i - frames * 0.55) / (frames * 0.45)
+                    c.itemconfigure("t_main", fill=_lerp_color(color, KEY, t))
+                    c.itemconfigure("t_shadow", fill=_lerp_color("#000000", KEY, t))
+                    c.itemconfigure("s_main", fill=_lerp_color("#ffffff", KEY, t))
+                    c.itemconfigure("s_shadow", fill=_lerp_color("#000000", KEY, t))
+                if i < frames:
+                    top.after(40, _tick, i + 1)
+                else:
+                    top.destroy()
+            except tk.TclError:
+                pass
+        c.bind("<Button-1>", lambda _e: top.destroy())
+        top.after(0, _tick)
+
+    def _streak_risk(self) -> Optional[tuple]:
+        """(message, color) when the pay streak is close to being lost."""
+        g = self.state.game
+        if not self.state.incomes or g.streak_pays <= 0:
+            return None
+        last = max(i.received_on for i in self.state.incomes)
+        cycle = self.engine.current_cycle_days()
+        expected = last + timedelta(days=cycle)
+        days_left = (expected - date.today()).days
+        if days_left < 0:
+            return (f"Streak at risk — a pay was expected {abs(days_left)} day{'s' if abs(days_left) != 1 else ''} ago. "
+                    f"Log it to keep your {g.streak_pays}-pay streak.", UI_RUBY)
+        if days_left <= 2:
+            return (f"Next pay expected {expected:%a %d %b}. Log it on the day to keep the {g.streak_pays}-pay streak alive.", UI_GOLD)
+        return None
+
+    def _next_up_items(self) -> List[tuple]:
+        """Closest rewards: (title, progress 0..1, detail, page_key, color)."""
+        g = self.state.game
+        items = []
+        nxt = level_threshold(g.level + 1)
+        prev_thr = level_threshold(g.level)
+        cur = g.total_score - prev_thr
+        need = max(0, nxt - g.total_score)
+        unlocks = [it["name"] for it in AVATAR_ITEMS.values()
+                   if it.get("unlock_req") and it["unlock_req"].get("type") == "level" and it["unlock_req"].get("value") == g.level + 1]
+        items.append((f"Level {g.level + 1}", min(1.0, cur / float(max(1, nxt - prev_thr))),
+                      f"{need} Gold to go" + (f" · unlocks {', '.join(unlocks)}" if unlocks else ""), "score", UI_EMERALD))
+        next_ms = next((m for m in (3, 5, 10, 15, 20, 25, 30) if m > g.streak_pays), None)
+        if next_ms:
+            left = next_ms - g.streak_pays
+            items.append((f"Streak {next_ms} 🔥", g.streak_pays / next_ms,
+                          f"{left} more good pay{'s' if left != 1 else ''} → +{1 if next_ms == 3 else 2} Gems", "income", UI_GOLD))
+        try:
+            ps = g.pulse_streak
+            nm = next((m_ for m_ in BudgetGameEngine.PULSE_MILESTONES if m_ > ps), None)
+            if nm:
+                items.append((f"Pulse run {nm} 🔥", ps / float(nm), f"{nm - ps} more day{'s' if nm - ps != 1 else ''} of the Daily Pulse"
+                              + (" · earns a ❄ freeze" if nm % 7 == 0 else ""), "today", UI_GOLD))
+        except Exception:
+            pass
+        try:
+            mill = self.game_engine.mill_status()
+            plots = self.game_engine.plot_status()
+            ripe = [p_ for p_ in plots if p_['ripe']]
+            if mill['gold'] >= 1 or ripe:
+                items.append(("Harvest ready 🌾", 1.0, f"{mill['gold']} Gold milled" + (f" · {len(ripe)} plot{'s' if len(ripe) != 1 else ''} ripe" if ripe else "") + " — collect on the Homestead", "homestead", UI_GOLD))
+            elif plots:
+                soon = min(plots, key=lambda p_: p_['hours_left'])
+                items.append((f"{soon['name']} ripens", 1.0 - soon['hours_left'] / BudgetGameEngine.PLOT_RIPEN_HOURS, f"{soon['hours_left']:.0f} h to a pack fragment ({self.state.game.pack_fragments}/{BudgetGameEngine.FRAGMENTS_PER_PACK})", "homestead", UI_EMERALD))
+            else:
+                items.append(("Windmill filling", mill['hours'] / BudgetGameEngine.MILL_CAP_HOURS, f"{mill['rate']:.0f} Gold/h · full in {mill['hours_to_cap']:.0f} h", "homestead", UI_GOLD))
+        except Exception:
+            pass
+        for idx, (thr, rt, ra, name) in enumerate(SEASON_TIERS):
+            if idx not in g.season_claimed_tiers:
+                items.append((f"Season: {name}", min(1.0, g.season_xp / float(thr)),
+                              f"{max(0, thr - g.season_xp)} XP to {ra} {'Gold' if rt == 'gold' else 'Gems'}", "score", UI_SAPPHIRE))
+                break
+        try:
+            prog = self.game_engine.card_set_progress()
+            best = None
+            for sid, sname, _d, _cids, reward in CARD_SETS:
+                owned, total, complete, _claimed = prog.get(sid, (0, 1, False, False))
+                if complete:
+                    continue
+                if best is None or owned / total > best[0]:
+                    best = (owned / total, sname, owned, total, AVATAR_ITEMS.get(reward, {}).get("name", "a reward"))
+            if best:
+                items.append((f"Set: {best[1]}", best[0], f"{best[3] - best[2]} card{'s' if best[3] - best[2] != 1 else ''} to {best[4]}", "collection", UI_AMETHYST))
+        except Exception:
+            pass
+        try:
+            snap = getattr(self, "_homestead_snap", None) or self.homestead.snapshot()
+            if snap["tier"] < 5:
+                for key in ("house", "plots", "fence", "path", "mailbox"):
+                    ok, desc, detail = snap["checks"][key]
+                    if not ok:
+                        comp = AVATAR_ITEMS.get(BudgetGameEngine.HOMESTEAD_COMPANIONS.get(snap["tier"] + 1, ""), {}).get("name", "a companion")
+                        items.append((f"Homestead Tier {snap['tier'] + 1}", snap["tier"] / 5.0, f"{desc} ({detail}) → {comp}", "homestead", UI_AMETHYST))
+                        break
+        except Exception:
+            pass
+        items.sort(key=lambda it: -it[1])
+        return items[:4]
+
+    def _render_next_up(self):
+        host = self._next_up_host
+        for w_ in host.winfo_children():
+            w_.destroy()
+        head = tk.Frame(host, bg=UI_SURFACE2)
+        head.pack(fill="x")
+        tk.Label(head, text="NEXT UP", bg=UI_SURFACE2, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD).pack(side="left")
+        tk.Label(head, text="closest rewards first", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="right")
+        for msg, color in [r for r in (self._streak_risk(), self._pulse_risk()) if r]:
+            banner = tk.Frame(host, bg=UI_SURFACE, highlightthickness=1, highlightbackground=color, padx=SP_SM, pady=SP_XS)
+            banner.pack(fill="x", pady=(SP_XS, SP_XS))
+            tk.Label(banner, text="🔥 " + msg, bg=UI_SURFACE, fg=color, font=FONT_CAPTION_BOLD, wraplength=360, justify="left").pack(anchor="w")
+        for title, prog, detail, page, color in self._next_up_items():
+            row = tk.Frame(host, bg=UI_SURFACE2, cursor="hand2")
+            row.pack(fill="x", pady=(SP_XS, 0))
+            top = tk.Frame(row, bg=UI_SURFACE2)
+            top.pack(fill="x")
+            tk.Label(top, text=title, bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD).pack(side="left")
+            tk.Label(top, text=f"{int(prog * 100)}%", bg=UI_SURFACE2, fg=color, font=FONT_CAPTION_BOLD).pack(side="right")
+            bar = tk.Canvas(row, height=6, width=10, bg=UI_SURFACE, highlightthickness=0)
+            bar.pack(fill="x", pady=(2, 2))
+            bar.bind("<Configure>", lambda e, b=bar, p=prog, col=color: (b.delete("all"), b.create_rectangle(0, 0, max(2, e.width * p), 6, fill=col, outline="")))
+            tk.Label(row, text=detail, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=360, justify="left", anchor="w").pack(anchor="w")
+            for wdg in (row, top, bar):
+                wdg.bind("<Button-1>", lambda _e, p=page: self._show_page(p))
+            for child in top.winfo_children():
+                child.bind("<Button-1>", lambda _e, p=page: self._show_page(p))
+
+    # ── End-of-month report ──────────────────────────────────────────────
+    def _pending_report_month(self) -> Optional[tuple]:
+        """(year, month) of the most recent completed month that had activity
+        and whose report hasn't been viewed or dismissed yet, else None."""
+        today = date.today()
+        first_this = today.replace(day=1)
+        last_prev = first_this - timedelta(days=1)
+        ym = last_prev.strftime("%Y-%m")
+        if self.state.last_month_report_seen == ym:
+            return None
+        start, end = month_bounds(last_prev)
+        had_activity = any(start <= i.received_on <= end for i in self.state.incomes) or \
+            any(start <= t.tx_date <= end for t in self.state.transactions)
+        if not had_activity:
+            return None
+        return last_prev.year, last_prev.month
+
+    def _monthly_report_data(self, year: int, month: int) -> dict:
+        ref = date(year, month, 1)
+        cur = self._current_month_review_data(for_date=ref)
+        prev_ref = (ref - timedelta(days=1)).replace(day=1)
+        prev = self._current_month_review_data(for_date=prev_ref)
+        start, end = cur["start"], cur["end"]
+        cats = outgoing_category_totals(self.state.transactions, start, end)
+        top = sorted(cats.items(), key=lambda kv: -kv[1])[:5]
+        over = [r for r in cur["mix_rows"] if r[3] > 1.0]
+        under = [r for r in cur["mix_rows"] if r[3] < -1.0]
+        over.sort(key=lambda r: -r[3])
+        under.sort(key=lambda r: r[3])
+        flagged = len({extract_merchant_name(t.description) for t in self.state.transactions
+                       if getattr(t, "flagged", False)})
+        bills_overdue = [b for b in self.state.bills if b.due_date < date.today() and b.current_saved + 0.01 < b.amount]
+        net = cur["income_total"] - cur["outgoing_total"]
+        spend_delta = None
+        if prev["outgoing_total"] > 0:
+            spend_delta = (cur["outgoing_total"] - prev["outgoing_total"]) / prev["outgoing_total"] * 100.0
+        return {
+            "label": ref.strftime("%B %Y"), "start": start, "end": end,
+            "income": cur["income_total"], "spent": cur["outgoing_total"], "net": net,
+            "savings_rate": cur["savings_rate"], "tx_count": cur["outgoing_count"],
+            "top": top, "over": over[:2], "under": under[:2], "anomalies": cur["anomalies"][:3],
+            "flagged": flagged, "bills_overdue": bills_overdue, "spend_delta": spend_delta,
+            "prev_label": prev_ref.strftime("%B"), "prev_spent": prev["outgoing_total"],
+        }
+
+    def _month_report_quip(self, d: dict) -> tuple:
+        if d["income"] <= 0 and d["spent"] <= 0:
+            return "Quiet month on the books. Import a statement and I'll have more to say.", "thinking"
+        if d["net"] > 0 and d["savings_rate"] >= 20:
+            return f"{d['savings_rate']:.0f}% of income kept. That's the kind of month that compounds.", "proud"
+        if d["net"] > 0:
+            return "Ahead for the month. Not by a mile, but ahead counts.", "happy"
+        if d["spent"] > 0 and d["income"] <= 0:
+            return "Spending logged but no pay logged — log the pay so the picture is honest.", "thinking"
+        return "Spent more than came in. Happens. The categories below tell you where to look first.", "shocked"
+
+    def _render_month_report_card(self):
+        host = self._month_report_host
+        for w_ in host.winfo_children():
+            w_.destroy()
+        pending = self._pending_report_month()
+        if not pending:
+            host.pack_forget()
+            return
+        y, m = pending
+        label = date(y, m, 1).strftime("%B")
+        host.pack(fill="x", pady=(SP_SM, 0))
+        tk.Label(host, text="MONTH CLOSED", bg=UI_SURFACE, fg=UI_SAPPHIRE, font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_SM, SP_XS))
+        glow = tk.Frame(host, bg=UI_SAPPHIRE, padx=1, pady=1)
+        glow.pack(fill="x", pady=(0, SP_SM))
+        card = tk.Frame(glow, bg=UI_SURFACE2, padx=SP_MD, pady=SP_MD)
+        card.pack(fill="x")
+        left = tk.Frame(card, bg=UI_SURFACE2)
+        left.pack(side="left", fill="x", expand=True)
+        tk.Label(left, text=f"Your {label} report is ready.", bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_BODY_BOLD, anchor="w").pack(anchor="w")
+        tk.Label(left, text="Income, spending by category against your target mix, what stood out, and how it compares to the month before.",
+                 bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL, wraplength=520, justify="left").pack(anchor="w")
+        btns = tk.Frame(card, bg=UI_SURFACE2)
+        btns.pack(side="right", padx=(SP_MD, 0))
+        ttk.Button(btns, text="View report", style="Primary.TButton", command=lambda: self._show_monthly_report(y, m)).pack(side="left")
+        ttk.Button(btns, text="Skip this month", style="Ghost.TButton", command=lambda: self._dismiss_month_report(y, m)).pack(side="left", padx=(SP_XS, 0))
+
+    def _dismiss_month_report(self, year: int, month: int):
+        self.state.last_month_report_seen = f"{year:04d}-{month:02d}"
+        self.save_state()
+        self._render_month_report_card()
+
+    def _maybe_prompt_monthly_report(self):
+        pending = self._pending_report_month()
+        if not pending:
+            return
+        y, m = pending
+        label = date(y, m, 1).strftime("%B")
+        self._show_toast(f"{label} is done — your monthly report is ready.", "info", duration=9000,
+                         action_label="View", action_cb=lambda: self._show_monthly_report(y, m))
+
+    def _show_monthly_report(self, year: int, month: int):
+        d = self._monthly_report_data(year, month)
+        scrim, content, btn_row, step_var, close = self._overlay_card("MONTHLY REPORT", 780, 700)
+        wrap_w = 780 - 2 * SP_XL
+        step_var.set(f"{d['start']:%d %b} – {d['end']:%d %b}")
+        quip, expr = self._month_report_quip(d)
+        head = tk.Frame(content, bg=UI_SURFACE)
+        head.pack(fill="x", pady=(0, SP_SM))
+        gc = tk.Canvas(head, width=52, height=68, bg=UI_SURFACE, highlightthickness=0)
+        gc.pack(side="left", padx=(0, SP_MD))
+        try:
+            _draw_gerald(gc, w=52, h=68, expression=expr)
+        except Exception:
+            pass
+        ht = tk.Frame(head, bg=UI_SURFACE)
+        ht.pack(side="left", fill="x", expand=True)
+        tk.Label(ht, text=d["label"], bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_MD).pack(anchor="w")
+        tk.Label(ht, text=quip, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY, wraplength=wrap_w - 80, justify="left").pack(anchor="w")
+
+        stats = tk.Frame(content, bg=UI_SURFACE)
+        stats.pack(fill="x", pady=(SP_XS, SP_MD))
+        net_col = UI_EMERALD if d["net"] >= 0 else UI_RUBY
+        cells = [("INCOME", f"${d['income']:,.0f}", UI_EMERALD), ("SPENT", f"${d['spent']:,.0f}", UI_RUBY),
+                 ("NET", f"{'+' if d['net'] >= 0 else '−'}${abs(d['net']):,.0f}", net_col),
+                 ("SAVINGS RATE", f"{d['savings_rate']:.0f}%", UI_SAPPHIRE)]
+        for n, (lbl, val, color) in enumerate(cells):
+            box = tk.Frame(stats, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM, highlightthickness=1, highlightbackground=UI_BORDER)
+            box.grid(row=0, column=n, sticky="ew", padx=(0 if n == 0 else SP_SM, 0))
+            stats.columnconfigure(n, weight=1, uniform="rpt")
+            tk.Label(box, text=lbl, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+            tk.Label(box, text=val, bg=UI_SURFACE2, fg=color, font=FONT_STAT_NUM).pack(anchor="w")
+        if d["spend_delta"] is not None:
+            arrow = "▲" if d["spend_delta"] > 0 else "▼"
+            tk.Label(content, text=f"{arrow} Spending {abs(d['spend_delta']):.0f}% {'up' if d['spend_delta'] > 0 else 'down'} on {d['prev_label']} (${d['prev_spent']:,.0f})",
+                     bg=UI_SURFACE, fg=UI_RUBY if d["spend_delta"] > 0 else UI_EMERALD, font=FONT_SMALL_BOLD).pack(anchor="w", pady=(0, SP_SM))
+
+        body = tk.Frame(content, bg=UI_SURFACE)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=3, uniform="rptb")
+        body.columnconfigure(1, weight=2, uniform="rptb")
+        left = tk.Frame(body, bg=UI_SURFACE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, SP_MD))
+        tk.Label(left, text="WHERE IT WENT", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+        if d["top"]:
+            total = d["spent"] or 1.0
+            target_by_cat = {r[0]: (r[1], r[2], r[3]) for r in self._current_month_review_data(for_date=d["start"])["mix_rows"]}
+            biggest = d["top"][0][1] or 1.0
+            for cat, amt in d["top"]:
+                row = tk.Frame(left, bg=UI_SURFACE)
+                row.pack(fill="x", pady=(SP_XS, 0))
+                top_line = tk.Frame(row, bg=UI_SURFACE)
+                top_line.pack(fill="x")
+                tk.Label(top_line, text=cat, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD, anchor="w").pack(side="left")
+                pct = amt / total * 100
+                diff = target_by_cat.get(cat)
+                diff_txt = ""
+                if diff and abs(diff[2]) >= 1.0:
+                    diff_txt = f"  ({'+' if diff[2] > 0 else ''}{diff[2]:.0f} pts vs target)"
+                tk.Label(top_line, text=f"${amt:,.0f} · {pct:.0f}%{diff_txt}", bg=UI_SURFACE,
+                         fg=UI_RUBY if diff and diff[2] > 1.0 else (UI_EMERALD if diff and diff[2] < -1.0 else UI_MUTED),
+                         font=FONT_CAPTION).pack(side="right")
+                bar = tk.Canvas(row, height=8, width=10, bg=UI_SURFACE2, highlightthickness=0)
+                bar.pack(fill="x", pady=(2, 0))
+                bar.bind("<Configure>", lambda e, b=bar, f=amt / biggest: (b.delete("all"), b.create_rectangle(0, 0, max(2, e.width * f), 8, fill=UI_SAPPHIRE, outline="")))
+        else:
+            tk.Label(left, text="No categorised spending for this month. Import and sort a statement to fill this in.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, wraplength=380, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+
+        right = tk.Frame(body, bg=UI_SURFACE)
+        right.grid(row=0, column=1, sticky="nsew")
+        tk.Label(right, text="WHAT STOOD OUT", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+        notes = []
+        for r in d["over"]:
+            notes.append(("▲", f"{r[0]} ran {r[3]:.0f} pts over its target share.", UI_RUBY))
+        for r in d["under"]:
+            notes.append(("▼", f"{r[0]} came in {abs(r[3]):.0f} pts under target. Nice.", UI_EMERALD))
+        for a in d["anomalies"]:
+            notes.append(("•", str(a)[:110], UI_GOLD))
+        if d["flagged"]:
+            notes.append(("🚩", f"{d['flagged']} merchant{'s' if d['flagged'] != 1 else ''} still flagged for follow-up.", UI_RUBY))
+        if d["bills_overdue"]:
+            notes.append(("!", f"{len(d['bills_overdue'])} bill{'s' if len(d['bills_overdue']) != 1 else ''} overdue right now: " + ", ".join(b.name for b in d["bills_overdue"][:3]), UI_RUBY))
+        g = self.state.game
+        notes.append(("★", f"Level {g.level} · {g.streak_pays}-pay streak · Homestead tier {g.homestead_tier}.", UI_TEXT))
+        if not notes:
+            notes.append(("•", "Nothing unusual. A steady month.", UI_MUTED))
+        for icon, text, color in notes[:7]:
+            row = tk.Frame(right, bg=UI_SURFACE)
+            row.pack(fill="x", pady=(SP_XS, 0))
+            tk.Label(row, text=icon, bg=UI_SURFACE, fg=color, font=FONT_SMALL_BOLD, width=2, anchor="w").pack(side="left")
+            tk.Label(row, text=text, bg=UI_SURFACE, fg=color if color != UI_TEXT else UI_TEXT, font=FONT_SMALL, wraplength=250, justify="left", anchor="w").pack(side="left", fill="x")
+
+        def _mark_seen():
+            self.state.last_month_report_seen = f"{year:04d}-{month:02d}"
+            self.save_state()
+            try:
+                self._render_month_report_card()
+            except Exception:
+                pass
+
+        def _done():
+            _mark_seen()
+            close()
+
+        def _open_analysis():
+            _mark_seen()
+            close()
+            today = date.today()
+            months_back = (today.year - year) * 12 + (today.month - month)
+            try:
+                self._review_period_scope = "month"
+                self._review_month_offset = -months_back
+                self.refresh_review_tab()
+            except Exception:
+                pass
+            self._show_page("review")
+
+        ttk.Button(btn_row, text="Open full analysis  →", style="Secondary.TButton", command=_open_analysis).pack(side="left")
+        ttk.Button(btn_row, text="Done  ✓", style="Primary.TButton", command=_done).pack(side="right")
+        scrim.bind("<Escape>", lambda _e: (_done(), "break")[1])
+        scrim.bind("<Return>", lambda _e: (_done(), "break")[1])
+
+    # ── Cost guide + investment helper ────────────────────────────────────
+    def _essential_monthly_bills(self) -> float:
+        return round(sum(monthly_equivalent(b.amount, b.frequency) for b in self.state.bills
+                         if b.priority in ("essential", "important")), 2)
+
+    def _emergency_fund_suggestion(self) -> tuple:
+        """(target, explanation) — three months of essential bills, floored at $2,000."""
+        monthly = self._essential_monthly_bills()
+        if monthly <= 0:
+            return 5000.0, "No bills entered yet, so this is a generic starting target. Add your bills and it recalculates."
+        target = max(2000.0, round(monthly * 3 / 100.0) * 100.0)
+        return target, f"Your essential bills come to about ${monthly:,.0f} a month. Three months of that is ${target:,.0f}."
+
+    def _guide_default_date(self, entry: dict) -> Optional[date]:
+        today = date.today()
+        if entry.get("christmas"):
+            yr = today.year if today < date(today.year, 12, 10) else today.year + 1
+            return date(yr, 12, 20)
+        yrs = entry.get("years_ahead")
+        if yrs:
+            try:
+                return today.replace(year=today.year + yrs)
+            except ValueError:
+                return today + timedelta(days=365 * yrs)
+        return None
+
+    def _guide_amount_for(self, entry: dict, variant: Optional[str] = None) -> float:
+        if entry.get("calc") == "rego":
+            return float(REGO_ESTIMATES_QLD.get(variant or "4 cyl", entry["typical"]))
+        if entry.get("calc") == "emergency":
+            return self._emergency_fund_suggestion()[0]
+        return float(entry["typical"])
+
+    def _apply_guide_to_setup_form(self, entry: dict, amount: float):
+        """Fill the matching Setup form (bills / funds / goals) from a guide entry."""
+        kind = entry["kind"]
+        today = date.today()
+        if kind == "bill":
+            self._show_page("bills")
+            self.clear_bill_form()
+            self.bill_name.insert(0, entry["name"].split(" (")[0])
+            self.bill_amount.insert(0, f"{amount:.2f}")
+            self.bill_frequency.set(entry.get("frequency", "monthly"))
+            self.bill_priority.set(entry.get("priority", "important"))
+            gap = {"weekly": 7, "fortnightly": 14, "monthly": 30, "quarterly": 90, "yearly": 365}.get(entry.get("frequency"), 30)
+            self.bill_due.insert(0, (today + timedelta(days=gap)).isoformat())
+            self.bill_due.focus_set()
+            self.bill_due.selection_range(0, tk.END)
+            self._show_toast("Filled in — set the real next due date, then Add Bill.", "info", 4000)
+        elif kind == "fund":
+            self._show_page("funds")
+            self.clear_fund_form()
+            mode = entry.get("fund_mode", "auto")
+            self.fund_mode.set(self._fund_label_from_mode(mode))
+            self._sync_fund_form_mode()
+            self.fund_name.insert(0, entry["name"].split(" (")[0])
+            if mode in ("auto", "buffer"):
+                self.fund_target.insert(0, f"{amount:.2f}")
+            else:
+                self.fund_per_pay.insert(0, f"{amount:.2f}")
+            d = self._guide_default_date(entry)
+            if d and str(self.fund_date.cget("state")) == "normal":
+                self.fund_date.insert(0, d.isoformat())
+            self.fund_name.focus_set()
+            self._show_toast("Filled in — adjust anything, then Add Fund.", "info", 4000)
+        else:
+            self._show_page("goals")
+            self.clear_goal_form()
+            self.goal_name.insert(0, entry["name"])
+            self.goal_target.insert(0, f"{amount:.0f}")
+            pays_two_years = max(1, int(round(730 / self.engine.current_cycle_days())))
+            self.goal_value.insert(0, f"{amount / pays_two_years:.0f}")
+            self.goal_mode.set("fixed")
+            self.goal_priority.set("essential" if entry.get("calc") == "emergency" else "important")
+            self.goal_name.focus_set()
+            self._show_toast("Filled in — the per-pay amount reaches the target in about two years. Adjust, then Add Goal.", "info", 5000)
+
+    def _show_cost_guide(self, kind: Optional[str] = None, on_pick=None):
+        """Searchable reference of typical costs. Picking an entry fills the Setup
+        form, or calls on_pick(entry, amount, extras) when opened from the wizard."""
+        scrim, content, btn_row, step_var, close = self._overlay_card("COST GUIDE · QUEENSLAND", 780, 680)
+        wrap_w = 780 - 2 * SP_XL
+        step_var.set("typical 2025–27 figures")
+        tk.Label(content, text="Not sure what something costs? Start from a typical figure.",
+                 bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_SM).pack(anchor="w")
+        tk.Label(content, text=COST_GUIDE_SOURCE_NOTE, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION,
+                 wraplength=wrap_w, justify="left").pack(anchor="w", pady=(2, SP_SM))
+        bar = tk.Frame(content, bg=UI_SURFACE)
+        bar.pack(fill="x")
+        q_var = tk.StringVar()
+        q = ttk.Entry(bar, textvariable=q_var, width=28, font=FONT_BODY)
+        q.pack(side="left")
+        st = {"kind": kind, "sel": None, "variant": "4 cyl"}
+        kinds = [(None, "All"), ("bill", "Bills"), ("fund", "Set-asides"), ("goal", "Goals")]
+        chip_host = tk.Frame(bar, bg=UI_SURFACE)
+        chip_host.pack(side="left", padx=(SP_MD, 0))
+
+        list_area = tk.Frame(content, bg=UI_SURFACE)
+        list_area.pack(fill="both", expand=True, pady=(SP_SM, 0))
+        detail = tk.Frame(content, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_MD, pady=SP_SM)
+        detail.pack(fill="x", pady=(SP_SM, 0))
+
+        def _chips():
+            for w_ in chip_host.winfo_children():
+                w_.destroy()
+            for k, lbl in kinds:
+                sel = st["kind"] == k
+                tk.Button(chip_host, text=lbl, bg=UI_ACCENT_SOFT if sel else UI_SURFACE2, fg=UI_TEXT_BRIGHT if sel else UI_MUTED,
+                          relief="flat", bd=0, highlightthickness=1, highlightbackground=UI_ACCENT if sel else UI_BORDER,
+                          font=FONT_SMALL_BOLD if sel else FONT_SMALL, padx=SP_SM, pady=2, cursor="hand2", takefocus=0,
+                          command=lambda k=k: (st.__setitem__("kind", k), _chips(), _list())).pack(side="left", padx=(0, SP_XS))
+
+        def _list():
+            for w_ in list_area.winfo_children():
+                w_.destroy()
+            inner, bind_wheel = self._overlay_scroll_area(list_area, 250)
+            needle = q_var.get().strip().lower()
+            for e in COST_GUIDE:
+                if st["kind"] and e["kind"] != st["kind"]:
+                    continue
+                if needle and needle not in e["name"].lower() and not any(needle in k for k in e["keywords"]):
+                    continue
+                row = tk.Frame(inner, bg=UI_SURFACE2 if st["sel"] is not e else UI_SURFACE, cursor="hand2",
+                               highlightthickness=1, highlightbackground=UI_ACCENT if st["sel"] is e else UI_BORDER)
+                row.pack(fill="x", pady=(0, 2))
+                bgc = row.cget("bg")
+                tag = {"bill": ("BILL", UI_RUBY), "fund": ("SET ASIDE", UI_SAPPHIRE), "goal": ("GOAL", UI_EMERALD)}[e["kind"]]
+                tk.Label(row, text=tag[0], bg=bgc, fg=tag[1], font=FONT_CAPTION_BOLD, width=9, anchor="w", padx=SP_SM).pack(side="left")
+                tk.Label(row, text=e["name"], bg=bgc, fg=UI_TEXT, font=FONT_SMALL_BOLD, anchor="w").pack(side="left")
+                amt = self._guide_amount_for(e)
+                per = {"bill": f" / {e.get('frequency', '')}", "fund": "", "goal": ""}[e["kind"]]
+                tk.Label(row, text=f"≈ ${amt:,.0f}{per}", bg=bgc, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD, padx=SP_SM).pack(side="right")
+                for wdg in [row] + row.winfo_children():
+                    wdg.bind("<Button-1>", lambda _e, e=e: _select(e))
+            bind_wheel(inner)
+
+        def _select(e):
+            st["sel"] = e
+            _list()
+            _detail()
+
+        def _detail():
+            for w_ in detail.winfo_children():
+                w_.destroy()
+            e = st["sel"]
+            if e is None:
+                tk.Label(detail, text="Pick an item above to see the detail and use it.", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w")
+                return
+            tk.Label(detail, text=e["name"], bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_BODY_BOLD).pack(anchor="w")
+            note = e["note"]
+            if e.get("calc") == "emergency":
+                note = self._emergency_fund_suggestion()[1] + " " + note
+            tk.Label(detail, text=note, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL, wraplength=wrap_w - 40, justify="left").pack(anchor="w", pady=(2, SP_XS))
+            amt_var = tk.StringVar(value=f"{self._guide_amount_for(e, st['variant']):.0f}")
+            if e.get("calc") == "rego":
+                vrow = tk.Frame(detail, bg=UI_SURFACE2)
+                vrow.pack(anchor="w", pady=(0, SP_XS))
+                for v, val in REGO_ESTIMATES_QLD.items():
+                    sel = st["variant"] == v
+                    tk.Button(vrow, text=f"{v} ≈ ${val}", bg=UI_ACCENT_SOFT if sel else UI_SURFACE, fg=UI_TEXT_BRIGHT if sel else UI_MUTED,
+                              relief="flat", bd=0, highlightthickness=1, highlightbackground=UI_ACCENT if sel else UI_BORDER,
+                              font=FONT_CAPTION_BOLD, padx=SP_SM, pady=2, cursor="hand2", takefocus=0,
+                              command=lambda v=v: (st.__setitem__("variant", v), _detail())).pack(side="left", padx=(0, SP_XS))
+            arow = tk.Frame(detail, bg=UI_SURFACE2)
+            arow.pack(fill="x")
+            lo, hi = e.get("low", 0), e.get("high", 0)
+            tk.Label(arow, text=f"Use amount  $", bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL_BOLD).pack(side="left")
+            ttk.Entry(arow, textvariable=amt_var, width=10, font=FONT_BODY).pack(side="left", padx=(SP_XS, SP_SM))
+            if lo and hi:
+                tk.Label(arow, text=f"typical range ${lo:,.0f}–${hi:,.0f}", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left")
+
+            def _use():
+                amt = self._parse_money_field(amt_var.get())
+                if amt is None or amt <= 0:
+                    self._show_toast("Enter an amount above zero.", "warning")
+                    return
+                close()
+                if on_pick:
+                    extras = {"mode": e.get("fund_mode", "auto"), "date": self._guide_default_date(e),
+                              "frequency": e.get("frequency", "monthly"), "priority": e.get("priority", "important")}
+                    on_pick(e, amt, extras)
+                else:
+                    self._apply_guide_to_setup_form(e, amt)
+            ttk.Button(arow, text="Use this  →", style="Primary.TButton", command=_use).pack(side="right")
+
+        q_var.trace_add("write", lambda *_a: _list())
+        _chips()
+        _list()
+        _detail()
+        ttk.Button(btn_row, text="Close", style="Ghost.TButton", command=close).pack(side="left")
+        q.focus_set()
+
+    # ── Investment percentage helper ─────────────────────────────────────
+    def _invest_recommendation(self, buffer: str, debt: str, horizon: str, comfort: str) -> tuple:
+        """(percent_of_surplus, min_buffer, reasoning_lines)."""
+        lines = []
+        if debt == "yes":
+            lines.append("You have debt above ~7%. Paying that down is a guaranteed return no fund beats — invest 0% for now and point the surplus at the debt.")
+            pct = 0
+        else:
+            base = {"none": 0, "under1": 5, "1to3": 10, "3plus": 20}[buffer]
+            lines.append({"none": "No emergency buffer yet. Build one month of bills first — investing can wait a few pays.",
+                          "under1": "Under a month of buffer: a small 5% keeps the habit alive while the buffer grows.",
+                          "1to3": "One to three months of buffer: 10% is a solid middle ground.",
+                          "3plus": "Three months or more of buffer: you can afford to put real weight behind investing — around 20% of surplus."}[buffer])
+            cap = {"short": 5, "mid": 15, "long": 100}[horizon]
+            if cap < base:
+                lines.append({"short": "Money you may need inside 3 years shouldn't ride the sharemarket — capped at 5%, keep the rest in savings.",
+                              "mid": "A 3–7 year horizon suits a balanced mix, so the percentage is capped at 15%."}[horizon])
+            pct = min(base, cap)
+            mult = {"low": 0.5, "medium": 0.8, "high": 1.0}[comfort]
+            if mult < 1.0 and pct > 0:
+                lines.append("Markets drop 20% every few years. Because you'd find that hard, the amount is trimmed so a bad year doesn't push you to sell.")
+            pct = int(round(pct * mult / 5.0) * 5)
+        monthly = self._essential_monthly_bills()
+        min_buffer = max(200.0, round(monthly / 4 / 50.0) * 50.0) if monthly else 300.0
+        lines.append(f"Minimum buffer: keep about a week of essentials (≈ ${min_buffer:,.0f}) liquid — investing pauses below that.")
+        lines.append("Super already takes 12% of wages before you see it, so this percentage is on top of that.")
+        return pct, min_buffer, lines
+
+    def _show_invest_helper(self):
+        scrim, content, btn_row, step_var, close = self._overlay_card("INVESTING · HELP ME CHOOSE", 760, 640)
+        wrap_w = 760 - 2 * SP_XL
+        step_var.set("four questions")
+        tk.Label(content, text="How much of each pay's surplus should go to investing?", bg=UI_SURFACE, fg=UI_TEXT_BRIGHT,
+                 font=FONT_DISPLAY_SM).pack(anchor="w")
+        tk.Label(content, text="Answer these and I'll suggest a percentage. It's a starting point, not advice — you can change it any time under Setup → Investments.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(2, SP_MD))
+        # Pre-answer the buffer question from the goals the user already has
+        monthly = self._essential_monthly_bills()
+        emerg = sum(g.current_saved for g in self.state.goals if "emergency" in g.name.lower() or "buffer" in g.name.lower())
+        months = (emerg / monthly) if monthly > 0 else 0
+        guess = "3plus" if months >= 3 else "1to3" if months >= 1 else "under1" if emerg > 0 else "none"
+        ans = {"buffer": tk.StringVar(value=guess), "debt": tk.StringVar(value="no"),
+               "horizon": tk.StringVar(value="long"), "comfort": tk.StringVar(value="medium")}
+        questions = [
+            ("buffer", "How big is your emergency buffer?",
+             [("none", "None yet"), ("under1", "Under a month of bills"), ("1to3", "1–3 months"), ("3plus", "3+ months")]),
+            ("debt", "Any debt above about 7% (credit card, personal loan, BNPL)?",
+             [("no", "No"), ("yes", "Yes")]),
+            ("horizon", "When might you need the invested money?",
+             [("short", "Within 3 years"), ("mid", "3–7 years"), ("long", "7+ years / not sure")]),
+            ("comfort", "If it dropped 20% in a year, you'd…",
+             [("low", "Sell, that's awful"), ("medium", "Feel it, hold on"), ("high", "Buy more")]),
+        ]
+        result_var = tk.StringVar()
+        reason_host = tk.Frame(content, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_MD, pady=SP_SM)
+        rec = {"pct": 0, "buf": 0.0}
+
+        def _update(*_a):
+            pct, buf, lines = self._invest_recommendation(ans["buffer"].get(), ans["debt"].get(), ans["horizon"].get(), ans["comfort"].get())
+            rec["pct"], rec["buf"] = pct, buf
+            result_var.set(f"Suggested: {pct}% of surplus" + (f"  ·  minimum buffer ${buf:,.0f}" if buf else ""))
+            for w_ in reason_host.winfo_children():
+                w_.destroy()
+            tk.Label(reason_host, textvariable=result_var, bg=UI_SURFACE2, fg=UI_EMERALD if pct > 0 else UI_GOLD, font=FONT_SUBHEADING).pack(anchor="w")
+            for ln in lines:
+                tk.Label(reason_host, text="• " + ln, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=wrap_w - 40, justify="left").pack(anchor="w", pady=(2, 0))
+
+        for key, prompt, opts in questions:
+            tk.Label(content, text=prompt, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w", pady=(SP_XS, 2))
+            row = tk.Frame(content, bg=UI_SURFACE)
+            row.pack(anchor="w")
+            btns = {}
+
+            def _restyle(key=key, btns=btns):
+                for v, b in btns.items():
+                    sel = ans[key].get() == v
+                    b.configure(bg=UI_ACCENT_SOFT if sel else UI_SURFACE2, fg=UI_TEXT_BRIGHT if sel else UI_MUTED,
+                                highlightbackground=UI_ACCENT if sel else UI_BORDER, font=FONT_SMALL_BOLD if sel else FONT_SMALL)
+            for v, lbl in opts:
+                b = tk.Button(row, text=lbl, relief="flat", bd=0, highlightthickness=1, padx=SP_SM, pady=3, cursor="hand2", takefocus=0,
+                              command=lambda k=key, v=v, r=_restyle: (ans[k].set(v), r(), _update()))
+                b.pack(side="left", padx=(0, SP_XS))
+                btns[v] = b
+            _restyle()
+        reason_host.pack(fill="x", pady=(SP_MD, 0))
+        _update()
+
+        def _apply():
+            self.invest_mode_combo.set("percent")
+            self.invest_value_entry.delete(0, tk.END)
+            self.invest_value_entry.insert(0, f"{rec['pct']}")
+            self.buffer_entry.delete(0, tk.END)
+            self.buffer_entry.insert(0, f"{rec['buf']:.0f}")
+            self.apply_investment_rules()
+            close()
+            self._show_page("investments")
+            self._show_toast(f"Investing set to {rec['pct']}% of surplus with a ${rec['buf']:,.0f} buffer.", "success", 4000)
+
+        ttk.Button(btn_row, text="Close", style="Ghost.TButton", command=close).pack(side="left")
+        ttk.Button(btn_row, text="Apply this  ✓", style="Primary.TButton", command=_apply).pack(side="right")
+
+    # ── Ease-of-use layer: Do-this-now, date chips, Plan list, quick add, focus mode ──
+    _GOAL_PRIORITY_WORDS = [("essential", 1), ("important", 5), ("optional", 8)]
+    FOCUS_HIDDEN_PAGES = ("score", "collection", "character", "homestead")
+
+    @staticmethod
+    def _priority_word(p) -> str:
+        """Goals store 1–10; everything is *shown* as essential / important / optional."""
+        if isinstance(p, str):
+            return p.strip().lower() or "important"
+        try:
+            p = int(p)
+        except (TypeError, ValueError):
+            return "important"
+        return "essential" if p <= 3 else "important" if p <= 6 else "optional"
+
+    @classmethod
+    def _goal_priority_from_word(cls, word) -> int:
+        try:
+            return int(word)
+        except (TypeError, ValueError):
+            pass
+        return dict(cls._GOAL_PRIORITY_WORDS).get(str(word).strip().lower(), 5)
+
+    def _date_chips(self, parent, target, bg=None, wrap: int = 0):
+        """Quick date chips (Today · 15th · End of month · +1 wk · +2 wks · Next month)
+        that write an ISO date into an Entry or StringVar."""
+        bg = bg or parent.cget("bg")
+        row = tk.Frame(parent, bg=bg)
+        today = date.today()
+
+        def _nth(n):
+            d = today.replace(day=min(n, 28))
+            return d if d > today else self.engine.next_due_date(d, "monthly")
+
+        choices = [("Today", today), ("15th", _nth(15)), ("End of month", month_bounds(today)[1]),
+                   ("+1 wk", today + timedelta(days=7)), ("+2 wks", today + timedelta(days=14)),
+                   ("Next month", self.engine.next_due_date(today, "monthly"))]
+
+        def _set(d):
+            if isinstance(target, tk.StringVar):
+                target.set(d.isoformat())
+            else:
+                try:
+                    target.configure(state="normal")
+                except tk.TclError:
+                    pass
+                target.delete(0, tk.END)
+                target.insert(0, d.isoformat())
+        lines = [row]
+        if wrap:
+            lines = []
+        for n_, (lbl, d) in enumerate(choices):
+            if wrap and n_ % wrap == 0:
+                ln = tk.Frame(row, bg=bg)
+                ln.pack(anchor="w", pady=(0, 2))
+                lines.append(ln)
+            host_ = lines[-1]
+            tk.Button(host_, text=lbl, bg=UI_SURFACE2, fg=UI_MUTED, activebackground=UI_SURFACE_HOVER,
+                      activeforeground=UI_TEXT_BRIGHT, relief="flat", bd=0, highlightthickness=1,
+                      highlightbackground=UI_BORDER, font=FONT_MICRO, padx=5, pady=1, cursor="hand2",
+                      takefocus=0, command=lambda d=d: _set(d)).pack(side="left", padx=(0, 3))
+        return row
+
+    # ── Do this now ──────────────────────────────────────────────────────
+    def _run_cta(self, cta: str):
+        c = (cta or "").lower()
+        if "log pay" in c:
+            self._show_page("income")
+        elif "transactions" in c or "sort" in c:
+            self._show_page("transactions")
+            if self.latest_import:
+                self.open_review_queue()
+        elif "import" in c:
+            self._show_page("transactions")
+            self.import_pdf_transactions()
+        elif "perk" in c:
+            self._open_perk_shop()
+        elif "plan" in c or "bills" in c:
+            self._show_page("setup")
+            self._show_setup_sub("plan")
+        elif "score" in c or "challenge" in c or "consistent" in c or "weak" in c:
+            self._show_page("score")
+        elif "discretionary" in c:
+            self._show_page("review")
+        else:
+            self._show_page("today")
+
+    def _do_now_candidates(self, snapshot_actions: list) -> list:
+        cands = []
+        focus = bool(self.state.ui_prefs.get("focus_mode", False))
+        unsorted = self._unsorted_outgoing_count()
+        if unsorted:
+            cands.append({"priority": 101, "title": f"Sort {unsorted} unrecognised transaction{'s' if unsorted != 1 else ''}",
+                          "detail": "One card per merchant, one click each. Then commit the batch.",
+                          "cta": "Sort now", "run": lambda: (self._show_page("transactions"), self.open_review_queue())})
+        risk = self._streak_risk()
+        if risk and risk[1] == UI_RUBY:
+            cands.append({"priority": 98, "title": "Log the pay that was due", "detail": risk[0],
+                          "cta": "Log pay", "run": lambda: self._show_page("income")})
+        by_fp = {t.fingerprint: t for t in self.state.transactions if t.fingerprint}
+        for fp in list(self.state.pending_income_confirmations)[:1]:
+            tx_ = by_fp.get(fp)
+            if tx_ is not None:
+                cands.append({"priority": 97, "title": f"Confirm your pay of ${tx_.money_in:,.0f}",
+                              "detail": f"Found on your statement dated {tx_.tx_date:%d %b}. One click logs it and runs the split.",
+                              "cta": "Looks right", "run": lambda f=fp: self._confirm_income_log(f)})
+        due_stmt = self._statement_due()
+        if due_stmt and not unsorted:
+            l_ = due_stmt['link']
+            cands.append({"priority": 60, "title": "Statement time",
+                          "detail": (f"Last import {due_stmt['days']} days ago. " if due_stmt['days'] < 999 else "No statement imported yet. ") + f"Open {l_.get('name', 'your bank')}, download, and I'll offer to import it.",
+                          "cta": f"Open {l_.get('name', 'bank')}", "run": lambda i=due_stmt['idx']: self._open_bank_link(i)})
+        pending = self._pending_report_month()
+        if pending:
+            y, m = pending
+            cands.append({"priority": 80, "title": f"Read your {date(y, m, 1):%B} report",
+                          "detail": "Income, spending against your target mix, and what stood out.",
+                          "cta": "View report", "run": lambda y=y, m=m: self._show_monthly_report(y, m)})
+        try:
+            st_ = self.game_engine.vault_status()
+            if not focus and not st_["opened_today"]:
+                late = datetime.now().hour >= 17 and st_["streak"] >= 2
+                cands.append({"priority": 30 if late else 20, "title": "Do today's Pulse",
+                              "detail": (f"Your {st_['streak']}-day run ends at midnight. " if late else "")
+                              + "60 seconds: yesterday's spending, one card to sort, open the vault.",
+                              "cta": "Start", "run": self._pulse_focus})
+        except Exception:
+            pass
+        for a in snapshot_actions:
+            cands.append({**a, "run": (lambda c=a.get("cta", ""): self._run_cta(c))})
+        cands.sort(key=lambda a: -a.get("priority", 0))
+        return cands
+
+    def _render_do_now(self, snapshot_actions: list):
+        host = getattr(self, "_do_now_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        cands = self._do_now_candidates(snapshot_actions)
+        if not cands:
+            host.pack_forget()
+            return
+        top = cands[0]
+        host.pack(fill="x", pady=(0, SP_MD), before=self._qa_lbl)
+        calm = top.get("priority", 0) <= 1
+        color = UI_EMERALD if calm else (UI_RUBY if top.get("priority", 0) >= 95 else UI_ACCENT_BRIGHT)
+        card = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=color, padx=SP_MD, pady=SP_SM)
+        card.pack(fill="x")
+        left = tk.Frame(card, bg=UI_SURFACE2)
+        left.pack(side="left", fill="x", expand=True)
+        tk.Label(left, text="DO THIS NOW" if not calm else "ALL CLEAR", bg=UI_SURFACE2, fg=color, font=FONT_CAPTION_BOLD).pack(anchor="w")
+        tk.Label(left, text=top["title"], bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SUBHEADING, anchor="w").pack(anchor="w")
+        tk.Label(left, text=top.get("detail", ""), bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL, wraplength=640, justify="left").pack(anchor="w")
+        if not calm:
+            ttk.Button(card, text=f"{top.get('cta', 'Go')}  →", style="Primary.TButton",
+                       command=top["run"]).pack(side="right", padx=(SP_MD, 0))
+        if len(cands) > 1 and not calm:
+            nxt = cands[1]
+            tk.Label(host, text=f"Then: {nxt['title']}", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(2, 0))
+
+    # ── Plan list (Setup → Plan) ─────────────────────────────────────────
+    def _build_plan_tab(self):
+        frame = self.plan_tab
+        frame.columnconfigure(0, weight=1)
+        hdr = tk.Frame(frame, bg=UI_BG)
+        hdr.grid(row=0, column=0, sticky="ew", padx=SP_XL, pady=(SP_XL, SP_SM))
+        hdr.columnconfigure(0, weight=1)
+        txt = tk.Frame(hdr, bg=UI_BG)
+        txt.grid(row=0, column=0, sticky="w")
+        tk.Label(txt, text="Your plan", bg=UI_BG, fg=UI_TEXT, font=FONT_HEADING).pack(anchor="w")
+        tk.Label(txt, text="Everything you pay and save for, in one list. Click an amount or a date to change it.",
+                 bg=UI_BG, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w")
+        btns = tk.Frame(hdr, bg=UI_BG)
+        btns.grid(row=0, column=1, sticky="e")
+        ttk.Button(btns, text="+ Add bill", style="Primary.TButton", command=lambda: self._show_quick_add("bill")).pack(side="left")
+        ttk.Button(btns, text="+ Add savings", style="Accent.TButton", command=lambda: self._show_quick_add("fund")).pack(side="left", padx=(SP_SM, 0))
+        ttk.Button(btns, text="Cost guide", style="Ghost.TButton", command=lambda: self._show_cost_guide()).pack(side="left", padx=(SP_SM, 0))
+        bulk = tk.Frame(hdr, bg=UI_BG)
+        bulk.grid(row=1, column=0, columnspan=2, sticky="w", pady=(SP_SM, 0))
+        tk.Label(bulk, text="Bulk:", bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(side="left", padx=(0, SP_SM))
+        ttk.Button(bulk, text="Pay all due this week", style="Ghost.TButton", command=self._plan_pay_due_this_week).pack(side="left")
+        ttk.Button(bulk, text="Add $ to several savings…", style="Ghost.TButton", command=self._show_bulk_contribute).pack(side="left", padx=(SP_SM, 0))
+        ttk.Button(bulk, text="Savings challenges…", style="Ghost.TButton", command=self._show_savings_challenges).pack(side="left", padx=(SP_SM, 0))
+        self._plan_host = tk.Frame(frame, bg=UI_BG)
+        self._plan_host.grid(row=1, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_XL))
+        self._plan_host.columnconfigure(0, weight=1)
+        self.refresh_plan_tab()
+
+    def _inline_edit(self, cell, initial: str, on_save, kind: str = "money"):
+        """Swap a cell's label for an Entry; Enter saves, Esc / focus-out cancels."""
+        for w_ in cell.winfo_children():
+            w_.destroy()
+        var = tk.StringVar(value=initial)
+        e = ttk.Entry(cell, textvariable=var, width=12, font=FONT_BODY, justify="right" if kind == "money" else "left")
+        e.pack(fill="x")
+        e.focus_set()
+        e.selection_range(0, tk.END)
+        done = {"v": False}
+
+        def _save(_e=None):
+            if done["v"]:
+                return
+            raw = var.get().strip()
+            if kind == "money":
+                val = self._parse_money_field(raw)
+                if val is None:
+                    self._show_toast("That isn't a number.", "warning")
+                    return
+            else:
+                val = self._parse_smart_date(raw) if raw else None
+                if val is None:
+                    self._show_toast("Enter a date like 15/11/2026, '15th' or 'next friday'.", "warning")
+                    return
+            done["v"] = True
+            on_save(val)
+            return "break"
+
+        def _cancel(_e=None):
+            if done["v"]:
+                return
+            done["v"] = True
+            self.refresh_plan_tab()
+        e.bind("<Return>", _save)
+        e.bind("<Escape>", _cancel)
+        e.bind("<FocusOut>", _cancel)
+        if kind == "date":
+            self._date_chips(cell, var, bg=cell.cget("bg")).pack(anchor="w", pady=(2, 0))
+
+    def _plan_row(self, host, color, kind, idx, obj):
+        row = tk.Frame(host, bg=UI_SURFACE, highlightthickness=1, highlightbackground=UI_BORDER)
+        row.pack(fill="x", pady=(0, 3))
+        row.columnconfigure(1, weight=1)
+        tk.Frame(row, bg=color, width=4).grid(row=0, column=0, sticky="ns")
+        body = tk.Frame(row, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
+        body.grid(row=0, column=1, sticky="ew")
+        tk.Label(body, text=obj.name, bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_BODY_BOLD, anchor="w").pack(anchor="w")
+        if kind == "fund" and getattr(obj, "challenge", ""):
+            self._plan_challenge_strip(body, obj)
+        today = date.today()
+        if kind == "bill":
+            days = (obj.due_date - today).days
+            when = "overdue" if days < 0 else ("due today" if days == 0 else f"in {days} day{'s' if days != 1 else ''}")
+            sub = f"{obj.frequency} · {when} · ${self.engine.bill_recommended_allocation(obj):,.0f} per pay · {self._priority_word(obj.priority)}"
+            if obj.current_saved > 0:
+                sub += f" · ${obj.current_saved:,.0f} set aside"
+        elif kind == "fund":
+            sub = f"{self._fund_mode_summary(obj)} · ${self.engine.fund_recommended_allocation(obj):,.0f} per pay · {self._priority_word(obj.priority)}"
+        else:
+            sub = f"{self._goal_mode_summary(obj)} · {self._priority_word(obj.priority)}"
+        tk.Label(body, text=sub, bg=UI_SURFACE, fg=UI_RUBY if (kind == "bill" and (obj.due_date - today).days < 0 and obj.current_saved + 0.01 < obj.amount) else UI_MUTED,
+                 font=FONT_CAPTION, anchor="w", wraplength=520, justify="left").pack(anchor="w")
+
+        amt_cell = tk.Frame(row, bg=UI_SURFACE, width=120, padx=SP_SM)
+        amt_cell.grid(row=0, column=2, sticky="ns")
+        amt_cell.pack_propagate(False)
+        if kind == "bill":
+            amt_text, amt_val = f"${obj.amount:,.2f}", obj.amount
+        elif kind == "fund":
+            amt_val = obj.target_amount if obj.contribution_mode in ("auto", "buffer") else obj.fixed_amount
+            amt_text = (f"${obj.target_amount:,.0f}" if obj.contribution_mode in ("auto", "buffer") else f"${obj.fixed_amount:,.0f}/pay")
+        else:
+            amt_val = obj.target_amount
+            amt_text = f"${obj.target_amount:,.0f}" if obj.target_amount > 0 else "no end"
+
+        def _save_amount(val, kind=kind, obj=obj):
+            if kind == "bill":
+                obj.amount = val
+            elif kind == "fund":
+                if obj.contribution_mode in ("auto", "buffer"):
+                    obj.target_amount = val
+                else:
+                    obj.fixed_amount = val
+            else:
+                obj.target_amount = val
+            self.save_state()
+            self.refresh_all_views()
+            self._show_toast(f"{obj.name} updated.", "success", 2000)
+        amt_lbl = tk.Label(amt_cell, text=amt_text, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD, anchor="e", cursor="xterm")
+        amt_lbl.pack(fill="x", pady=(SP_SM, 0))
+        tk.Label(amt_cell, text="click to edit", bg=UI_SURFACE, fg=UI_BORDER_LT, font=FONT_MICRO, anchor="e").pack(fill="x")
+        amt_lbl.bind("<Button-1>", lambda _e, c=amt_cell, v=amt_val: self._inline_edit(c, f"{v:.2f}", _save_amount, "money"))
+
+        when_cell = tk.Frame(row, bg=UI_SURFACE, width=200, padx=SP_SM)
+        when_cell.grid(row=0, column=3, sticky="ns")
+        when_cell.pack_propagate(False)
+        if kind == "bill":
+            def _save_due(val, obj=obj):
+                obj.due_date = val
+                self.save_state()
+                self.refresh_all_views()
+                self._show_toast(f"{obj.name} now due {val:%d %b}.", "success", 2000)
+            dl = tk.Label(when_cell, text=f"{obj.due_date:%d %b %Y}", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD, anchor="w", cursor="xterm")
+            dl.pack(fill="x", pady=(SP_SM, 0))
+            tk.Label(when_cell, text="next due · click to edit", bg=UI_SURFACE, fg=UI_BORDER_LT, font=FONT_MICRO, anchor="w").pack(fill="x")
+            dl.bind("<Button-1>", lambda _e, c=when_cell, o=obj: self._inline_edit(c, o.due_date.isoformat(), _save_due, "date"))
+        else:
+            if kind == "fund" and obj.contribution_mode == "ongoing" or getattr(obj, "target_amount", 0) <= 0:
+                prog = f"${obj.current_saved:,.0f} saved"
+            else:
+                prog = f"${obj.current_saved:,.0f} / ${obj.target_amount:,.0f} · {min(100, int(obj.current_saved / max(obj.target_amount, 0.01) * 100))}%"
+            tk.Label(when_cell, text=prog, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD, anchor="w").pack(fill="x", pady=(SP_SM, 0))
+            if kind == "fund" and obj.target_date:
+                tk.Label(when_cell, text=f"by {obj.target_date:%d %b %Y}", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_MICRO, anchor="w").pack(fill="x")
+
+        acts = tk.Frame(row, bg=UI_SURFACE, padx=SP_SM)
+        acts.grid(row=0, column=4, sticky="ns")
+        if kind == "bill":
+            ttk.Button(acts, text="Paid ✓", style="Secondary.TButton", command=lambda o=obj: self._mark_bill_paid_with_undo(o)).pack(side="left", pady=SP_SM)
+        elif kind == "fund":
+            ttk.Button(acts, text="Spent", style="Secondary.TButton", command=lambda i=idx: self._spend_from_fund(i)).pack(side="left", pady=SP_SM)
+            ttk.Button(acts, text="Add $", style="Secondary.TButton", command=lambda i=idx: self._contribute_to_target("fund", i)).pack(side="left", padx=(SP_XS, 0))
+        else:
+            ttk.Button(acts, text="Add $", style="Secondary.TButton", command=lambda i=idx: self._contribute_to_target("goal", i)).pack(side="left", pady=SP_SM)
+
+        def _edit(kind=kind, idx=idx):
+            sub = {"bill": "bills", "fund": "funds", "goal": "goals"}[kind]
+            self._show_setup_sub(sub)
+            tree = {"bill": self.bill_tree, "fund": self.fund_tree, "goal": self.goal_tree}[kind]
+            try:
+                tree.selection_set(str(idx))
+                {"bill": self.on_bill_select, "fund": self.on_fund_select, "goal": self.on_goal_select}[kind]()
+            except tk.TclError:
+                pass
+        ttk.Button(acts, text="Edit", style="Ghost.TButton", command=_edit).pack(side="left", padx=(SP_XS, 0))
+
+        def _delete(kind=kind, idx=idx, obj=obj):
+            coll = {"bill": self.state.bills, "fund": self.state.funds, "goal": self.state.goals}[kind]
+            if idx >= len(coll) or coll[idx] is not obj:
+                return
+            del coll[idx]
+            self.save_state()
+            self.refresh_all_views()
+
+            def _undo():
+                coll.insert(min(idx, len(coll)), obj)
+                self.save_state()
+                self.refresh_all_views()
+                self._show_toast(f"{obj.name} restored.", "info", 2500)
+            self._show_toast(f"Removed {obj.name}.", "success", duration=6000, action_label="Undo", action_cb=_undo)
+        tk.Button(acts, text="✕", bg=UI_SURFACE, fg=UI_MUTED, activebackground=UI_SURFACE_HOVER, activeforeground=UI_RUBY,
+                  relief="flat", bd=0, highlightthickness=0, font=FONT_SMALL_BOLD, padx=SP_SM, cursor="hand2", takefocus=0,
+                  command=_delete).pack(side="left", padx=(SP_XS, 0))
+
+    def refresh_plan_tab(self):
+        self.game_engine.sync_challenge_funds()
+        host = getattr(self, "_plan_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+
+        def _section(title, color, note):
+            sec = tk.Frame(host, bg=UI_BG)
+            sec.pack(fill="x", pady=(0, SP_MD))
+            hd = tk.Frame(sec, bg=UI_BG)
+            hd.pack(fill="x", pady=(0, SP_XS))
+            tk.Label(hd, text=title, bg=UI_BG, fg=color, font=FONT_CAPTION_BOLD).pack(side="left")
+            tk.Label(hd, text=note, bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION).pack(side="right")
+            return sec
+
+        bills = sorted(enumerate(self.state.bills), key=lambda x: x[1].due_date)
+        per_pay_bills = sum(self.engine.bill_recommended_allocation(b) for _, b in bills)
+        sec = _section("BILLS", UI_RUBY, f"{len(bills)} bill{'s' if len(bills) != 1 else ''} · about ${per_pay_bills:,.0f} per pay")
+        if not bills:
+            tk.Label(sec, text="No bills yet. Use + Add bill, or the cost guide if you're not sure what something costs.",
+                     bg=UI_BG, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w")
+        for idx, b in bills:
+            self._plan_row(sec, UI_RUBY, "bill", idx, b)
+
+        per_pay_sav = sum(self.engine.fund_recommended_allocation(f) for f in self.state.funds) + sum(g.value for g in self.state.goals if g.mode == "fixed")
+        n_sav = len(self.state.funds) + len(self.state.goals)
+        sec = _section("SAVINGS · set-asides & goals", UI_SAPPHIRE, f"{n_sav} item{'s' if n_sav != 1 else ''} · about ${per_pay_sav:,.0f} per pay")
+        if not n_sav:
+            tk.Label(sec, text="Nothing set aside yet. Use + Add savings for things you're saving up for and long-term goals.",
+                     bg=UI_BG, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w")
+        for idx, f in enumerate(self.state.funds):
+            self._plan_row(sec, UI_SAPPHIRE, "fund", idx, f)
+        for idx, g in enumerate(self.state.goals):
+            self._plan_row(sec, UI_EMERALD, "goal", idx, g)
+
+    # ── Quick add overlay (one place to add a bill / set-aside / goal) ────
+    def _show_quick_add(self, kind: str = "bill", prefill: Optional[dict] = None):
+        scrim, content, btn_row, step_var, close = self._overlay_card("ADD TO YOUR PLAN", 660, 560)
+        st = {"kind": kind, "fund_mode": "auto", "goal_mode": "fixed", "pf": dict(prefill or {})}
+        kinds = [("bill", "Bill", "Something you have to pay regularly"),
+                 ("fund", "Set-aside", "Money you're saving up to spend on something"),
+                 ("goal", "Goal", "A long-term target funded from what's left")]
+        top = tk.Frame(content, bg=UI_SURFACE)
+        top.pack(fill="x")
+        body = tk.Frame(content, bg=UI_SURFACE)
+        body.pack(fill="both", expand=True, pady=(SP_SM, 0))
+        vars_: Dict[str, tk.StringVar] = {}
+
+        def _chip(parent, text, selected, cmd):
+            return tk.Button(parent, text=text, bg=UI_ACCENT_SOFT if selected else UI_SURFACE2,
+                             fg=UI_TEXT_BRIGHT if selected else UI_MUTED, relief="flat", bd=0, highlightthickness=1,
+                             highlightbackground=UI_ACCENT if selected else UI_BORDER, font=FONT_SMALL_BOLD if selected else FONT_SMALL,
+                             padx=SP_SM, pady=3, cursor="hand2", takefocus=0, command=cmd)
+
+        def _render():
+            for w_ in top.winfo_children() + body.winfo_children() + btn_row.winfo_children():
+                w_.destroy()
+            for k, lbl, _d in kinds:
+                _chip(top, lbl, st["kind"] == k, lambda k=k: (st.__setitem__("kind", k), _render())).pack(side="left", padx=(0, SP_XS))
+            desc = next(d for k, _l, d in kinds if k == st["kind"])
+            step_var.set(desc)
+            pf = st["pf"]
+            grid = tk.Frame(body, bg=UI_SURFACE)
+            grid.pack(fill="x")
+            grid.columnconfigure(1, weight=1)
+            r = {"n": 0}
+
+            def _field(label, key, default="", width=28):
+                tk.Label(grid, text=label, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL_BOLD, anchor="w").grid(row=r["n"], column=0, sticky="w", pady=(SP_XS, 2), padx=(0, SP_MD))
+                v = vars_.setdefault(key, tk.StringVar(value=pf.get(key, default)))
+                e = ttk.Entry(grid, textvariable=v, width=width, font=FONT_BODY)
+                e.grid(row=r["n"], column=1, sticky="ew", pady=(SP_XS, 2))
+                r["n"] += 1
+                return e
+
+            def _combo(label, key, values, default):
+                tk.Label(grid, text=label, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL_BOLD, anchor="w").grid(row=r["n"], column=0, sticky="w", pady=(SP_XS, 2), padx=(0, SP_MD))
+                v = vars_.setdefault(key, tk.StringVar(value=pf.get(key, default)))
+                ttk.Combobox(grid, textvariable=v, values=values, state="readonly", width=20).grid(row=r["n"], column=1, sticky="w", pady=(SP_XS, 2))
+                r["n"] += 1
+
+            def _chips_row(label, options, current, on_pick):
+                tk.Label(grid, text=label, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL_BOLD, anchor="w").grid(row=r["n"], column=0, sticky="nw", pady=(SP_XS, 2), padx=(0, SP_MD))
+                rowf = tk.Frame(grid, bg=UI_SURFACE)
+                rowf.grid(row=r["n"], column=1, sticky="w", pady=(SP_XS, 2))
+                per_line = 2 if len(options) > 3 else len(options)
+                line = None
+                for n_, (k, lbl) in enumerate(options):
+                    if n_ % per_line == 0:
+                        line = tk.Frame(rowf, bg=UI_SURFACE)
+                        line.pack(anchor="w", pady=(0, 2))
+                    _chip(line, lbl, current == k, lambda k=k: on_pick(k)).pack(side="left", padx=(0, SP_XS))
+                r["n"] += 1
+
+            def _date_field(label, key, default=""):
+                e = _field(label, key, default, 16)
+                self._date_chips(grid, vars_[key], bg=UI_SURFACE).grid(row=r["n"], column=1, sticky="w", pady=(0, SP_XS))
+                r["n"] += 1
+                return e
+
+            first = _field("Name", "name")
+            k = st["kind"]
+            if k == "bill":
+                _field("Amount $", "amount", "", 14)
+                _combo("Every", "freq", ["weekly", "fortnightly", "monthly", "quarterly", "yearly", "one-off"], "monthly")
+                _date_field("Next due", "due", (date.today() + timedelta(days=14)).isoformat())
+                _combo("Priority", "pri", ["essential", "important", "optional"], "essential")
+            elif k == "fund":
+                _chips_row("How it works", self._FUND_MODE_LABELS, st["fund_mode"], lambda m: (st.__setitem__("fund_mode", m), _render()))
+                m = st["fund_mode"]
+                a_lbl, b_lbl = {"auto": ("Target $", None), "fixed": ("$ per pay", "Target $ (optional)"),
+                                "ongoing": ("$ per pay", None), "buffer": ("Keep topped up to $", "Max per pay (optional)")}[m]
+                _field(a_lbl, "a", "", 14)
+                if m == "auto":
+                    _date_field("By date", "date", "")
+                elif b_lbl:
+                    _field(b_lbl, "b", "", 14)
+                _combo("Priority", "pri", ["essential", "important", "optional"], "important")
+            else:
+                _chips_row("Mode", [("fixed", "Fixed $ each pay"), ("percent_surplus", "% of what's left")], st["goal_mode"],
+                           lambda m: (st.__setitem__("goal_mode", m), _render()))
+                _field("$ per pay" if st["goal_mode"] == "fixed" else "% of surplus", "val", "10" if st["goal_mode"] != "fixed" else "", 14)
+                _field("Target $ (blank = no end)", "target", "", 14)
+                _combo("Priority", "pri", ["essential", "important", "optional"], "important")
+            tk.Label(body, text="Tip: 'Not sure? Cost guide' fills typical Queensland figures for rego, power, insurance and more.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=600, justify="left").pack(anchor="w", pady=(SP_SM, 0))
+            if not vars_["name"].get():
+                first.focus_set()
+
+            def _guide_pick(e, amt, ex):
+                st["kind"] = e["kind"]
+                st["pf"] = {"name": e["name"].split(" (")[0], "amount": f"{amt:.0f}", "freq": ex.get("frequency", "monthly"),
+                            "pri": ex.get("priority", "important"), "a": f"{amt:.0f}", "target": f"{amt:.0f}", "val": "",
+                            "date": ex["date"].isoformat() if ex.get("date") else ""}
+                st["fund_mode"] = ex.get("mode", "auto")
+                vars_.clear()
+                _render()
+            ttk.Button(btn_row, text="Cancel", style="Ghost.TButton", command=close).pack(side="left")
+            ttk.Button(btn_row, text="Not sure? Cost guide", style="Secondary.TButton",
+                       command=lambda: self._show_cost_guide(st["kind"], on_pick=_guide_pick)).pack(side="left", padx=(SP_SM, 0))
+            ttk.Button(btn_row, text="Add  ✓", style="Primary.TButton", command=_add).pack(side="right")
+            scrim.bind("<Return>", lambda _e: (_add(), "break")[1])
+
+        def _add():
+            k = st["kind"]
+            name = vars_["name"].get().strip()
+            if not name:
+                self._show_toast("Give it a name first.", "warning")
+                return
+            pri_word = vars_["pri"].get()
+            if self._name_exists(k, name):
+                self._show_toast(f"You already have {name} — edit it in the Plan instead.", "warning"); return
+            if k == "bill":
+                amt = self._parse_money_field(vars_["amount"].get())
+                due = self._parse_smart_date(vars_["due"].get().strip()) if vars_["due"].get().strip() else None
+                if amt is None or amt <= 0:
+                    self._show_toast("Amount must be a number above zero.", "warning"); return
+                if due is None:
+                    self._show_toast("Next due needs a date — try the chips.", "warning"); return
+                obj = Bill(name, amt, due, vars_["freq"].get(), pri_word, "bill", 0.0)
+                self.state.bills.append(obj)
+                coll = self.state.bills
+            elif k == "fund":
+                m = st["fund_mode"]
+                a = self._parse_money_field(vars_["a"].get())
+                if a is None or a <= 0:
+                    self._show_toast("Enter an amount above zero.", "warning"); return
+                target, per_pay, td = 0.0, 0.0, None
+                if m == "auto":
+                    target = a
+                    td = self._parse_smart_date(vars_["date"].get().strip()) if vars_.get("date") and vars_["date"].get().strip() else None
+                    if td is None:
+                        self._show_toast("'Save up by a date' needs a date — try the chips.", "warning"); return
+                elif m == "fixed":
+                    per_pay = a
+                    target = self._parse_money_field(vars_["b"].get()) if vars_.get("b") else 0.0
+                    if target is None:
+                        self._show_toast("Target must be a number or blank.", "warning"); return
+                elif m == "ongoing":
+                    per_pay = a
+                else:
+                    target = a
+                    per_pay = self._parse_money_field(vars_["b"].get()) if vars_.get("b") else 0.0
+                    if per_pay is None:
+                        self._show_toast("Max per pay must be a number or blank.", "warning"); return
+                obj = Fund(name, target, td, pri_word, 0.0, m, per_pay, "fund")
+                self.state.funds.append(obj)
+                coll = self.state.funds
+            else:
+                val = self._parse_money_field(vars_["val"].get())
+                tgt = self._parse_money_field(vars_["target"].get())
+                if val is None or val <= 0:
+                    self._show_toast("Enter the amount or percentage per pay.", "warning"); return
+                if tgt is None:
+                    self._show_toast("Target must be a number or blank.", "warning"); return
+                obj = Goal(name, tgt, None, self._goal_priority_from_word(pri_word), 0.0, st["goal_mode"], val)
+                self.state.goals.append(obj)
+                coll = self.state.goals
+            self.save_state()
+            close()
+            self.refresh_all_views()
+
+            def _undo(coll=coll, obj=obj):
+                if obj in coll:
+                    coll.remove(obj)
+                    self.save_state()
+                    self.refresh_all_views()
+                    self._show_toast(f"Removed {obj.name}.", "info", 2500)
+            self._show_toast(f"Added {obj.name}.", "success", duration=6000, action_label="Undo", action_cb=_undo)
+
+        _render()
+
+    # ── Focus mode ───────────────────────────────────────────────────────
+    def _apply_focus_mode(self):
+        on = bool(self.state.ui_prefs.get("focus_mode", False))
+        for key in self.FOCUS_HIDDEN_PAGES:
+            btn = self.nav_buttons.get(key)
+            if btn is None:
+                continue
+            try:
+                if on:
+                    btn.grid_remove()
+                else:
+                    btn.grid()
+            except tk.TclError:
+                pass
+        hook = getattr(self, "_hook_row", None)
+        if hook is not None:
+            try:
+                if on:
+                    hook.pack_forget()
+                elif not hook.winfo_manager():
+                    hook.pack(fill="x", pady=(0, SP_MD), before=self._qa_lbl)
+            except tk.TclError:
+                pass
+        cards = getattr(self, "_today_hero_cards", [])
+        if len(cards) >= 4:
+            try:
+                if on:
+                    cards[3].grid_remove()
+                else:
+                    cards[3].grid()
+            except tk.TclError:
+                pass
+        gerald_wrap = getattr(self, "_today_gerald_wrap", None)
+        btn = getattr(self, "_focus_btn", None)
+        if btn is not None:
+            btn.configure(text="◉ Focus mode: on — show the game" if on else "◎ Focus mode: off — hide the game",
+                          fg=UI_GOLD if on else UI_MUTED)
+        if on and self.current_page_key in self.FOCUS_HIDDEN_PAGES:
+            self._show_page("today")
+
+    def _toggle_focus_mode(self):
+        on = not bool(self.state.ui_prefs.get("focus_mode", False))
+        self.state.ui_prefs["focus_mode"] = on
+        self.save_state()
+        self._apply_focus_mode()
+        self._show_toast("Focus mode on — just the money. Toggle it again any time." if on
+                         else "Game layers are back.", "info", 3500)
+
+    # ── Ease-of-use round 2: auto-paid bills, undo commit, settings, memory, bulk ──
+    _SHORTCUTS = [
+        ("Ctrl + P", "Go to Log Pay"),
+        ("Ctrl + I", "Import a statement"),
+        ("Ctrl + K", "Command palette (type what you want)"),
+        ("Ctrl + G", "Ask Gerald overlay"),
+        ("Ctrl + /", "This shortcut sheet"),
+        ("Enter", "Add / save in any form or overlay"),
+        ("Esc", "Close an overlay or cancel an edit"),
+        ("← / →", "Back / skip in the Sort cards"),
+    ]
+
+    @staticmethod
+    def _cycle_len_days(frequency: str) -> int:
+        return {"weekly": 7, "fortnightly": 14, "monthly": 31, "quarterly": 92, "yearly": 366}.get(frequency, 31)
+
+    def _name_exists(self, kind: str, name: str, exclude_idx: Optional[int] = None) -> bool:
+        coll = {"bill": self.state.bills, "fund": self.state.funds, "goal": self.state.goals}[kind]
+        n = (name or "").strip().lower()
+        return any(i != exclude_idx and o.name.strip().lower() == n for i, o in enumerate(coll))
+
+    def _auto_pay_bills_from_batch(self, batch: List[TransactionRecord]) -> list:
+        """A committed transaction linked to a bill, dated near that bill's due
+        date, is the bill being paid — roll it forward. Returns undo records."""
+        done = []
+        handled = set()
+        for tx in batch:
+            if tx.direction() != "out" or tx.matched_type != "linked_bill" or not tx.matched_target:
+                continue
+            if self._is_historical(tx):
+                continue
+            bill = next((b for b in self.state.bills if b.name.lower() == tx.matched_target.lower()), None)
+            if bill is None or id(bill) in handled:
+                continue
+            window = self._cycle_len_days(bill.frequency)
+            gap = (bill.due_date - tx.tx_date).days   # +ve = paid before the due date
+            if gap > window / 2 or gap < -window:
+                continue
+            handled.add(id(bill))
+            prev = (bill, bill.due_date, bill.current_saved)
+            self.engine.mark_bill_paid(bill)
+            done.append(prev)
+        return done
+
+    def _undo_last_commit(self):
+        batch = getattr(self, "_last_commit", None)
+        if not batch:
+            self._show_toast("Nothing to undo.", "info")
+            return
+        ids = {id(t) for t in batch["txs"]}
+        self.state.transactions = [t for t in self.state.transactions if id(t) not in ids]
+        for inc in batch.get("incomes_added", []):
+            if inc in self.state.incomes:
+                self.state.incomes.remove(inc)
+        for fp in batch["pending_added"]:
+            if fp in self.state.pending_income_confirmations:
+                self.state.pending_income_confirmations.remove(fp)
+        for bill, prev_due, prev_saved in batch["bills_paid"]:
+            bill.due_date, bill.current_saved = prev_due, prev_saved
+        # Put the rows back in the preview so they can be re-sorted or re-committed
+        self.latest_import = list(batch["txs"]) + [t for t in self.latest_import if id(t) not in ids]
+        self._last_commit = None
+        self.save_state()
+        self.refresh_all_views()
+        self._show_page("transactions")
+        self._show_toast(f"Undid the last import — {len(batch['txs'])} rows are back in the preview.", "info", 4000)
+
+    # ── Income: one-click "same as last time" ─────────────────────────────
+    def _render_quick_pay(self):
+        host = getattr(self, "_quick_pay_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        if not self.state.incomes:
+            host.pack_forget()
+            return
+        last = max(self.state.incomes, key=lambda i: i.received_on)
+        host.pack(fill="x", pady=(SP_SM, 0))
+        card = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_EMERALD, padx=SP_MD, pady=SP_SM)
+        card.pack(fill="x")
+        tk.Label(card, text="SAME AS LAST TIME", bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_CAPTION_BOLD).pack(anchor="w")
+        tk.Label(card, text=f"${last.amount:,.2f} from {last.source}, last on {last.received_on:%d %b}.",
+                 bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=200, justify="left").pack(anchor="w")
+        ttk.Button(card, text=f"Log ${last.amount:,.0f} today  ✓", style="Primary.TButton",
+                   command=lambda a=last.amount, s=last.source: self._log_pay_and_allocate(a, date.today(), s)).pack(fill="x", pady=(SP_XS, 0))
+        try:
+            if not self.pay_amount_entry.get().strip():
+                self.pay_amount_entry.insert(0, f"{last.amount:.2f}")
+            if not self.pay_source_entry.get().strip() or self.pay_source_entry.get().strip() == "Primary Income":
+                self.pay_source_entry.delete(0, tk.END)
+                self.pay_source_entry.insert(0, last.source)
+        except tk.TclError:
+            pass
+
+    # ── Window memory ────────────────────────────────────────────────────
+    def _restore_window_prefs(self):
+        geo = self.state.ui_prefs.get("window.geometry")
+        if isinstance(geo, str) and re.match(r"^\d+x\d+\+-?\d+\+-?\d+$", geo):
+            try:
+                w, h, x, y = [int(v) for v in re.split(r"[x+]", geo.replace("+-", "+-"))[:4]]
+                sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+                if 600 <= w <= sw and 400 <= h <= sh and -50 <= x <= sw - 200 and -50 <= y <= sh - 200:
+                    self.geometry(geo)
+            except (ValueError, tk.TclError):
+                pass
+        last = self.state.ui_prefs.get("last_page")
+        if isinstance(last, str) and last in self.page_frames and last != "today":
+            if not (self.state.ui_prefs.get("focus_mode") and last in self.FOCUS_HIDDEN_PAGES):
+                self._show_page(last)
+
+    def _remember_window_prefs(self):
+        try:
+            if tk.Tk.wm_state(self) == "normal":   # self.state is the AppState, not Tk's state()
+                self.state.ui_prefs["window.geometry"] = self.geometry()
+        except tk.TclError:
+            pass
+        self.state.ui_prefs["last_page"] = self.current_page_key
+
+    # ── Shortcut sheet ───────────────────────────────────────────────────
+    def _show_shortcuts(self):
+        scrim, content, btn_row, step_var, close = self._overlay_card("KEYBOARD SHORTCUTS", 520, 420)
+        tk.Label(content, text="Faster than the mouse", bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_SM).pack(anchor="w", pady=(0, SP_SM))
+        grid = tk.Frame(content, bg=UI_SURFACE)
+        grid.pack(fill="x")
+        for i, (keys, what) in enumerate(self._SHORTCUTS):
+            tk.Label(grid, text=keys, bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD, padx=SP_SM, pady=2, width=10).grid(row=i, column=0, sticky="w", pady=(0, 4))
+            tk.Label(grid, text=what, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL).grid(row=i, column=1, sticky="w", padx=(SP_MD, 0))
+        ttk.Button(btn_row, text="Close", style="Primary.TButton", command=close).pack(side="right")
+        scrim.bind("<Return>", lambda _e: (close(), "break")[1])
+
+    # ── Settings page ────────────────────────────────────────────────────
+    def _build_settings_tab(self):
+        frame = self.settings_tab
+        frame.columnconfigure(0, weight=1)
+        hero_canvas, hero = self._gradient_hero(frame, height=90)
+        hero_canvas.grid(row=0, column=0, sticky="ew", padx=SP_XL, pady=(SP_XL, SP_MD))
+        hero.configure(padx=SP_XL, pady=SP_LG)
+        tk.Label(hero, text="Settings", bg=UI_HERO, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_MD).pack(anchor="w")
+        tk.Label(hero, text="Backups, exports, where your data lives, display and shortcuts.", bg=UI_HERO, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w")
+
+        def section(title, row):
+            card = self._card_frame(frame, padx=SP_LG, pady=SP_LG)
+            card.grid(row=row, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
+            card.columnconfigure(0, weight=1)
+            tk.Label(card, text=title, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).grid(row=0, column=0, sticky="w", pady=(0, SP_SM))
+            return card
+
+        data = section("YOUR DATA", 1)
+        self._settings_data_var = tk.StringVar()
+        tk.Label(data, textvariable=self._settings_data_var, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL, anchor="w", wraplength=760, justify="left").grid(row=1, column=0, sticky="w")
+        row = tk.Frame(data, bg=UI_SURFACE)
+        row.grid(row=2, column=0, sticky="w", pady=(SP_SM, 0))
+        ttk.Button(row, text="Backup now…", style="Primary.TButton", command=self._settings_backup).pack(side="left")
+        ttk.Button(row, text="Restore from backup…", style="Secondary.TButton", command=self._settings_restore).pack(side="left", padx=(SP_SM, 0))
+        ttk.Button(row, text="Move data file…", style="Secondary.TButton", command=self._settings_move_data).pack(side="left", padx=(SP_SM, 0))
+        ttk.Button(row, text="Open folder", style="Ghost.TButton", command=self._settings_open_folder).pack(side="left", padx=(SP_SM, 0))
+        tk.Label(data, text="A .bak copy is kept automatically beside the data file every time you save.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).grid(row=3, column=0, sticky="w", pady=(SP_XS, 0))
+
+        exp = section("EXPORT", 2)
+        row = tk.Frame(exp, bg=UI_SURFACE)
+        row.grid(row=1, column=0, sticky="w")
+        ttk.Button(row, text="Transactions → CSV…", style="Secondary.TButton", command=lambda: self._settings_export("transactions")).pack(side="left")
+        ttk.Button(row, text="Plan (bills, funds, goals) → CSV…", style="Secondary.TButton", command=lambda: self._settings_export("plan")).pack(side="left", padx=(SP_SM, 0))
+        tk.Label(exp, text="Opens in Excel or Google Sheets.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
+
+        imp = section("IMPORTS", 3)
+        self._settings_undo_btn = ttk.Button(imp, text="Undo last import", style="Secondary.TButton", command=self._undo_last_commit)
+        self._settings_undo_btn.grid(row=1, column=0, sticky="w")
+        self._settings_undo_var = tk.StringVar(value="")
+        tk.Label(imp, textvariable=self._settings_undo_var, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
+
+        disp = section("DISPLAY & GAME", 4)
+        row = tk.Frame(disp, bg=UI_SURFACE)
+        row.grid(row=1, column=0, sticky="w")
+        self._settings_focus_btn = ttk.Button(row, text="Focus mode", style="Secondary.TButton", command=lambda: (self._toggle_focus_mode(), self._refresh_settings_tab()))
+        self._settings_focus_btn.pack(side="left")
+        ttk.Button(row, text="Keyboard shortcuts  (Ctrl + /)", style="Ghost.TButton", command=self._show_shortcuts).pack(side="left", padx=(SP_SM, 0))
+        ttk.Button(row, text="Reset game progress…", style="Danger.TButton", command=self._settings_reset_game).pack(side="left", padx=(SP_LG, 0))
+        tk.Label(disp, text="Window size, position and the tab you were on are remembered automatically.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
+        rem = section("REMINDERS & DAILY PULSE", 5)
+        self._build_settings_reminders(rem)
+        self._refresh_settings_tab()
+
+    def _refresh_settings_tab(self):
+        if not hasattr(self, "_settings_data_var"):
+            return
+        try:
+            p = DATA_FILE.resolve()
+            size = p.stat().st_size / 1024 if p.exists() else 0
+            self._settings_data_var.set(f"{p}  ·  {size:,.0f} KB  ·  {len(self.state.transactions)} transactions, {len(self.state.bills)} bills, "
+                                        f"{len(self.state.funds)} funds, {len(self.state.goals)} goals")
+        except OSError:
+            self._settings_data_var.set(str(DATA_FILE))
+        batch = getattr(self, "_last_commit", None)
+        if batch:
+            self._settings_undo_btn.configure(state="normal")
+            self._settings_undo_var.set(f"Last import: {len(batch['txs'])} rows committed at {batch['when']:%H:%M}. Undo puts them back in the preview.")
+        else:
+            self._settings_undo_btn.configure(state="disabled")
+            self._settings_undo_var.set("No import to undo this session.")
+        on = bool(self.state.ui_prefs.get("focus_mode", False))
+        self._settings_focus_btn.configure(text="Focus mode: on — show the game" if on else "Focus mode: off — hide the game")
+        self._refresh_settings_reminders()
+
+    def _settings_backup(self):
+        default = f"budget_backup_{date.today():%Y%m%d}.json"
+        path = filedialog.asksaveasfilename(title="Save a backup", defaultextension=".json", initialfile=default,
+                                            filetypes=[("Budget backup", "*.json")])
+        if not path:
+            return
+        try:
+            Path(path).write_text(json.dumps(self.state.to_dict(), indent=2), encoding="utf-8")
+        except OSError as e:
+            self._show_toast(f"Couldn't write the backup: {e}", "error", 5000)
+            return
+        self._show_toast(f"Backup saved to {Path(path).name}.", "success", 4000)
+
+    def _settings_restore(self):
+        path = filedialog.askopenfilename(title="Restore from a backup", filetypes=[("Budget backup", "*.json *.bak"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            new_state = AppState.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        except Exception as e:
+            self._show_toast(f"That file isn't a valid backup: {e}", "error", 6000)
+            return
+        if not messagebox.askyesno("Restore backup",
+                                   f"Replace everything with {Path(path).name}?\n\nA copy of the current data is saved first as budget_data.pre-restore.json."):
+            return
+        try:
+            DATA_FILE.with_name("budget_data.pre-restore.json").write_text(json.dumps(self.state.to_dict(), indent=2), encoding="utf-8")
+        except OSError:
+            pass
+        self._replace_state(new_state)
+        self._show_toast("Backup restored.", "success", 4000)
+
+    def _replace_state(self, new_state: AppState):
+        self.state = new_state
+        for eng in (self.engine, self.game_engine, self.matcher, self.homestead):
+            eng.state = new_state
+        try:
+            self.gerald_assistant.app = self
+        except Exception:
+            pass
+        self.latest_import = []
+        self._last_commit = None
+        self.save_state()
+        self.refresh_all_views()
+        self._apply_focus_mode()
+        self._refresh_settings_tab()
+
+    def _settings_move_data(self):
+        global DATA_FILE
+        folder = filedialog.askdirectory(title="Choose where to keep budget_data.json")
+        if not folder:
+            return
+        new_path = Path(folder) / "budget_data.json"
+        if new_path.resolve() == DATA_FILE.resolve():
+            return
+        if new_path.exists() and not messagebox.askyesno("Data file exists", f"{new_path} already exists. Overwrite it with the current data?"):
+            return
+        try:
+            new_path.write_text(json.dumps(self.state.to_dict(), indent=2), encoding="utf-8")
+            CONFIG_FILE.write_text(json.dumps({"data_path": str(new_path)}, indent=2), encoding="utf-8")
+        except OSError as e:
+            self._show_toast(f"Couldn't move the data file: {e}", "error", 6000)
+            return
+        DATA_FILE = new_path
+        self.save_state()
+        self._refresh_settings_tab()
+        self._show_toast(f"Data now lives in {folder}.", "success", 5000)
+
+    def _settings_open_folder(self):
+        try:
+            os.startfile(str(DATA_FILE.resolve().parent))
+        except Exception as e:
+            self._show_toast(f"Couldn't open the folder: {e}", "warning")
+
+    def _settings_export(self, what: str):
+        default = f"budget_{what}_{date.today():%Y%m%d}.csv"
+        path = filedialog.asksaveasfilename(title="Export to CSV", defaultextension=".csv", initialfile=default, filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+                w = csv.writer(fh)
+                if what == "transactions":
+                    w.writerow(["Date", "Description", "Money in", "Money out", "Balance", "Type", "Target", "Category", "Verified", "Flagged", "Source"])
+                    for t in sorted(self.state.transactions, key=lambda t: t.tx_date):
+                        w.writerow([t.tx_date.isoformat(), t.description, f"{t.money_in:.2f}" if t.money_in else "", f"{t.money_out:.2f}" if t.money_out else "",
+                                    f"{t.balance:.2f}" if t.balance is not None else "", t.matched_type, t.matched_target, t.category, "yes" if t.user_verified else "",
+                                    "yes" if getattr(t, "flagged", False) else "", t.source_file])
+                else:
+                    w.writerow(["Kind", "Name", "Amount / Target", "Frequency / Mode", "Next due / Target date", "Priority", "Saved", "Per pay"])
+                    for b in self.state.bills:
+                        w.writerow(["Bill", b.name, f"{b.amount:.2f}", b.frequency, b.due_date.isoformat(), b.priority, f"{b.current_saved:.2f}", f"{self.engine.bill_recommended_allocation(b):.2f}"])
+                    for f in self.state.funds:
+                        w.writerow(["Fund", f.name, f"{f.target_amount:.2f}", f.contribution_mode, f.target_date.isoformat() if f.target_date else "", f.priority, f"{f.current_saved:.2f}", f"{self.engine.fund_recommended_allocation(f):.2f}"])
+                    for g in self.state.goals:
+                        w.writerow(["Goal", g.name, f"{g.target_amount:.2f}", g.mode, "", self._priority_word(g.priority), f"{g.current_saved:.2f}", f"{g.value:.2f}" if g.mode == "fixed" else f"{g.value:g}%"])
+        except OSError as e:
+            self._show_toast(f"Couldn't write the file: {e}", "error", 5000)
+            return
+        self._show_toast(f"Exported to {Path(path).name}.", "success", 4000)
+
+    def _settings_reset_game(self):
+        if not messagebox.askyesno("Reset game progress", "Reset Gold, Gems, level, streak, cards, avatar items and Homestead tiers?\n\nYour bills, savings, transactions and settings are kept."):
+            return
+        self.state.game = GameStats()
+        self.save_state()
+        self.refresh_all_views()
+        self._show_toast("Game progress reset.", "info", 3000)
+
+    # ── Plan bulk actions ────────────────────────────────────────────────
+    def _plan_pay_due_this_week(self):
+        today = date.today()
+        due = [b for b in self.state.bills if b.due_date <= today + timedelta(days=7)]
+        if not due:
+            self._show_toast("Nothing due in the next 7 days.", "info")
+            return
+        prevs = []
+        for b in due:
+            prevs.append((b, b.due_date, b.current_saved))
+            self.engine.mark_bill_paid(b)
+        self.save_state()
+        self.refresh_all_views()
+
+        def _undo():
+            for b, d, s in prevs:
+                b.due_date, b.current_saved = d, s
+            self.save_state()
+            self.refresh_all_views()
+            self._show_toast("Bills restored.", "info", 2500)
+        self._show_toast(f"Marked {len(due)} bill{'s' if len(due) != 1 else ''} paid: " + ", ".join(b.name for b in due[:4]) + (" …" if len(due) > 4 else ""),
+                         "success", duration=8000, action_label="Undo", action_cb=_undo)
+
+    def _show_bulk_contribute(self):
+        items = [("fund", i, f) for i, f in enumerate(self.state.funds)] + [("goal", i, g) for i, g in enumerate(self.state.goals)]
+        if not items:
+            self._show_toast("No savings yet — add a set-aside or goal first.", "info")
+            return
+        scrim, content, btn_row, step_var, close = self._overlay_card("ADD TO SEVERAL AT ONCE", 560, 520)
+        tk.Label(content, text="How much did you put into each?", bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_SM).pack(anchor="w")
+        tk.Label(content, text="Leave a line blank to skip it. Totals update as you type.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w", pady=(2, SP_SM))
+        area = tk.Frame(content, bg=UI_SURFACE)
+        area.pack(fill="both", expand=True)
+        inner, bind_wheel = self._overlay_scroll_area(area, 300)
+        inner.columnconfigure(1, weight=1)
+        vars_ = {}
+        for r, (kind, idx, obj) in enumerate(items):
+            tk.Frame(inner, bg=UI_SAPPHIRE if kind == "fund" else UI_EMERALD, width=3).grid(row=r, column=0, sticky="ns", pady=(0, SP_XS))
+            txt = tk.Frame(inner, bg=UI_SURFACE)
+            txt.grid(row=r, column=1, sticky="ew", padx=(SP_SM, 0), pady=(0, SP_XS))
+            tk.Label(txt, text=obj.name, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD, anchor="w").pack(anchor="w")
+            tk.Label(txt, text=f"${obj.current_saved:,.0f} saved now", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+            v = tk.StringVar()
+            vars_[(kind, idx)] = v
+            cell = tk.Frame(inner, bg=UI_SURFACE)
+            cell.grid(row=r, column=2, sticky="e", padx=(SP_MD, SP_SM), pady=(0, SP_XS))
+            tk.Label(cell, text="+ $", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_BODY).pack(side="left")
+            ttk.Entry(cell, textvariable=v, width=9, font=FONT_BODY, justify="right").pack(side="left")
+        bind_wheel(inner)
+        total_var = tk.StringVar(value="Total: $0")
+        tk.Label(content, textvariable=total_var, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w", pady=(SP_SM, 0))
+
+        def _total(*_a):
+            s = 0.0
+            for v in vars_.values():
+                val = self._parse_money_field(v.get())
+                s += val if val else 0.0
+            total_var.set(f"Total: ${s:,.2f}")
+        for v in vars_.values():
+            v.trace_add("write", _total)
+
+        def _apply():
+            changes = []
+            for (kind, idx, obj) in items:
+                val = self._parse_money_field(vars_[(kind, idx)].get())
+                if val is None:
+                    self._show_toast(f"{obj.name}: that isn't a number.", "warning"); return
+                if val > 0:
+                    cap = obj.target_amount if (BudgetEngine.has_end_target(obj)) else float("inf")
+                    prev = obj.current_saved
+                    obj.current_saved = round(min(cap, prev + val), 2)
+                    changes.append((obj, prev))
+            if not changes:
+                self._show_toast("Nothing entered.", "info"); return
+            close()
+            self._fire_trigger("contribute")
+            self._after_money_change([("fund" if o in self.state.funds else "goal", o, o.current_saved - pv) for o, pv in changes])
+            self.save_state()
+            self.refresh_all_views()
+
+            def _undo():
+                for obj, prev in changes:
+                    obj.current_saved = prev
+                self.save_state()
+                self.refresh_all_views()
+                self._show_toast("Contributions reversed.", "info", 2500)
+            self._show_toast(f"Added to {len(changes)} item{'s' if len(changes) != 1 else ''}.", "success", duration=7000, action_label="Undo", action_cb=_undo)
+        ttk.Button(btn_row, text="Cancel", style="Ghost.TButton", command=close).pack(side="left")
+        ttk.Button(btn_row, text="Apply  ✓", style="Primary.TButton", command=_apply).pack(side="right")
+        scrim.bind("<Return>", lambda _e: (_apply(), "break")[1])
+
+    # ── Challenge triggers (daily + weekly) ──────────────────────────────
+    def _fire_trigger(self, trigger: str):
+        """Advance daily/weekly challenges for a real action and toast anything completed."""
+        try:
+            done = self.game_engine.complete_challenge(trigger)
+            weekly = list(getattr(self.game_engine, "last_weekly_done", []) or [])
+        except Exception:
+            return
+        if not done and not weekly:
+            return
+        for ch in done:
+            amt, rt = ch.get("reward_amount", 0), ch.get("reward_type", "gold")
+            self._show_toast(f"Challenge done: {ch['description']}  +{amt} {'Gold' if rt == 'gold' else 'Gem' + ('s' if amt != 1 else '')}", "success", 3500)
+        for ch in weekly:
+            self._show_toast(f"Weekly challenge done: {ch['description']}", "success", 3500)
+        if weekly and self.game_engine.weekly_all_done() and not self.state.game.weekly_reward_claimed:
+            self._show_toast("All three weekly challenges done — claim your Gem Pack on the Score tab.", "info", 6000,
+                             action_label="Claim", action_cb=self._claim_weekly_reward)
+        try:
+            self.refresh_game_text()
+            self.refresh_daily_challenges()
+        except Exception:
+            pass
+        self.save_state()
+
+    def _startup_progression_migration(self):
+        """Runs once per launch before the first refresh: roll the Pulse run,
+        recompute the level under the current curve, and give existing
+        profiles their Founder card."""
+        eng = self.game_engine
+        g = self.state.game
+        eng.ensure_pulse()
+        eng.ensure_weekly()
+        g.level = eng.level_from_score(g.total_score)
+        eng.mill_status()
+        if not g.money_milestones:
+            eng.check_money_milestones(award=False)   # existing savings aren't a windfall
+        eng.sync_challenge_funds()
+        eng.settle_pacts()
+        if not self.state.first_launch_date:
+            # existing profiles: anything after the last logged pay is still new
+            self.state.first_launch_date = (max(i.received_on for i in self.state.incomes).isoformat() if self.state.incomes else date.today().isoformat())
+        if self.state.onboarding_complete and not g.day_one_done:
+            out = eng.day_one_head_start(award_pack=False)
+            if out.get("founder"):
+                self.after(2600, lambda: self._show_toast("New: the Daily Pulse. Your Founder card is in the collection — open today's vault for a guaranteed Gold chest.", "info", 7000))
+            self.save_state()
+
+    # ── Daily Pulse card (Today, hook row) ───────────────────────────────
+    _PULSE_SPEND_CATS = ("Groceries", "Food", "Fuel", "General")
+    _CHEST_COLORS = {"bronze": "#cd7f32", "silver": "#c0c0c0", "gold": UI_GOLD, "mythic": UI_AMETHYST}
+
+    def _pulse_chip(self, parent, text, cmd, *, fg=UI_TEXT, bg=UI_SURFACE, border=UI_BORDER):
+        lbl = tk.Label(parent, text=text, bg=bg, fg=fg, font=FONT_CAPTION_BOLD, padx=SP_SM, pady=2,
+                       cursor="hand2", highlightthickness=1, highlightbackground=border)
+        lbl.bind("<Button-1>", lambda _e: cmd())
+        return lbl
+
+    def _render_daily_vault(self):
+        host = self._vault_host
+        for w_ in host.winfo_children():
+            w_.destroy()
+        eng = self.game_engine
+        st = eng.vault_status()
+        p = st["progress"]
+        head = tk.Frame(host, bg=UI_SURFACE2)
+        head.pack(fill="x")
+        tk.Label(head, text="DAILY PULSE", bg=UI_SURFACE2, fg=UI_GOLD, font=FONT_CAPTION_BOLD).pack(side="left")
+        run = st["streak"]
+        if st["freezes"]:
+            tk.Label(head, text="❄" * st["freezes"], bg=UI_SURFACE2, fg=UI_SAPPHIRE, font=FONT_CAPTION_BOLD).pack(side="right", padx=(SP_XS, 0))
+        tk.Label(head, text=f"🔥 {run}-day run" if run else "start a run", bg=UI_SURFACE2,
+                 fg=UI_TEXT if run else UI_MUTED, font=FONT_CAPTION_BOLD).pack(side="right")
+        pills = tk.Frame(host, bg=UI_SURFACE2)
+        pills.pack(fill="x", pady=(SP_XS, SP_XS))
+        steps = [("Yesterday", bool(p.get("spend"))), ("Sort one", bool(p.get("sort"))), ("Vault", st["opened_today"])]
+        active = next((i for i, (_, d) in enumerate(steps) if not d), None)
+        for i, (name, done) in enumerate(steps):
+            bgc = UI_EMERALD if done else (UI_GOLD if i == active else UI_SURFACE)
+            fgc = UI_HERO if (done or i == active) else UI_MUTED
+            tk.Label(pills, text=f"{'✓' if done else i + 1} {name}", bg=bgc, fg=fgc, font=FONT_MICRO, padx=6, pady=1).pack(side="left", padx=(0, 4))
+        body = tk.Frame(host, bg=UI_SURFACE2)
+        body.pack(fill="x")
+        if st["opened_today"]:
+            self._render_pulse_done(body, st)
+        elif not p.get("spend"):
+            self._render_pulse_spend(body)
+        elif not p.get("sort"):
+            self._render_pulse_sort(body)
+        else:
+            self._render_pulse_vault(body, st)
+        rep = st.get("repair")
+        if rep and not st["opened_today"] and st["streak"] == 0:
+            row = tk.Frame(host, bg=UI_SURFACE2)
+            row.pack(fill="x", pady=(SP_SM, 0))
+            tk.Label(row, text=f"Your {rep['length']}-day run broke. Repair it for {rep['cost']} Gems ({rep['hours_left']} h left).",
+                     bg=UI_SURFACE2, fg=UI_RUBY, font=FONT_CAPTION, wraplength=220, justify="left").pack(side="left", fill="x", expand=True)
+            ttk.Button(row, text="Repair", style="Secondary.TButton", command=self._repair_pulse).pack(side="right")
+
+    def _render_pulse_spend(self, body):
+        tk.Label(body, text="Any spending yesterday that won't show on a statement? Cash, a split bill, a market stall.",
+                 bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=300, justify="left").pack(anchor="w")
+        chips = tk.Frame(body, bg=UI_SURFACE2)
+        chips.pack(fill="x", pady=(SP_XS, 0))
+        self._pulse_chip(chips, "No spend ✓", self._pulse_no_spend, fg=UI_HERO, bg=UI_EMERALD, border=UI_EMERALD).pack(side="left", padx=(0, 4), pady=2)
+        cat_sel = getattr(self, "_pulse_cat", "")
+        for cat in self._PULSE_SPEND_CATS:
+            self._pulse_chip(chips, cat, lambda c=cat: self._pulse_pick_cat(c),
+                             fg=UI_HERO if cat == cat_sel else UI_TEXT, bg=UI_GOLD if cat == cat_sel else UI_SURFACE,
+                             border=UI_GOLD if cat == cat_sel else UI_BORDER).pack(side="left", padx=(0, 4), pady=2)
+        if cat_sel:
+            row = tk.Frame(body, bg=UI_SURFACE2)
+            row.pack(fill="x", pady=(SP_XS, 0))
+            tk.Label(row, text=f"{cat_sel}  $", bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD).pack(side="left")
+            ent = ttk.Entry(row, width=9)
+            ent.pack(side="left", padx=(SP_XS, SP_SM))
+            ent.insert(0, getattr(self, "_pulse_amt_text", ""))
+            ent.bind("<Return>", lambda _e: self._pulse_log_spend(cat_sel, ent.get()))
+            self._pulse_amt_entry = ent
+            ttk.Button(row, text="Log it", style="Primary.TButton", command=lambda: self._pulse_log_spend(cat_sel, ent.get())).pack(side="left")
+            ent.focus_set()
+        logged = float(getattr(self.state.game, "pulse_progress", {}).get("logged", 0.0) or 0.0)
+        foot = tk.Frame(body, bg=UI_SURFACE2)
+        foot.pack(fill="x", pady=(SP_XS, 0))
+        if logged:
+            tk.Label(foot, text=f"Logged ${logged:,.2f} so far ·", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left")
+        skip = tk.Label(foot, text="that's everything →" if logged else "nothing to add →", bg=UI_SURFACE2, fg=UI_ACCENT_BRIGHT,
+                        font=FONT_CAPTION_BOLD, cursor="hand2")
+        skip.pack(side="left", padx=(SP_XS, 0))
+        skip.bind("<Button-1>", lambda _e: self._pulse_skip_spend())
+
+    def _pulse_pick_cat(self, cat: str):
+        self._pulse_cat = cat
+        self._render_daily_vault()
+
+    def _pulse_no_spend(self):
+        eng = self.game_engine
+        n = eng.record_no_spend_day()
+        eng.pulse_mark_beat("spend", no_spend=True)
+        self._pulse_cat = ""
+        self.save_state()
+        self._render_daily_vault()
+        self.refresh_game_text()
+        self._show_toast(f"No-spend day recorded — {n} in a row." if n > 1 else "No-spend day recorded. That's the habit.", "success", 3000)
+        self._fire_trigger("no_spend") if False else None   # record_no_spend_day already advanced the challenge
+        if n in (3, 7, 14, 30):
+            self._celebrate(f"{n} no-spend days!", "The quietest way to get rich.", UI_EMERALD)
+
+    def _pulse_skip_spend(self):
+        self.game_engine.pulse_mark_beat("spend")
+        self._pulse_cat = ""
+        self.save_state()
+        self._render_daily_vault()
+
+    def _pulse_log_spend(self, cat: str, amount_text: str):
+        amt = self._parse_money_field(amount_text)
+        if amt is None or amt <= 0:
+            self._show_toast("Enter the amount, like 12.50.", "warning")
+            return
+        y = date.today() - timedelta(days=1)
+        n = sum(1 for t in self.state.transactions if t.source_file == "pulse" and t.tx_date == y)
+        cat_name = self.register_expense_category(cat) if hasattr(self, "register_expense_category") else cat
+        tx = TransactionRecord(y, f"Cash spend — {cat_name}", money_out=round(amt, 2), source_file="pulse",
+                               fingerprint=f"pulse|{y.isoformat()}|{cat_name.lower()}|{amt:.2f}|{n}",
+                               matched_type="discretionary", category=cat_name, confidence="manual",
+                               needs_review=False, user_verified=True)
+        self.state.transactions.append(tx)
+        eng = self.game_engine
+        _ru = eng.roundup_for_spend(amt)
+        if _ru:
+            self._show_toast(f"Round-up: ${_ru[1]:,.2f} into {_ru[0].name}.", "info", 3000)
+            self._after_money_change([("fund", _ru[0], _ru[1])])
+        p = eng._pulse_progress_today()
+        p["logged"] = round(float(p.get("logged", 0.0) or 0.0) + amt, 2)
+        eng.mark_real_action()
+        self._pulse_cat = ""
+        self._pulse_amt_text = ""
+        self.save_state()
+        try:
+            self.refresh_transactions_tab()
+        except Exception:
+            pass
+        self._render_daily_vault()
+        self._show_toast(f"${amt:,.2f} {cat_name} logged for yesterday. Add another or move on.", "success", 3000)
+
+    def _render_pulse_sort(self, body):
+        idx = next((i for i, t in enumerate(self.latest_import) if t.direction() == "out" and not t.user_verified), None)
+        if idx is None:
+            self.game_engine.pulse_mark_beat("sort")
+            self.save_state()
+            self._render_daily_vault()
+            return
+        tx = self.latest_import[idx]
+        left = sum(1 for t in self.latest_import if t.direction() == "out" and not t.user_verified)
+        tk.Label(body, text=f"One to sort ({left} waiting):", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+        tk.Label(body, text=f"{extract_merchant_name(tx.description)[:28]}  ·  ${tx.money_out:,.2f}  ·  {tx.tx_date:%d %b}",
+                 bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD, wraplength=300, justify="left").pack(anchor="w")
+        chips = tk.Frame(body, bg=UI_SURFACE2)
+        chips.pack(fill="x", pady=(SP_XS, 0))
+        sug = ""
+        try:
+            sug = self.matcher.classify_category(tx.description, tx.direction()) or ""
+        except Exception:
+            pass
+        cats = [c for c in self.state.expense_categories if c not in ("Income", "Transfer", "Bill", "Fund", "Ignore")]
+        if sug and sug.title() not in cats:
+            cats.insert(0, sug.title())
+        elif sug:
+            cats.remove(sug.title()); cats.insert(0, sug.title())
+        for i, cat in enumerate(cats[:6]):
+            first = i == 0 and bool(sug)
+            self._pulse_chip(chips, ("✓ " if first else "") + cat, lambda c=cat, j=idx: self._pulse_sort_one(j, c),
+                             fg=UI_HERO if first else UI_TEXT, bg=UI_GOLD if first else UI_SURFACE,
+                             border=UI_GOLD if first else UI_BORDER).pack(side="left", padx=(0, 4), pady=2)
+        self._pulse_chip(chips, "Ignore", lambda j=idx: self._pulse_sort_one(j, "Ignore"), fg=UI_MUTED).pack(side="left", padx=(0, 4), pady=2)
+        more = tk.Label(body, text="open the full sort →", bg=UI_SURFACE2, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD, cursor="hand2")
+        more.pack(anchor="w", pady=(SP_XS, 0))
+        more.bind("<Button-1>", lambda _e: (self._show_page("transactions"), self.open_review_queue()))
+
+    def _pulse_sort_one(self, idx: int, cat: str):
+        if idx >= len(self.latest_import):
+            self._render_daily_vault()
+            return
+        tx = self.latest_import[idx]
+        group = {"indexes": [idx], "key": merchant_group_key(tx.description)}
+        if cat == "Ignore":
+            self._assign_review_group(group, "ignore", "", "", True)
+        else:
+            self._assign_review_group(group, "discretionary", "", cat, True)
+        eng = self.game_engine
+        eng.mark_real_action()
+        eng.pulse_mark_beat("sort")
+        self.save_state()
+        try:
+            self.refresh_transactions_tab()
+        except Exception:
+            pass
+        self._render_daily_vault()
+        self._show_toast(f"Sorted as {cat}. Future {extract_merchant_name(tx.description)[:20]} rows sort themselves.", "success", 3000)
+
+    def _render_pulse_vault(self, body, st):
+        odds = st["odds"]
+        if st["guaranteed"]:
+            line = f"Day {st['day']} — Gold chest or better, guaranteed ✦"
+        else:
+            line = f"Today's chest: {odds['gold'] + odds['mythic']}% Gold+ · {odds['mythic']}% Mythic"
+        tk.Label(body, text=line, bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_BODY_BOLD, wraplength=300, justify="left").pack(anchor="w")
+        note = self.state.game.pulse_progress.get("note") or ""
+        sub = (note + " " if note else "") + ("×2 Gold — you did real work today ✓" if st["bonus"] else "Log a spend, sort or import today and the Gold doubles.")
+        tk.Label(body, text=sub, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=300, justify="left").pack(anchor="w")
+        ttk.Button(body, text="OPEN THE VAULT", style="Primary.TButton", command=self._open_daily_vault).pack(fill="x", pady=(SP_SM, 0))
+
+    def _render_pulse_done(self, body, st):
+        tier = st.get("last_tier") or "bronze"
+        gold, gems, _xp, label = BudgetGameEngine.VAULT_CHESTS.get(tier, BudgetGameEngine.VAULT_CHESTS["bronze"])
+        tk.Label(body, text=f"{label} opened ✓", bg=UI_SURFACE2, fg=self._CHEST_COLORS.get(tier, UI_GOLD), font=FONT_BODY_BOLD).pack(anchor="w")
+        run = st["streak"]
+        nxt_freeze = ((run // 7) + 1) * 7
+        prev = tk.Frame(body, bg=UI_SURFACE2)
+        prev.pack(fill="x", pady=(SP_XS, 0))
+        tk.Label(prev, text="Next:", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left")
+        for d in (run + 1, run + 2, run + 3):
+            star = d % 7 == 0
+            tk.Label(prev, text=f"D{d} {'Gold+ ✦' if star else ''}".strip(), bg=UI_GOLD if star else UI_SURFACE, fg=UI_HERO if star else UI_MUTED,
+                     font=FONT_MICRO, padx=5, pady=1).pack(side="left", padx=(4, 0))
+        p = st["progress"]
+        bits = []
+        if p.get("no_spend"):
+            bits.append(f"no-spend run {self.state.game.no_spend_streak}")
+        if p.get("logged"):
+            bits.append(f"${float(p['logged']):,.0f} logged")
+        bits.append(f"best run {st['best']}")
+        bits.append(f"❄ at {nxt_freeze}" if st["freezes"] < BudgetGameEngine.PULSE_FREEZE_CAP else "freezes full")
+        tk.Label(body, text=" · ".join(bits) + ". Back tomorrow.", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=300, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+
+    def _open_daily_vault(self):
+        st = self.game_engine.vault_status()
+        if not st["ready"] and not st["opened_today"]:
+            self._show_toast("Finish the two quick beats first — yesterday's spending and one card to sort.", "info", 3500)
+            self._render_daily_vault()
+            return
+        res = self.game_engine.open_vault()
+        if res is None:
+            self._show_toast("Already opened today — back tomorrow.", "info")
+            return
+        self.save_state()
+        self.refresh_today_tab()
+        self.refresh_game_text()
+        try:
+            self.refresh_daily_challenges()
+        except Exception:
+            pass
+        sub = f"Day {res['day']} · {res['streak']}-day run" + (" · ×2 bonus" if res["bonus"] else "")
+        if res["gems"]:
+            sub += f" · +{res['gems']} Gem{'s' if res['gems'] != 1 else ''}"
+        self._celebrate(f"{res['label']}: +{res['gold']} Gold", sub, self._CHEST_COLORS.get(res["tier"], UI_GOLD))
+        if res.get("freeze_earned"):
+            self._show_toast("❄ Streak freeze earned — a missed day won't break your run.", "info", 4500)
+        if res.get("milestone"):
+            self.after(1900, lambda m=res["milestone"]: self._celebrate(f"{m}-day run!", "Showing up is the whole game.", UI_EMERALD))
+        for ch in res.get("completed_challenges", []):
+            self._show_toast(f"Challenge done: {ch['description']}", "success", 3000)
+
+    def _repair_pulse(self):
+        ok, msg = self.game_engine.repair_pulse()
+        self._show_toast(msg, "success" if ok else "warning", 3500)
+        if ok:
+            self.save_state()
+            self.refresh_today_tab()
+            self.refresh_game_text()
+
+    def _pulse_focus(self):
+        self._show_page("today")
+        host = getattr(self, "_vault_host", None)
+        if host is None:
+            return
+        try:
+            host.configure(highlightbackground=UI_ACCENT_BRIGHT, highlightthickness=2)
+            self.after(1400, lambda: host.configure(highlightbackground=UI_GOLD, highlightthickness=1))
+        except tk.TclError:
+            pass
+
+    def _pulse_risk(self) -> Optional[tuple]:
+        """(message, color) in the evening when today's Pulse hasn't been done and a run is at stake."""
+        try:
+            st = self.game_engine.vault_status()
+        except Exception:
+            return None
+        if st["opened_today"] or st["streak"] < 2:
+            return None
+        hour = datetime.now().hour
+        if hour < 17:
+            return None
+        left = 24 - hour
+        return (f"Pulse not done — your {st['streak']}-day run ends at midnight ({left} h left).", UI_GOLD if hour < 21 else UI_RUBY)
+
+    # ── Weekly challenges (Score tab, under the daily three) ─────────────
+    def _render_weekly_challenges(self):
+        host = self._weekly_host
+        for w_ in host.winfo_children():
+            w_.destroy()
+        eng = self.game_engine
+        eng.ensure_weekly()
+        g = self.state.game
+        head = tk.Frame(host, bg=UI_BG)
+        head.pack(fill="x")
+        tk.Label(head, text="THIS WEEK", bg=UI_BG, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD).pack(side="left")
+        tk.Label(head, text="all three → a free Gem Pack", bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION).pack(side="right")
+        for ch in g.weekly_challenges:
+            row = tk.Frame(host, bg=UI_BG)
+            row.pack(fill="x", pady=(2, 0))
+            done = ch["completed"]
+            tk.Label(row, text="✓" if done else "○", bg=UI_BG, fg=UI_EMERALD if done else UI_MUTED, font=FONT_SMALL_BOLD, width=2).pack(side="left")
+            tk.Label(row, text=ch["description"], bg=UI_BG, fg=UI_TEXT if not done else UI_MUTED, font=FONT_SMALL, anchor="w").pack(side="left", fill="x", expand=True)
+            tk.Label(row, text=f"{ch['progress']}/{ch['goal']}", bg=UI_BG, fg=UI_EMERALD if done else UI_MUTED, font=FONT_CAPTION_BOLD).pack(side="right")
+        if eng.weekly_all_done():
+            if g.weekly_reward_claimed:
+                tk.Label(host, text="Gem Pack claimed — new trio on Monday.", bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(SP_XS, 0))
+            else:
+                ttk.Button(host, text="Claim the Gem Pack  ✦", style="Primary.TButton", command=self._claim_weekly_reward).pack(fill="x", pady=(SP_XS, 0))
+
+    def _claim_weekly_reward(self):
+        res = self.game_engine.claim_weekly_reward()
+        if not res:
+            self._show_toast("Finish all three weekly challenges first.", "info")
+            return
+        self.save_state()
+        self.refresh_game_text()
+        try:
+            self.refresh_collection()
+            self.refresh_character_tab()
+            self.refresh_daily_challenges()
+        except Exception:
+            pass
+        self._open_pack_animation(res["cards"], res.get("set_completions", []))
+
+    # ── Day one ──────────────────────────────────────────────────────────
+    def _day_one_head_start_ui(self):
+        out = self.game_engine.day_one_head_start(award_pack=True)
+        if not out:
+            return
+        self.save_state()
+        self.refresh_all_views()
+        self._celebrate("Welcome to The Vault", "Founder card + a free pack are yours. Today's vault holds a Gold chest.", UI_AMETHYST, 2200)
+        pack = out.get("pack")
+        if pack and pack.get("success"):
+            self.after(2300, lambda: self._open_pack_animation(pack["cards"], pack.get("set_completions", [])))
+
+    def _when_pack_closed(self, cb, _tries: int = 0):
+        win = getattr(self, "_pack_win", None)
+        try:
+            alive = win is not None and bool(win.winfo_exists())
+        except tk.TclError:
+            alive = False
+        if alive and _tries < 720:
+            self.after(500, lambda: self._when_pack_closed(cb, _tries + 1))
+        else:
+            cb()
+
+    # ── Settings: reminders + Pulse options ──────────────────────────────
+    def _build_settings_reminders(self, card):
+        self._settings_rem_var = tk.StringVar(value="")
+        tk.Label(card, textvariable=self._settings_rem_var, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL, anchor="w", wraplength=760, justify="left").grid(row=1, column=0, sticky="w")
+        row = tk.Frame(card, bg=UI_SURFACE)
+        row.grid(row=2, column=0, sticky="w", pady=(SP_SM, 0))
+        self._settings_rem_btn = ttk.Button(row, text="Turn reminders on", style="Primary.TButton", command=self._settings_toggle_reminders)
+        self._settings_rem_btn.pack(side="left")
+        ttk.Button(row, text="Send a test notification", style="Secondary.TButton", command=self._settings_test_reminder).pack(side="left", padx=(SP_SM, 0))
+        tk.Label(row, text="Pulse reminder at", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL).pack(side="left", padx=(SP_LG, SP_XS))
+        self._settings_pulse_hour = ttk.Combobox(row, width=7, state="readonly", values=[f"{h:02d}:00" for h in range(15, 22)])
+        self._settings_pulse_hour.set(f"{int(self.state.ui_prefs.get('reminders.pulse_hour', 18)):02d}:00")
+        self._settings_pulse_hour.pack(side="left")
+        self._settings_pulse_hour.bind("<<ComboboxSelected>>", lambda _e: self._settings_set_pulse_hour())
+        tk.Label(card, text="Windows notifications from a scheduled task (hourly, 8 am to 10 pm): Pulse not done, pay day, bills due, month report. "
+                            "Nothing leaves your PC; the task only reads the data file.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=760, justify="left").grid(row=3, column=0, sticky="w", pady=(SP_XS, 0))
+        row2 = tk.Frame(card, bg=UI_SURFACE)
+        row2.grid(row=4, column=0, sticky="w", pady=(SP_SM, 0))
+        self._settings_weekend_btn = ttk.Button(row2, text="Weekends count", style="Secondary.TButton", command=self._settings_toggle_skip_weekends)
+        self._settings_weekend_btn.pack(side="left")
+        tk.Label(row2, text="Daily Pulse run: choose whether a missed Saturday or Sunday breaks it.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left", padx=(SP_SM, 0))
+
+    def _refresh_settings_reminders(self):
+        if not hasattr(self, "_settings_rem_var"):
+            return
+        installed = reminder_task_installed()
+        self.state.ui_prefs["reminders.enabled"] = bool(installed)
+        self._settings_rem_btn.configure(text="Turn reminders off" if installed else "Turn reminders on",
+                                         style="Secondary.TButton" if installed else "Primary.TButton")
+        self._settings_rem_var.set("Reminders are on — the task 'BudgetPlanner Reminders' is scheduled." if installed
+                                   else "Reminders are off. Turn them on to get a nudge when a run, a pay day or a bill is at stake.")
+        skip = bool(self.state.ui_prefs.get("pulse.skip_weekends", False))
+        self._settings_weekend_btn.configure(text="Weekends don't count ✓" if skip else "Weekends count")
+
+    def _settings_toggle_reminders(self):
+        if reminder_task_installed():
+            ok, msg = remove_reminder_task()
+            self._show_toast("Reminders turned off." if ok else f"Couldn't remove the task: {msg[:120]}", "info" if ok else "warning", 4000)
+        else:
+            ok, msg = install_reminder_task(DATA_FILE.resolve())
+            if ok:
+                self._show_toast("Reminders on. You'll get a Windows notification when something's at stake.", "success", 4500)
+            else:
+                self._show_toast(f"Couldn't schedule the task: {msg[:140]}", "warning", 6000)
+        self.save_state()
+        self._refresh_settings_reminders()
+
+    def _settings_test_reminder(self):
+        ok = _send_windows_toast("Budget Planner", "This is what a reminder looks like. Your run, pay day and bills will show up here.")
+        self._show_toast("Test notification sent." if ok else "Windows didn't show the notification — check Focus Assist / notification settings.",
+                         "success" if ok else "warning", 4000)
+
+    def _settings_set_pulse_hour(self):
+        try:
+            self.state.ui_prefs["reminders.pulse_hour"] = int(self._settings_pulse_hour.get()[:2])
+            self.save_state()
+        except (ValueError, tk.TclError):
+            pass
+
+    def _settings_toggle_skip_weekends(self):
+        self.state.ui_prefs["pulse.skip_weekends"] = not bool(self.state.ui_prefs.get("pulse.skip_weekends", False))
+        self.save_state()
+        self._refresh_settings_reminders()
+
+    # ── Money change hook: plots, records, milestones, challenges, pacts ──
+    def _after_money_change(self, items):
+        """items: [(kind, obj, amount)] after any contribution path or a pay."""
+        eng = self.game_engine
+        g = self.state.game
+        pb = []
+        for kind, obj, amt in items:
+            if amt is None or amt <= 0:
+                continue
+            if kind in ("fund", "goal"):
+                eng.plant(kind, obj.name)
+            if eng.update_record("biggest_contribution", amt) == "new":
+                pb.append(f"Biggest contribution yet: ${amt:,.0f}")
+        new_ms = eng.check_money_milestones(award=True)
+        rewards = eng.check_challenge_rewards()
+        eng.sync_challenge_funds()
+        self.save_state()
+        if new_ms:
+            top = new_ms[0]
+            self._celebrate(top["label"], f"+{top['gold']} Gold" + (f" · and {len(new_ms) - 1} more milestone{'s' if len(new_ms) > 2 else ''}" if len(new_ms) > 1 else ""), UI_EMERALD)
+            for m in new_ms[1:4]:
+                self._show_toast(f"Milestone: {m['label']}  +{m['gold']} Gold", "success", 3500)
+        for r in rewards:
+            if r["step"] == 100:
+                self.after(600, lambda r=r: self._celebrate(f"{r['challenge']} complete!", r["reward"], UI_AMETHYST))
+            else:
+                self._show_toast(f"{r['challenge']}: {r['step']}% — {r['reward']}", "success", 4000)
+        for line in pb:
+            self._show_toast("🏆 New record — " + line, "success", 4000)
+        self._settle_pacts_ui()
+        try:
+            self.refresh_game_text()
+        except Exception:
+            pass
+
+    # ── Homestead harvest (windmill Gold + ripe plots) ───────────────────
+    def _harvest_summary(self) -> tuple:
+        """(text, color, actionable) for the Today hero card and Next Up."""
+        eng = self.game_engine
+        mill = eng.mill_status()
+        plots = eng.plot_status()
+        ripe = [p for p in plots if p["ripe"]]
+        bits = []
+        if mill["gold"] >= 1:
+            bits.append(f"{mill['gold']} Gold milled" + (" (full)" if mill["capped"] else ""))
+        if ripe:
+            bits.append(f"{len(ripe)} plot{'s' if len(ripe) != 1 else ''} ripe")
+        if bits:
+            return (" · ".join(bits) + " — collect →", UI_GOLD, True)
+        growing = [p for p in plots if not p["ripe"]]
+        if growing:
+            soon = min(growing, key=lambda p: p["hours_left"])
+            return (f"windmill {mill['rate']:.0f} Gold/h · {soon['name']} ripens in {soon['hours_left']:.0f} h", UI_MUTED, False)
+        return (f"windmill {mill['rate']:.0f} Gold/h · add $ to a fund to plant a plot", UI_MUTED, False)
+
+    def _update_today_harvest(self):
+        var = getattr(self, "_today_harvest_var", None)
+        if var is None:
+            return
+        text, color, _ = self._harvest_summary()
+        var.set(text)
+        try:
+            self._today_harvest_lbl.configure(fg=color, cursor="hand2")
+        except tk.TclError:
+            pass
+
+    def _collect_all_ui(self):
+        """One click from Today: collect the mill and harvest every ripe plot."""
+        eng = self.game_engine
+        gold = eng.collect_mill()
+        res = eng.harvest_all()
+        if not gold and not res["names"]:
+            self._show_toast("Nothing to collect yet — the windmill is turning.", "info")
+            return
+        self.save_state()
+        self.refresh_game_text()
+        self.refresh_today_tab()
+        if hasattr(self, "_homestead_status_host"):
+            self.refresh_homestead_tab()
+        sub = []
+        if res["names"]:
+            sub.append(f"harvested {', '.join(res['names'])} → {res['fragments']}/{BudgetGameEngine.FRAGMENTS_PER_PACK} fragments")
+        if gold:
+            self._celebrate(f"+{gold} Gold from the windmill", " · ".join(sub) if sub else "Come back when it's full again.", UI_GOLD)
+        else:
+            self._celebrate("Harvest!", " · ".join(sub), UI_EMERALD)
+        for pack in res["packs"]:
+            if pack and pack.get("success"):
+                self.after(1900, lambda p=pack: self._open_pack_animation(p["cards"], p.get("set_completions", [])))
+
+    def _render_homestead_harvest(self):
+        host = getattr(self, "_homestead_harvest_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        eng = self.game_engine
+        mill = eng.mill_status()
+        plots = eng.plot_status()
+        g = self.state.game
+        box = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_GOLD, padx=SP_MD, pady=SP_SM)
+        box.pack(fill="x")
+        head = tk.Frame(box, bg=UI_SURFACE2)
+        head.pack(fill="x")
+        tk.Label(head, text="HARVEST", bg=UI_SURFACE2, fg=UI_GOLD, font=FONT_CAPTION_BOLD).pack(side="left")
+        tk.Label(head, text=f"fragments {g.pack_fragments}/{BudgetGameEngine.FRAGMENTS_PER_PACK} → free pack", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="right")
+        mill_line = (f"Windmill: {mill['gold']} Gold milled over {mill['hours']:.1f} h at {mill['rate']:.0f}/h"
+                     + (" — full, collect it" if mill["capped"] else f" · full in {mill['hours_to_cap']:.1f} h"))
+        tk.Label(box, text=mill_line, bg=UI_SURFACE2, fg=UI_TEXT if mill["gold"] else UI_MUTED, font=FONT_SMALL, wraplength=440, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+        if plots:
+            for p in plots[:6]:
+                tk.Label(box, text=("🌾 " if p["ripe"] else "🌱 ") + p["name"] + (" — ripe, harvest it" if p["ripe"] else f" — ripens in {p['hours_left']:.1f} h"),
+                         bg=UI_SURFACE2, fg=UI_EMERALD if p["ripe"] else UI_MUTED, font=FONT_SMALL).pack(anchor="w")
+        else:
+            tk.Label(box, text="No plots growing. Add $ to a fund or goal and it ripens 12 h later into a pack fragment.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=440, justify="left").pack(anchor="w")
+        actionable = mill["gold"] >= 1 or any(p["ripe"] for p in plots)
+        ttk.Button(box, text="Collect everything" if actionable else "Nothing ready yet", style="Primary.TButton" if actionable else "Ghost.TButton",
+                   command=self._collect_all_ui, state="normal" if actionable else "disabled").pack(anchor="w", pady=(SP_SM, 0))
+
+    # ── Pacts with Gerald ────────────────────────────────────────────────
+    _PACT_QUIPS = {
+        "reserve": "A promise to future-you. I'll check the split on your next pay.",
+        "cap": "Statements don't lie. I'll add up every {cat} line until the week is out.",
+        "fund": "Pick the number, pick the date. I only count what's actually in there.",
+        "nospend": "Quiet days. Tick them in the Pulse — I'll be counting.",
+    }
+
+    def _settle_pacts_ui(self):
+        res = self.game_engine.settle_pacts()
+        if not res:
+            return
+        self.save_state()
+        try:
+            self.refresh_game_text()
+            self._render_pact_card()
+        except Exception:
+            pass
+        if res["won"]:
+            self._celebrate("Pact honoured!", f"{res['title']} — stake doubled: +{res['stake'] * 2} Gems, +50 Gold" + (" · Oath card earned" if res["card"] else ""), UI_AMETHYST, 2300)
+        else:
+            self._show_toast(f"Pact lost: {res['title']}. {res['text']} Gerald: \"Smaller promise next time — but make one.\"", "warning", 7000)
+
+    def _render_pact_card(self):
+        host = getattr(self, "_pact_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        if self.state.ui_prefs.get("focus_mode"):
+            host.pack_forget()
+            return
+        host.pack(fill="x", pady=(SP_SM, 0))
+        eng = self.game_engine
+        prog = eng.pact_progress()
+        box = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_AMETHYST if prog else UI_BORDER, padx=SP_MD, pady=SP_SM)
+        box.pack(fill="x")
+        c = tk.Canvas(box, width=44, height=58, bg=UI_SURFACE2, highlightthickness=0)
+        c.pack(side="left", padx=(0, SP_MD))
+        try:
+            _draw_gerald(c, 44, 58, "wink" if prog else "normal")
+        except Exception:
+            pass
+        body = tk.Frame(box, bg=UI_SURFACE2)
+        body.pack(side="left", fill="x", expand=True)
+        if not prog:
+            tk.Label(body, text="PACT WITH GERALD", bg=UI_SURFACE2, fg=UI_AMETHYST, font=FONT_CAPTION_BOLD).pack(anchor="w")
+            tk.Label(body, text="\"Stake a few Gems on a promise. Keep it and I pay double, plus an Oath card. Break it and the Gems are mine.\"",
+                     bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=560, justify="left").pack(anchor="w")
+            g = self.state.game
+            rec = f"Record: {g.pacts_won} kept · {g.pacts_lost} broken" if (g.pacts_won or g.pacts_lost) else "No pacts yet."
+            tk.Label(body, text=rec, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+            ttk.Button(box, text="Make a pact", style="Secondary.TButton", command=self._show_pact_maker).pack(side="right")
+            return
+        tk.Label(body, text="ACTIVE PACT", bg=UI_SURFACE2, fg=UI_AMETHYST, font=FONT_CAPTION_BOLD).pack(anchor="w")
+        tk.Label(body, text=prog["title"], bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_BODY_BOLD, wraplength=560, justify="left").pack(anchor="w")
+        bar = tk.Canvas(body, height=6, width=10, bg=UI_SURFACE, highlightthickness=0)
+        bar.pack(fill="x", pady=(3, 3))
+        col = UI_RUBY if prog["failed"] else (UI_EMERALD if prog["done"] else UI_AMETHYST)
+        bar.bind("<Configure>", lambda e, b=bar, p=prog["pct"], cc=col: (b.delete("all"), b.create_rectangle(0, 0, max(2, e.width * p), 6, fill=cc, outline="")))
+        dl = prog["days_left"]
+        when = "settles today" if dl == 0 else (f"{dl} day{'s' if dl != 1 else ''} left" if dl > 0 else "settling…")
+        tk.Label(body, text=f"{prog['text']}  ·  {when}  ·  stake {prog['stake']} Gem{'s' if prog['stake'] != 1 else ''} → win {prog['stake'] * 2}",
+                 bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=560, justify="left").pack(anchor="w")
+        off = tk.Label(box, text="call it off", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, cursor="hand2")
+        off.pack(side="right", anchor="s")
+        off.bind("<Button-1>", lambda _e: self._cancel_pact_ui())
+
+    def _cancel_pact_ui(self):
+        from tkinter import messagebox as _mb
+        prog = self.game_engine.pact_progress()
+        if not prog:
+            return
+        if not _mb.askyesno("Call off the pact?", f"\"{prog['title']}\"\n\nThe {prog['stake']} Gem stake is forfeited — a pact is a pact.", parent=self):
+            return
+        self.game_engine.cancel_pact()
+        self.save_state()
+        self.refresh_game_text()
+        self._render_pact_card()
+        self._show_toast("Pact called off. Gerald pockets the stake.", "info", 3500)
+
+    def _show_pact_maker(self):
+        eng = self.game_engine
+        g = self.state.game
+        if g.active_pact:
+            self._show_toast("One pact at a time — see it through first.", "info")
+            return
+        if g.gems < 1:
+            self._show_toast("You need at least 1 Gem to stake. Streaks, challenges and the vault all pay Gems.", "info", 5000)
+            return
+        scrim, content, btn_row, step_var, close = self._overlay_card("A PACT WITH GERALD", 680, 560)
+        st = {"kind": "reserve", "stake": min(2, g.gems), "params": {}}
+        top = tk.Frame(content, bg=UI_SURFACE)
+        top.pack(fill="x")
+        c = tk.Canvas(top, width=90, height=120, bg=UI_SURFACE, highlightthickness=0)
+        c.pack(side="left", padx=(0, SP_MD))
+        try:
+            _draw_gerald(c, 90, 120, "wink")
+        except Exception:
+            pass
+        quip_var = tk.StringVar()
+        tk.Label(top, textvariable=quip_var, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL, wraplength=500, justify="left").pack(side="left", fill="x", expand=True)
+        kinds = [("reserve", "Reserve a share of my next pay"), ("cap", "Keep a category under a cap this week"),
+                 ("fund", "Get a fund or goal to a number by a date"), ("nospend", "No-spend days this week")]
+        krow = tk.Frame(content, bg=UI_SURFACE)
+        krow.pack(fill="x", pady=(SP_SM, 0))
+        body = tk.Frame(content, bg=UI_SURFACE)
+        body.pack(fill="x", pady=(SP_SM, 0))
+        srow = tk.Frame(content, bg=UI_SURFACE)
+        srow.pack(fill="x", pady=(SP_MD, 0))
+        summary_var = tk.StringVar()
+        tk.Label(content, textvariable=summary_var, bg=UI_SURFACE, fg=UI_AMETHYST, font=FONT_SMALL_BOLD, wraplength=600, justify="left").pack(anchor="w", pady=(SP_MD, 0))
+
+        def chip(parent, text, selected, cmd):
+            lbl = tk.Label(parent, text=text, bg=UI_AMETHYST if selected else UI_SURFACE2, fg=UI_HERO if selected else UI_TEXT,
+                           font=FONT_CAPTION_BOLD, padx=SP_SM, pady=3, cursor="hand2",
+                           highlightthickness=1, highlightbackground=UI_AMETHYST if selected else UI_BORDER)
+            lbl.bind("<Button-1>", lambda _e: cmd())
+            return lbl
+
+        def _set(key, val):
+            st["params"][key] = val
+            _render()
+
+        def _summary():
+            try:
+                title = eng.pact_title({"kind": st["kind"], "params": st["params"], "deadline": st["params"].get("deadline", "")})
+            except Exception:
+                title = ""
+            summary_var.set(f"\"{title}\" — stake {st['stake']} Gem{'s' if st['stake'] != 1 else ''}, win {st['stake'] * 2}.")
+
+        def _render():
+            for w_ in list(krow.winfo_children()) + list(body.winfo_children()) + list(srow.winfo_children()):
+                w_.destroy()
+            for i, (kid, label) in enumerate(kinds):
+                chip(krow, label, st["kind"] == kid, lambda k=kid: (st.__setitem__("kind", k), st.__setitem__("params", {}), _render())).grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 4), pady=2)
+            k = st["kind"]
+            p = st["params"]
+            quip_var.set(self._PACT_QUIPS[k].format(cat=p.get("cat", "that category")))
+            if k == "reserve":
+                p.setdefault("pct", 30)
+                tk.Label(body, text="Reserve at least", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+                row = tk.Frame(body, bg=UI_SURFACE); row.pack(anchor="w")
+                for v in (20, 30, 40, 50):
+                    chip(row, f"{v}%", p["pct"] == v, lambda v=v: _set("pct", v)).pack(side="left", padx=(0, 4), pady=2)
+            elif k == "cap":
+                cats = [cc for cc in self.state.expense_categories if cc not in ("Income", "Transfer", "Bill", "Fund", "Ignore")][:8]
+                p.setdefault("cat", cats[0] if cats else "Food")
+                p.setdefault("cap", 50)
+                tk.Label(body, text="Category", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+                row = tk.Frame(body, bg=UI_SURFACE); row.pack(anchor="w")
+                for i, cc in enumerate(cats):
+                    chip(row, cc, p["cat"] == cc, lambda cc=cc: _set("cat", cc)).grid(row=i // 4, column=i % 4, sticky="w", padx=(0, 4), pady=2)
+                tk.Label(body, text="Under", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_SM, 0))
+                row2 = tk.Frame(body, bg=UI_SURFACE); row2.pack(anchor="w")
+                for v in (25, 50, 100, 150, 200):
+                    chip(row2, f"${v}", p["cap"] == v, lambda v=v: _set("cap", v)).pack(side="left", padx=(0, 4), pady=2)
+            elif k == "fund":
+                names = [("fund", f.name, f) for f in self.state.funds] + [("goal", x.name, x) for x in self.state.goals]
+                if not names:
+                    tk.Label(body, text="Add a fund or goal first (Setup → Plan).", bg=UI_SURFACE, fg=UI_RUBY, font=FONT_SMALL).pack(anchor="w")
+                else:
+                    if "name" not in p:
+                        p["name"] = names[0][1]
+                    obj = next((o for _, n, o in names if n == p["name"]), names[0][2])
+                    p.setdefault("target", float(int(obj.current_saved + 100)))
+                    p.setdefault("deadline", (date.today() + timedelta(days=14)).isoformat())
+                    tk.Label(body, text="Fund or goal", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+                    row = tk.Frame(body, bg=UI_SURFACE); row.pack(anchor="w")
+                    for i, (_, n, _o) in enumerate(names[:8]):
+                        chip(row, n[:22], p["name"] == n, lambda n=n: (p.__setitem__("name", n), p.pop("target", None), _render())).grid(row=i // 4, column=i % 4, sticky="w", padx=(0, 4), pady=2)
+                    row2 = tk.Frame(body, bg=UI_SURFACE); row2.pack(anchor="w", pady=(SP_SM, 0))
+                    tk.Label(row2, text=f"Reach $", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(side="left")
+                    te = ttk.Entry(row2, width=9); te.insert(0, f"{p['target']:.0f}"); te.pack(side="left", padx=(SP_XS, SP_MD))
+                    te.bind("<FocusOut>", lambda _e: (p.__setitem__("target", self._parse_money_field(te.get()) or p["target"]), _summary()))
+                    tk.Label(row2, text="by", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(side="left")
+                    de = ttk.Entry(row2, width=12); de.insert(0, p["deadline"]); de.pack(side="left", padx=(SP_XS, 0))
+                    de.bind("<FocusOut>", lambda _e: (p.__setitem__("deadline", de.get().strip()), _summary()))
+                    st["_te"], st["_de"] = te, de
+                    tk.Label(body, text=f"(now ${obj.current_saved:,.0f})", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+            else:
+                p.setdefault("n", 4)
+                tk.Label(body, text="No-spend days in the next 7", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+                row = tk.Frame(body, bg=UI_SURFACE); row.pack(anchor="w")
+                for v in (3, 4, 5, 6):
+                    chip(row, str(v), p["n"] == v, lambda v=v: _set("n", v)).pack(side="left", padx=(0, 4), pady=2)
+            tk.Label(srow, text=f"Stake (you have {g.gems} Gems)", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+            row = tk.Frame(srow, bg=UI_SURFACE); row.pack(anchor="w")
+            for v in range(1, BudgetGameEngine.PACT_MAX_STAKE + 1):
+                if v > g.gems:
+                    tk.Label(row, text=f"{v} ◇", bg=UI_SURFACE, fg=UI_BORDER_LT, font=FONT_CAPTION_BOLD, padx=SP_SM, pady=3).pack(side="left", padx=(0, 4))
+                else:
+                    chip(row, f"{v} ◇", st["stake"] == v, lambda v=v: (st.__setitem__("stake", v), _render())).pack(side="left", padx=(0, 4), pady=2)
+            _summary()
+
+        def _shake():
+            if st["kind"] == "fund":
+                te, de = st.get("_te"), st.get("_de")
+                if te is not None:
+                    st["params"]["target"] = self._parse_money_field(te.get()) or 0.0
+                    st["params"]["deadline"] = de.get().strip()
+            ok, msg = eng.make_pact(st["kind"], st["params"], st["stake"])
+            if not ok:
+                self._show_toast(msg, "warning", 4000)
+                return
+            close()
+            self.save_state()
+            self.refresh_game_text()
+            self._render_pact_card()
+            self._celebrate("Pact made", f"{eng.pact_title(g.active_pact)} — {st['stake']} Gem{'s' if st['stake'] != 1 else ''} on the line", UI_AMETHYST)
+
+        _render()
+        ttk.Button(btn_row, text="Not today", style="Ghost.TButton", command=close).pack(side="left")
+        ttk.Button(btn_row, text="Shake on it  ✓", style="Primary.TButton", command=_shake).pack(side="right")
+
+    # ── Personal records panel (Score) ───────────────────────────────────
+    def _build_records_section(self, frame):
+        self._records_summary_var = tk.StringVar(value="")
+        wrap, content = self._collapsible_section(frame, "Personal records & money milestones", "score.records",
+                                                  default_open=False, summary_var=self._records_summary_var)
+        wrap.grid(row=6, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(0, SP_XL))
+        content.columnconfigure(0, weight=1)
+        self._records_host = tk.Frame(content, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
+        self._records_host.grid(row=0, column=0, sticky="ew")
+
+    def _render_records(self):
+        host = getattr(self, "_records_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        eng = self.game_engine
+        g = self.state.game
+        host.columnconfigure(0, weight=1, uniform="rec")
+        host.columnconfigure(1, weight=1, uniform="rec")
+        left = tk.Frame(host, bg=UI_SURFACE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, SP_MD))
+        right = tk.Frame(host, bg=UI_SURFACE)
+        right.grid(row=0, column=1, sticky="nsew")
+        tk.Label(left, text="PERSONAL BESTS", bg=UI_SURFACE, fg=UI_GOLD, font=FONT_CAPTION_BOLD).pack(anchor="w")
+        n_set = 0
+        for key, (label, _fmt) in BudgetGameEngine.RECORD_DEFS.items():
+            rec = g.records.get(key)
+            row = tk.Frame(left, bg=UI_SURFACE)
+            row.pack(fill="x", pady=(2, 0))
+            tk.Label(row, text=label, bg=UI_SURFACE, fg=UI_TEXT if rec else UI_MUTED, font=FONT_SMALL, anchor="w").pack(side="left", fill="x", expand=True)
+            val = eng.record_text(key)
+            when = f"  ·  {date.fromisoformat(rec['date']):%d %b}" if rec else ""
+            tk.Label(row, text=val + when, bg=UI_SURFACE, fg=UI_GOLD if rec else UI_BORDER_LT, font=FONT_SMALL_BOLD).pack(side="right")
+            n_set += 1 if rec else 0
+        tk.Label(right, text="MONEY MILESTONES", bg=UI_SURFACE, fg=UI_EMERALD, font=FONT_CAPTION_BOLD).pack(anchor="w")
+        ms = list(g.money_milestones)[-8:][::-1]
+        if not ms:
+            tk.Label(right, text="Every $100 / $500 / $1k … and 25 / 50 / 75 / 100% of a target pays Gold and lands here.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=300, justify="left").pack(anchor="w")
+        for key in ms:
+            parts = key.split(":")
+            if parts[0] == "total":
+                text = f"${int(parts[1]) // 1000:,}k set aside across the plan"
+            elif len(parts) == 3:
+                step = parts[2]
+                text = f"{parts[1]} — {'fully funded' if step == 'pct100' else (step.replace('pct', '') + '% there' if step.startswith('pct') else 'passed ' + step)}"
+            else:
+                text = key
+            tk.Label(right, text="✦ " + text, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL, anchor="w").pack(anchor="w")
+        tk.Label(right, text=f"Pacts: {g.pacts_won} kept · {g.pacts_lost} broken   ·   Harvests: {g.harvests_total}   ·   Windmill: {g.mill_gold_total} Gold",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=300, justify="left").pack(anchor="w", pady=(SP_SM, 0))
+        self._records_summary_var.set(f"{n_set} records · {len(g.money_milestones)} milestones · pacts {g.pacts_won}–{g.pacts_lost}")
+
+    # ── Savings challenges ───────────────────────────────────────────────
+    def _draw_challenge_grid(self, canvas, cells: int, filled: int, color: str):
+        try:
+            w = canvas.winfo_width()
+        except tk.TclError:
+            return
+        if w <= 1:
+            w = 300
+        size, gap = 10, 2
+        cols = max(1, (w + gap) // (size + gap))
+        rows = max(1, math.ceil(cells / cols))
+        canvas.configure(height=rows * (size + gap))
+        canvas.delete("all")
+        for i in range(cells):
+            r, c_ = divmod(i, cols)
+            x, y = c_ * (size + gap), r * (size + gap)
+            canvas.create_rectangle(x, y, x + size, y + size, fill=color if i < filled else UI_SURFACE2,
+                                    outline=color if i < filled else UI_BORDER)
+
+    def _challenge_progress_text(self, spec: dict, obj=None) -> str:
+        eng = self.game_engine
+        filled = eng.challenge_filled(spec["id"], obj)
+        unit = spec.get("unit", "step")
+        txt = f"{filled} of {spec['cells']} {unit}s"
+        if spec["kind"] == "fund" and obj is not None:
+            txt += f" · ${obj.current_saved:,.0f} saved"
+            if spec["id"] == "52week":
+                txt += f" · ${obj.fixed_amount:,.0f} this pay"
+        return txt
+
+    def _plan_challenge_strip(self, body, obj):
+        spec = self.game_engine.challenge_spec(getattr(obj, "challenge", ""))
+        if not spec:
+            return
+        tk.Label(body, text=f"🏁 {spec['name']} · {self._challenge_progress_text(spec, obj)}", bg=UI_SURFACE, fg=UI_AMETHYST, font=FONT_CAPTION_BOLD, anchor="w").pack(anchor="w")
+        cv = tk.Canvas(body, width=10, height=12, bg=UI_SURFACE, highlightthickness=0)
+        cv.pack(fill="x", pady=(2, 0))
+        filled = self.game_engine.challenge_filled(spec["id"], obj)
+        cv.bind("<Configure>", lambda _e, c=cv, n=spec["cells"], f=filled: self._draw_challenge_grid(c, n, f, UI_AMETHYST))
+
+    def _start_challenge_ui(self, cid: str, close=None):
+        ok, msg = self.game_engine.start_challenge(cid)
+        self._show_toast(msg, "success" if ok else "warning", 3500)
+        if ok:
+            self.save_state()
+            self.refresh_all_views()
+            if close:
+                close()
+            self._celebrate("Challenge started", msg, UI_AMETHYST)
+
+    def _show_savings_challenges(self):
+        scrim, content, btn_row, step_var, close = self._overlay_card("SAVINGS CHALLENGES", 720, 600)
+        tk.Label(content, text="Structure beats willpower. Each one is a real fund or a real habit with a grid to fill and rewards at 25 / 50 / 100%.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, wraplength=660, justify="left").pack(anchor="w", pady=(0, SP_SM))
+        area, bind_wheel = self._overlay_scroll_area(content, 440)
+        eng = self.game_engine
+        for spec in SAVINGS_CHALLENGES:
+            active = eng.challenge_active(spec["id"])
+            card = tk.Frame(area, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_AMETHYST if active else UI_BORDER, padx=SP_MD, pady=SP_SM)
+            card.pack(fill="x", pady=(0, SP_SM))
+            head = tk.Frame(card, bg=UI_SURFACE2)
+            head.pack(fill="x")
+            tk.Label(head, text=spec["name"], bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_BODY_BOLD).pack(side="left")
+            if active:
+                tk.Label(head, text="RUNNING", bg=UI_AMETHYST, fg=UI_HERO, font=FONT_MICRO, padx=6, pady=1).pack(side="right")
+            else:
+                ttk.Button(head, text="Start", style="Primary.TButton", command=lambda c=spec["id"]: self._start_challenge_ui(c, close)).pack(side="right")
+            tk.Label(card, text=spec["blurb"], bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=620, justify="left").pack(anchor="w", pady=(2, 0))
+            if active and spec["kind"] != "goal":
+                obj = eng.challenge_fund(spec["id"]) if spec["kind"] == "fund" else None
+                tk.Label(card, text=self._challenge_progress_text(spec, obj), bg=UI_SURFACE2, fg=UI_AMETHYST, font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_XS, 0))
+                cv = tk.Canvas(card, width=10, height=12, bg=UI_SURFACE2, highlightthickness=0)
+                cv.pack(fill="x", pady=(2, 0))
+                filled = eng.challenge_filled(spec["id"], obj)
+                cv.bind("<Configure>", lambda _e, c=cv, n=spec["cells"], f=filled: self._draw_challenge_grid(c, n, f, UI_AMETHYST))
+                if spec["kind"] == "fund" and obj is not None:
+                    idx = self.state.funds.index(obj)
+                    ttk.Button(card, text="Add $", style="Secondary.TButton", command=lambda i=idx: (close(), self._contribute_to_target("fund", i))).pack(anchor="w", pady=(SP_XS, 0))
+                elif spec["kind"] == "nospend":
+                    tk.Label(card, text="Tick 'No spend ✓' in the Daily Pulse to fill a box.", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+            elif active:
+                tk.Label(card, text="Running as a goal — see the Plan.", bg=UI_SURFACE2, fg=UI_AMETHYST, font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_XS, 0))
+        bind_wheel(area)
+        ttk.Button(btn_row, text="Close", style="Ghost.TButton", command=close).pack(side="right")
+
+    # ── Bank links: one click to the statement page, then catch the download ──
+    STATEMENT_EXTS = (".pdf", ".csv", ".ofx", ".qfx")
+
+    @staticmethod
+    def _downloads_dir() -> Path:
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as k:
+                val, _ = winreg.QueryValueEx(k, "{374DE290-123F-4565-9164-39C4925E467B}")
+                p = Path(os.path.expandvars(str(val)))
+                if p.is_dir():
+                    return p
+        except Exception:
+            pass
+        return Path.home() / "Downloads"
+
+    def _days_since_import(self) -> Optional[int]:
+        d = self.state.last_import_date
+        if not d:
+            return None
+        try:
+            return (date.today() - date.fromisoformat(d)).days
+        except ValueError:
+            return None
+
+    def _statement_due(self) -> Optional[dict]:
+        """The bank link whose statement cadence has elapsed, with days since the
+        last import. None when nothing is due or no links are set up."""
+        links = self.state.bank_links
+        if not links:
+            return None
+        days = self._days_since_import()
+        if days is None:
+            # never imported: due once the plan has a pay or a week has passed since setup
+            days = 999 if (self.state.incomes or self.state.starting_position_set) else 0
+        due = [l for l in links if days >= int(l.get("every_days", 14) or 14)]
+        if not due:
+            return None
+        return {"link": due[0], "days": days, "idx": links.index(due[0])}
+
+    def _open_bank_link(self, idx: int):
+        import webbrowser
+        try:
+            link = self.state.bank_links[idx]
+        except IndexError:
+            return
+        url = str(link.get("url", "")).strip()
+        if not url.lower().startswith(("http://", "https://")):
+            url = "https://" + url
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            self._show_toast(f"Couldn't open the browser: {e}", "warning", 4000)
+            return
+        link["last_opened"] = datetime.now().isoformat(timespec="minutes")
+        self.save_state()
+        self._show_toast(f"Opened {link.get('name', 'your bank')}. Download the statement — I'm watching your Downloads folder and will offer to import it.", "info", 6000)
+        self._watch_downloads()
+
+    def _watch_downloads(self, *, minutes: int = 15, interval_ms: int = 3000, folder: Optional[Path] = None):
+        """Poll Downloads for a new statement file for a while; offer a one-click import."""
+        folder = folder or self._downloads_dir()
+        started = time_module.time() - 2
+        deadline = started + minutes * 60
+        seen = set()
+        try:
+            for p in folder.iterdir():
+                if p.suffix.lower() in self.STATEMENT_EXTS:
+                    seen.add((p.name, int(p.stat().st_mtime)))
+        except OSError:
+            return
+        self._downloads_watch_token = token = object()
+
+        def _tick():
+            if getattr(self, "_downloads_watch_token", None) is not token:
+                return
+            try:
+                if not self.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            try:
+                for p in folder.iterdir():
+                    if p.suffix.lower() not in self.STATEMENT_EXTS:
+                        continue
+                    key = (p.name, int(p.stat().st_mtime))
+                    if key in seen or p.stat().st_mtime < started:
+                        continue
+                    seen.add(key)
+                    self._downloads_watch_token = None
+                    self._offer_downloaded_statement(p)
+                    return
+            except OSError:
+                pass
+            if time_module.time() < deadline:
+                self.after(interval_ms, _tick)
+        self.after(interval_ms, _tick)
+
+    def _offer_downloaded_statement(self, path: Path):
+        self._pending_download = path
+        self._show_toast(f"New statement in Downloads: {path.name}", "success", 15000,
+                         action_label="Import", action_cb=lambda p=path: (self._show_page("transactions"), self._import_statement_path(str(p))))
+        try:
+            self.bell()
+        except tk.TclError:
+            pass
+
+    def _bank_link_summary(self) -> str:
+        links = self.state.bank_links
+        if not links:
+            return "No bank links yet — add your bank's statement page for one-click access."
+        days = self._days_since_import()
+        last = "never imported" if days is None else ("imported today" if days == 0 else f"last import {days} day{'s' if days != 1 else ''} ago")
+        return ", ".join(l.get("name", "Bank") for l in links) + f" · {last}"
+
+    def _render_bank_buttons(self):
+        host = getattr(self, "_bank_links_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        links = self.state.bank_links
+        tk.Label(host, text="YOUR BANK", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_BODY_BOLD).pack(anchor="w", pady=(SP_SM, SP_XS))
+        if not links:
+            ttk.Button(host, text="Add your bank's statement page…", style="Secondary.TButton", command=self._show_bank_links_editor).pack(fill="x")
+            tk.Label(host, text="One click to the download page, and the app offers to import what lands in Downloads.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=300, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+            return
+        due = self._statement_due()
+        for i, l in enumerate(links):
+            is_due = due is not None and due["idx"] == i
+            ttk.Button(host, text=f"Open {l.get('name', 'bank')}  ↗" + ("  · statement due" if is_due else ""),
+                       style="Accent.TButton" if is_due else "Secondary.TButton",
+                       command=lambda i=i: self._open_bank_link(i)).pack(fill="x", pady=(0, SP_XS))
+        days = self._days_since_import()
+        foot = tk.Frame(host, bg=UI_SURFACE)
+        foot.pack(fill="x")
+        tk.Label(foot, text="never imported" if days is None else ("imported today" if days == 0 else f"last import {days} day{'s' if days != 1 else ''} ago"),
+                 bg=UI_SURFACE, fg=UI_GOLD if due else UI_MUTED, font=FONT_CAPTION).pack(side="left")
+        mg = tk.Label(foot, text="manage", bg=UI_SURFACE, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD, cursor="hand2")
+        mg.pack(side="right")
+        mg.bind("<Button-1>", lambda _e: self._show_bank_links_editor())
+        if self.state.transactions:
+            su = tk.Label(host, text="set up from my statement →", bg=UI_SURFACE, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD, cursor="hand2")
+            su.pack(anchor="w", pady=(SP_XS, 0))
+            su.bind("<Button-1>", lambda _e: self._show_statement_setup())
+
+    def _add_bank_link(self, name: str, url: str, every_days: int = 14) -> tuple:
+        name = (name or "").strip() or "My bank"
+        url = (url or "").strip()
+        if not url or "." not in url:
+            return False, "Paste the web address of your bank's login or statements page."
+        if not url.lower().startswith(("http://", "https://")):
+            url = "https://" + url
+        if any(l.get("url", "").lower() == url.lower() for l in self.state.bank_links):
+            return False, "That link is already saved."
+        self.state.bank_links.append({"name": name, "url": url, "every_days": max(1, int(every_days or 14)), "last_opened": ""})
+        self.save_state()
+        try:
+            self._render_bank_buttons()
+            if hasattr(self, "_bank_links_summary_var"):
+                self._bank_links_summary_var.set(self._bank_link_summary())
+        except Exception:
+            pass
+        return True, f"{name} saved — one click from the Statements tab."
+
+    def _show_bank_links_editor(self):
+        scrim, content, btn_row, step_var, close = self._overlay_card("BANK LINKS", 680, 520)
+        tk.Label(content, text="Where you download statements from. Only the address is stored — never a login.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, wraplength=620, justify="left").pack(anchor="w")
+        lst = tk.Frame(content, bg=UI_SURFACE)
+        lst.pack(fill="x", pady=(SP_SM, 0))
+
+        def _render_list():
+            for w_ in lst.winfo_children():
+                w_.destroy()
+            if not self.state.bank_links:
+                tk.Label(lst, text="Nothing saved yet.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+            for i, l in enumerate(list(self.state.bank_links)):
+                row = tk.Frame(lst, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_SM, pady=SP_XS)
+                row.pack(fill="x", pady=(0, SP_XS))
+                txt = tk.Frame(row, bg=UI_SURFACE2)
+                txt.pack(side="left", fill="x", expand=True)
+                tk.Label(txt, text=l.get("name", "Bank"), bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD).pack(anchor="w")
+                tk.Label(txt, text=f"{l.get('url', '')}  ·  statement every {l.get('every_days', 14)} days", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=440, justify="left").pack(anchor="w")
+                x = tk.Label(row, text="✕", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL_BOLD, cursor="hand2", padx=6)
+                x.pack(side="right")
+                x.bind("<Button-1>", lambda _e, i=i: (self.state.bank_links.pop(i), self.save_state(), _render_list(), self._render_bank_buttons()))
+                ttk.Button(row, text="Open ↗", style="Ghost.TButton", command=lambda i=i: self._open_bank_link(i)).pack(side="right")
+        _render_list()
+
+        tk.Label(content, text="ADD A BANK", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_MD, SP_XS))
+        form = tk.Frame(content, bg=UI_SURFACE)
+        form.pack(fill="x")
+        form.columnconfigure(1, weight=1)
+        tk.Label(form, text="Bank", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD).grid(row=0, column=0, sticky="w", padx=(0, SP_SM))
+        preset = ttk.Combobox(form, state="readonly", width=28, values=[p[0] for p in BANK_PRESETS])
+        preset.grid(row=0, column=1, sticky="w", pady=(0, SP_XS))
+        tk.Label(form, text="Name", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD).grid(row=1, column=0, sticky="w", padx=(0, SP_SM))
+        name_e = ttk.Entry(form, width=30)
+        name_e.grid(row=1, column=1, sticky="w", pady=(0, SP_XS))
+        tk.Label(form, text="Address", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD).grid(row=2, column=0, sticky="w", padx=(0, SP_SM))
+        url_e = ttk.Entry(form, width=60)
+        url_e.grid(row=2, column=1, sticky="ew", pady=(0, SP_XS))
+        tk.Label(form, text="Statement every", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD).grid(row=3, column=0, sticky="w", padx=(0, SP_SM))
+        every_row = tk.Frame(form, bg=UI_SURFACE)
+        every_row.grid(row=3, column=1, sticky="w")
+        every_e = ttk.Entry(every_row, width=5)
+        every_e.insert(0, "14")
+        every_e.pack(side="left")
+        tk.Label(every_row, text="days (when Do-this-now and reminders say 'statement time')", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left", padx=(SP_XS, 0))
+        note_var = tk.StringVar(value="")
+        tk.Label(form, textvariable=note_var, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=560, justify="left").grid(row=4, column=1, sticky="w", pady=(SP_XS, 0))
+
+        def _preset_pick(_e=None):
+            sel = next((p for p in BANK_PRESETS if p[0] == preset.get()), None)
+            if not sel:
+                return
+            name_e.delete(0, tk.END); url_e.delete(0, tk.END)
+            if sel[1]:
+                name_e.insert(0, sel[0].split(" (")[0]); url_e.insert(0, sel[1])
+            note_var.set(sel[2])
+        preset.bind("<<ComboboxSelected>>", _preset_pick)
+
+        def _add():
+            try:
+                every = int(every_e.get().strip() or 14)
+            except ValueError:
+                every = 14
+            ok, msg = self._add_bank_link(name_e.get(), url_e.get(), every)
+            self._show_toast(msg, "success" if ok else "warning", 3500)
+            if ok:
+                name_e.delete(0, tk.END); url_e.delete(0, tk.END); preset.set(""); note_var.set("")
+                _render_list()
+        ttk.Button(form, text="Add  ✓", style="Primary.TButton", command=_add).grid(row=5, column=1, sticky="w", pady=(SP_SM, 0))
+        url_e.bind("<Return>", lambda _e: _add())
+        self._bank_editor_widgets = {"preset": preset, "name": name_e, "url": url_e, "every": every_e, "add": _add}
+        ttk.Button(btn_row, text="Done", style="Secondary.TButton", command=lambda: (close(), self._render_bank_buttons())).pack(side="right")
+
+    # ── History mode: statements that reach back before the starting position ──
+    # Rows dated before the cutoff are kept for Analysis, the month report and
+    # recurring-bill detection, but they never allocate a pay, pay a bill or
+    # count as a new event — the wizard's balances already include them.
+    _BILL_WORDS = ("rent", "mortgage", "netflix", "spotify", "disney", "youtube", "apple.com", "icloud", "microsoft", "amazon prime",
+                   "insurance", "telstra", "optus", "vodafone", "phone", "electricity", "energy", "origin", "agl", "internet", "nbn",
+                   "gym", "council", "rates", "water", "strata", "body corp", "subscription", "medibank", "bupa", "hcf", "rego", "registration")
+
+    def _history_cutoff(self) -> Optional[date]:
+        cands = []
+        try:
+            if self.state.starting_position_date:
+                cands.append(date.fromisoformat(self.state.starting_position_date))
+        except ValueError:
+            pass
+        if self.state.incomes:
+            cands.append(max(i.received_on for i in self.state.incomes))
+        return max(cands) if cands else None
+
+    def _is_historical(self, tx: TransactionRecord) -> bool:
+        cut = self._history_cutoff()
+        return bool(cut) and tx.tx_date < cut
+
+    def _log_historical_pays(self, batch: List[TransactionRecord]) -> List[IncomeEntry]:
+        """Income rows from before the cutoff become past pay records (no
+        allocation) so the app learns the pay rhythm and the baseline."""
+        added = []
+        for tx in batch:
+            if tx.matched_type != "income" or tx.money_in <= 0 or not self._is_historical(tx):
+                continue
+            dup = any(abs((i.received_on - tx.tx_date).days) <= 1 and abs(i.amount - tx.money_in) < 1.0 for i in self.state.incomes)
+            if dup:
+                continue
+            src = extract_merchant_name(tx.description)[:30] or "Statement"
+            entry = IncomeEntry(round(float(tx.money_in), 2), tx.tx_date, src)
+            self.state.incomes.append(entry)
+            added.append(entry)
+        if added:
+            self.state.incomes.sort(key=lambda i: i.received_on)
+            try:
+                self.game_engine._update_income_baseline(max(a.amount for a in added))
+            except Exception:
+                pass
+        return added
+
+    def _detect_pay_rhythm(self) -> Optional[dict]:
+        inc = sorted(self.state.incomes, key=lambda i: i.received_on)
+        if not inc:
+            return None
+        amounts = sorted(i.amount for i in inc)
+        typical = amounts[len(amounts) // 2]
+        freq, gap = None, None
+        if len(inc) >= 2:
+            gaps = sorted((inc[i + 1].received_on - inc[i].received_on).days for i in range(len(inc) - 1))
+            gap = gaps[len(gaps) // 2]
+            if 5 <= gap <= 9:
+                freq = "weekly"
+            elif 12 <= gap <= 16:
+                freq = "fortnightly"
+            elif 26 <= gap <= 35:
+                freq = "monthly"
+        return {"count": len(inc), "typical": typical, "freq": freq, "gap": gap, "last": inc[-1].received_on}
+
+    def _detect_recurring_bills(self) -> List[dict]:
+        groups: Dict[str, list] = {}
+        for t in self.state.transactions:
+            if t.direction() != "out" or t.matched_type in ("ignore", "transfer", "linked_bill", "linked_fund") or t.money_out <= 0:
+                continue
+            groups.setdefault(merchant_group_key(t.description), []).append(t)
+        existing = {b.name.lower() for b in self.state.bills}
+        out = []
+        for key, txs in groups.items():
+            if not key or key == "unknown merchant":
+                continue
+            name = extract_merchant_name(txs[0].description)
+            if name.lower() in existing:
+                continue
+            amts = sorted(round(t.money_out, 2) for t in txs)
+            med = amts[len(amts) // 2]
+            steady = len(txs) >= 2 and (amts[-1] - amts[0]) <= max(2.0, 0.15 * med)
+            billish = any(w in (name + " " + txs[0].description).lower() for w in self._BILL_WORDS)
+            if not (steady or billish):
+                continue
+            info = self._infer_recurring_bill({"key": key, "name": name, "total": med}, txs)
+            info.update({"key": key, "count": len(txs), "name": name})
+            out.append(info)
+        out.sort(key=lambda d: (-d["count"], -d["amount"]))
+        return out[:10]
+
+    def _history_mix(self) -> Optional[dict]:
+        """Category shares for the most recent completed month that has spending."""
+        today = date.today()
+        ref = today.replace(day=1) - timedelta(days=1)
+        for _ in range(6):
+            start, end = month_bounds(ref)
+            cats = {k: v for k, v in outgoing_category_totals(self.state.transactions, start, end).items()
+                    if v > 0 and k and k.lower() not in ("income", "transfer", "ignore", "fund", "bill")}
+            total = sum(cats.values())
+            if total > 0:
+                rows = sorted(cats.items(), key=lambda kv: -kv[1])[:8]
+                pcts = [round(v / total * 100.0, 1) for _, v in rows]
+                diff = round(100.0 - sum(pcts), 1)
+                if pcts:
+                    pcts[0] = round(pcts[0] + diff, 1)
+                return {"year": ref.year, "month": ref.month, "label": ref.strftime("%B"), "rows": [(c, p) for (c, _), p in zip(rows, pcts)], "total": total}
+            ref = (ref.replace(day=1) - timedelta(days=1))
+        return None
+
+    def _statement_setup_offer(self, batch: List[TransactionRecord]):
+        if self.state.ui_prefs.get("statement_setup.done"):
+            return
+        if not any(self._is_historical(t) for t in batch):
+            return
+        needs = (not self.state.bills) or (not self.state.last_target_submit) or (not self.state.incomes) or \
+                not self.state.ui_prefs.get("statement_setup.rhythm_done")
+        if needs:
+            self._show_statement_setup()
+
+    def _show_statement_setup(self):
+        rhythm = self._detect_pay_rhythm()
+        bills = self._detect_recurring_bills()
+        mix = self._history_mix()
+        scrim, content, btn_row, step_var, close = self._overlay_card("SET UP FROM YOUR STATEMENT", 720, 620)
+        head = tk.Frame(content, bg=UI_SURFACE)
+        head.pack(fill="x")
+        c = tk.Canvas(head, width=64, height=84, bg=UI_SURFACE, highlightthickness=0)
+        c.pack(side="left", padx=(0, SP_MD))
+        try:
+            _draw_gerald(c, 64, 84, "happy")
+        except Exception:
+            pass
+        tk.Label(head, text="Your statement already knows a lot about you. Nothing from before today has been allocated — "
+                            "it's history. But history is useful: here's what it tells me, each one is one click.",
+                 bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL, wraplength=600, justify="left").pack(side="left", fill="x", expand=True)
+        area, bind_wheel = self._overlay_scroll_area(content, 430)
+
+        def card(title, color):
+            box = tk.Frame(area, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=color, padx=SP_MD, pady=SP_SM)
+            box.pack(fill="x", pady=(0, SP_SM))
+            tk.Label(box, text=title, bg=UI_SURFACE2, fg=color, font=FONT_CAPTION_BOLD).pack(anchor="w")
+            return box
+
+        # 1. Rhythm
+        box = card("YOUR PAY RHYTHM", UI_EMERALD)
+        if rhythm and rhythm["count"] >= 1:
+            freq_word = rhythm["freq"] or self.state.pay_frequency
+            txt = (f"{rhythm['count']} pay{'s' if rhythm['count'] != 1 else ''} found · typical ${rhythm['typical']:,.0f}"
+                   + (f" · about every {rhythm['gap']} days → {freq_word}" if rhythm["gap"] else "")
+                   + f" · last on {rhythm['last']:%d %b}.")
+            tk.Label(box, text=txt, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=640, justify="left").pack(anchor="w", pady=(2, 0))
+            nxt = rhythm["last"] + timedelta(days=BudgetEngine.PAY_CYCLE_DAYS.get(freq_word, 14))
+            tk.Label(box, text=f"Next pay expected {nxt:%a %d %b}. Logging it on the day is what starts the streak.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=640, justify="left").pack(anchor="w")
+            r_var = tk.StringVar(value="")
+
+            def _use_rhythm():
+                if rhythm["freq"]:
+                    self.state.pay_frequency = rhythm["freq"]
+                self.state.income_baseline = float(rhythm["typical"])
+                self.state.ui_prefs["statement_setup.rhythm_done"] = True
+                self.save_state()
+                self.refresh_all_views()
+                r_var.set("Rhythm set ✓")
+            ttk.Button(box, text="Use this rhythm  ✓", style="Primary.TButton", command=_use_rhythm).pack(anchor="w", pady=(SP_XS, 0))
+            tk.Label(box, textvariable=r_var, bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_CAPTION).pack(anchor="w")
+        else:
+            tk.Label(box, text="No pay rows found in the statement. Log your pay on the Income tab when it lands.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=640, justify="left").pack(anchor="w", pady=(2, 0))
+
+        # 2. Recurring bills
+        box = card("CHARGES THAT LOOK LIKE BILLS", UI_RUBY)
+        if bills:
+            vars_ = []
+            for b in bills:
+                v = tk.BooleanVar(value=True)
+                vars_.append((v, b))
+                row = tk.Frame(box, bg=UI_SURFACE2)
+                row.pack(fill="x")
+                tk.Checkbutton(row, variable=v, bg=UI_SURFACE2, activebackground=UI_SURFACE2, selectcolor=UI_SURFACE, fg=UI_TEXT, highlightthickness=0).pack(side="left")
+                tk.Label(row, text=f"{b['name']}  ·  ${b['amount']:,.2f} {b['frequency']}  ·  next {b['due']:%d %b}  ·  seen {b['count']}×",
+                         bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, anchor="w").pack(side="left", fill="x", expand=True)
+            b_var = tk.StringVar(value="")
+
+            def _add_bills():
+                n = 0
+                for v, b in vars_:
+                    if not v.get() or self._name_exists("bill", b["name"]):
+                        continue
+                    bill = Bill(b["name"], round(float(b["amount"]), 2), b["due"], b["frequency"], "important", "bill", 0.0)
+                    self.state.bills.append(bill)
+                    self._ensure_merchant_rule({"key": b["key"]}, "linked_bill", bill.name, "Bill")
+                    n += 1
+                self.save_state()
+                self.refresh_all_views()
+                b_var.set(f"{n} bill{'s' if n != 1 else ''} added ✓ — future charges auto-link." if n else "Nothing selected.")
+                self._fire_trigger("contribute") if False else None
+            ttk.Button(box, text="Add the ticked ones as bills  ✓", style="Primary.TButton", command=_add_bills).pack(anchor="w", pady=(SP_XS, 0))
+            tk.Label(box, textvariable=b_var, bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_CAPTION).pack(anchor="w")
+        else:
+            tk.Label(box, text="Nothing recurring stood out yet. After a second statement I'll have more to go on.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=640, justify="left").pack(anchor="w", pady=(2, 0))
+
+        # 3. Mix
+        box = card("YOUR SPENDING MIX", UI_SAPPHIRE)
+        if mix:
+            tk.Label(box, text=f"{mix['label']}: " + " · ".join(f"{c} {p:.0f}%" for c, p in mix["rows"]) + f"  (${mix['total']:,.0f} spent)",
+                     bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=640, justify="left").pack(anchor="w", pady=(2, 0))
+            tk.Label(box, text="Start your target from what you actually do, then tighten a category at a time. You can drag the slices on the Score tab.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=640, justify="left").pack(anchor="w")
+            m_var = tk.StringVar(value="")
+
+            def _use_mix():
+                self.state.expense_target_order = [c for c, _ in mix["rows"]]
+                self.state.expense_target_pct = [float(p) for _, p in mix["rows"]]
+                self.state.target_is_locked = False
+                self.save_state()
+                try:
+                    self.refresh_score_target_pie()
+                except Exception:
+                    pass
+                m_var.set("Target mix seeded ✓ — submit it on the Score tab when you're happy with it.")
+            brow = tk.Frame(box, bg=UI_SURFACE2)
+            brow.pack(anchor="w", pady=(SP_XS, 0))
+            ttk.Button(brow, text=f"Start my target from {mix['label']}  ✓", style="Primary.TButton", command=_use_mix).pack(side="left")
+            ttk.Button(brow, text=f"View the {mix['label']} report", style="Secondary.TButton",
+                       command=lambda: (close(), self._show_monthly_report(mix["year"], mix["month"]))).pack(side="left", padx=(SP_SM, 0))
+            tk.Label(box, textvariable=m_var, bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_CAPTION, wraplength=640, justify="left").pack(anchor="w")
+        else:
+            tk.Label(box, text="No completed month in the statement yet — the mix shows up once a full month is in.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=640, justify="left").pack(anchor="w", pady=(2, 0))
+        bind_wheel(area)
+
+        def _done():
+            self.state.ui_prefs["statement_setup.done"] = True
+            self.save_state()
+            close()
+            self.refresh_all_views()
+        ttk.Button(btn_row, text="Done", style="Secondary.TButton", command=_done).pack(side="right")
+        self._statement_setup_widgets = {"rhythm": rhythm, "bills": bills, "mix": mix}
 
     def _build_rules_tab(self):
         frame = self.rules_tab
@@ -14917,6 +21341,27 @@ class BudgetApp(tk.Tk):
                    command=self._save_account_names).grid(
             row=save_row, column=1, columnspan=2, sticky="w", pady=(8, 0))
 
+        # ── Starting position (balances snapshot) ───────────────────────────
+        pos = tk.Frame(editor, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM,
+                       highlightthickness=1, highlightbackground=UI_BORDER)
+        pos.grid(row=save_row + 1, column=0, columnspan=3, sticky="ew", pady=(SP_LG, 0))
+        pos.columnconfigure(0, weight=1)
+        tk.Label(pos, text="MONEY PLAN SETUP", bg=UI_SURFACE2, fg=UI_GOLD,
+                 font=FONT_CAPTION_BOLD).grid(row=0, column=0, sticky="w")
+        self._starting_position_summary_var = tk.StringVar(value=self._starting_position_summary())
+        tk.Label(pos, textvariable=self._starting_position_summary_var, bg=UI_SURFACE2,
+                 fg=UI_TEXT, font=FONT_SMALL, wraplength=560, justify="left").grid(
+            row=1, column=0, sticky="w", pady=(2, 0))
+        ttk.Button(pos, text="Run setup wizard", style="Secondary.TButton",
+                   command=self._show_setup_wizard).grid(row=0, column=1, rowspan=2, sticky="e")
+        bl = tk.Frame(editor, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM, highlightthickness=1, highlightbackground=UI_BORDER)
+        bl.grid(row=save_row + 2, column=0, columnspan=3, sticky="ew", pady=(SP_SM, 0))
+        bl.columnconfigure(0, weight=1)
+        tk.Label(bl, text="BANK LINKS", bg=UI_SURFACE2, fg=UI_GOLD, font=FONT_CAPTION_BOLD).grid(row=0, column=0, sticky="w")
+        self._bank_links_summary_var = tk.StringVar(value=self._bank_link_summary())
+        tk.Label(bl, textvariable=self._bank_links_summary_var, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=560, justify="left").grid(row=1, column=0, sticky="w", pady=(2, 0))
+        ttk.Button(bl, text="Manage bank links…", style="Secondary.TButton", command=self._show_bank_links_editor).grid(row=0, column=1, rowspan=2, sticky="e")
+
     def _save_account_names(self):
         for key, entry in self._account_entries.items():
             name = entry.get().strip()
@@ -14952,9 +21397,14 @@ class BudgetApp(tk.Tk):
             e = ttk.Entry(form, width=24)
             e.grid(row=r + 1, column=0, sticky="ew", pady=(0, 2))
             setattr(self, attr, e)
+        ttk.Button(form, text="Cost guide", style="Ghost.TButton",
+                   command=lambda: self._show_cost_guide("bill")).grid(row=4, column=1, sticky="w", padx=(SP_SM, 0), pady=(0, 2))
         self._attach_info_tooltip(self.bill_due,
                                    "Accepts ISO (2026-05-01), DD/MM/YYYY, '25th', "
                                    "'next friday', 'in 2 weeks', or 'end of month'.")
+        self._date_chips(form, self.bill_due, bg=UI_SURFACE, wrap=3).grid(row=6, column=1, sticky="w", padx=(SP_SM, 0))
+        for _e in (self.bill_name, self.bill_amount, self.bill_due, self.bill_saved):
+            _e.bind("<Return>", lambda _ev: (self.update_selected_bill() if self.bill_tree.selection() else self.add_bill()))
         freq_hdr = tk.Frame(form, bg=UI_SURFACE)
         freq_hdr.grid(row=9, column=0, sticky="w", pady=(SP_SM, 1))
         tk.Label(freq_hdr, text="Frequency", bg=UI_SURFACE, fg=UI_MUTED,
@@ -14965,7 +21415,7 @@ class BudgetApp(tk.Tk):
                         "One-off bills don't recur.",
                         bg=UI_SURFACE).pack(side="left", padx=(SP_XS, 0))
         self.bill_frequency = ttk.Combobox(
-            form, values=["one-off", "weekly", "fortnightly", "monthly", "yearly"],
+            form, values=["one-off", "weekly", "fortnightly", "monthly", "quarterly", "yearly"],
             state="readonly", width=22)
         self.bill_frequency.set("monthly")
         self.bill_frequency.grid(row=10, column=0, sticky="ew", pady=(0, 2))
@@ -15042,26 +21492,60 @@ class BudgetApp(tk.Tk):
         form.columnconfigure(0, weight=1)
         tk.Label(form, text="Add / Edit Sinking Fund", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_HEADING).grid(row=0, column=0, sticky="w", pady=(0, 4))
-        tk.Label(form, text="A sinking fund saves gradually\nfor a known future expense.",
+        tk.Label(form, text="A sinking fund is money you set aside\nto spend on something later.",
                  bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, justify="left").grid(
                  row=1, column=0, sticky="w", pady=(0, 10))
-        for r, lbl, attr in [
-            (2, "Fund Name",             "fund_name"),
-            (4, "Target Amount ($)",     "fund_target"),
-            (6, "Target Date",           "fund_date"),
-            (8, "Amount Already Saved",  "fund_saved"),
-        ]:
-            tk.Label(form, text=lbl, bg=UI_SURFACE, fg=UI_MUTED,
-                     font=FONT_SMALL_BOLD).grid(row=r, column=0, sticky="w", pady=(6, 1))
-            e = ttk.Entry(form, width=24)
-            e.grid(row=r + 1, column=0, sticky="ew", pady=(0, 2))
-            setattr(self, attr, e)
+        tk.Label(form, text="Fund Name", bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_SMALL_BOLD).grid(row=2, column=0, sticky="w", pady=(6, 1))
+        self.fund_name = ttk.Entry(form, width=24)
+        self.fund_name.grid(row=3, column=0, sticky="ew", pady=(0, 2))
+        mode_hdr = tk.Frame(form, bg=UI_SURFACE)
+        mode_hdr.grid(row=4, column=0, sticky="w", pady=(6, 1))
+        tk.Label(mode_hdr, text="How it works", bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_SMALL_BOLD).pack(side="left")
+        self._info_icon(mode_hdr,
+                        "Save up by a date: reach a target by a date, spread over pays.\n"
+                        "Fixed amount each pay: a set amount every pay; target optional.\n"
+                        "Ongoing, no end: a set amount every pay, forever (gifts, clothes).\n"
+                        "Keep a buffer topped up: hold a level; each pay refills what you "
+                        "spent (car service, repairs). Record spending via right-click.",
+                        bg=UI_SURFACE).pack(side="left", padx=(SP_XS, 0))
+        self.fund_mode = ttk.Combobox(form, values=[lbl for _, lbl in self._FUND_MODE_LABELS],
+                                      state="readonly", width=22)
+        self.fund_mode.set(self._FUND_MODE_LABELS[0][1])
+        self.fund_mode.grid(row=5, column=0, sticky="ew", pady=(0, 2))
+        self._fund_target_label = tk.Label(form, text="Target Amount ($)", bg=UI_SURFACE, fg=UI_MUTED,
+                                           font=FONT_SMALL_BOLD)
+        self._fund_target_label.grid(row=6, column=0, sticky="w", pady=(6, 1))
+        ttk.Button(form, text="Cost guide", style="Ghost.TButton",
+                   command=lambda: self._show_cost_guide("fund")).grid(row=7, column=1, sticky="w", padx=(SP_SM, 0), pady=(0, 2))
+        self.fund_target = ttk.Entry(form, width=24)
+        self.fund_target.grid(row=7, column=0, sticky="ew", pady=(0, 2))
+        self._fund_per_pay_label = tk.Label(form, text="Per-pay Amount ($)", bg=UI_SURFACE, fg=UI_MUTED,
+                                            font=FONT_SMALL_BOLD)
+        self._fund_per_pay_label.grid(row=8, column=0, sticky="w", pady=(6, 1))
+        self.fund_per_pay = ttk.Entry(form, width=24)
+        self.fund_per_pay.grid(row=9, column=0, sticky="ew", pady=(0, 2))
+        self._fund_date_label = tk.Label(form, text="Target Date", bg=UI_SURFACE, fg=UI_MUTED,
+                                         font=FONT_SMALL_BOLD)
+        self._fund_date_label.grid(row=10, column=0, sticky="w", pady=(6, 1))
+        self.fund_date = ttk.Entry(form, width=24)
+        self.fund_date.grid(row=11, column=0, sticky="ew", pady=(0, 2))
+        tk.Label(form, text="Amount Already Saved", bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_SMALL_BOLD).grid(row=12, column=0, sticky="w", pady=(6, 1))
+        self.fund_saved = ttk.Entry(form, width=24)
+        self.fund_saved.grid(row=13, column=0, sticky="ew", pady=(0, 2))
         self._attach_info_tooltip(self.fund_date,
                                    "Optional. Accepts ISO (2026-12-01), DD/MM/YYYY, "
                                    "'next month', 'in 6 months', 'end of month', "
                                    "or leave blank.")
+        self._date_chips(form, self.fund_date, bg=UI_SURFACE, wrap=3).grid(row=11, column=1, sticky="w", padx=(SP_SM, 0))
+        for _e in (self.fund_name, self.fund_target, self.fund_per_pay, self.fund_date, self.fund_saved):
+            _e.bind("<Return>", lambda _ev: (self.update_selected_fund() if self.fund_tree.selection() else self.add_fund()))
+        self.fund_mode.bind("<<ComboboxSelected>>", lambda _e: self._sync_fund_form_mode())
+        self._sync_fund_form_mode()
         fund_pri_hdr = tk.Frame(form, bg=UI_SURFACE)
-        fund_pri_hdr.grid(row=10, column=0, sticky="w", pady=(6, 1))
+        fund_pri_hdr.grid(row=14, column=0, sticky="w", pady=(6, 1))
         tk.Label(fund_pri_hdr, text="Priority", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_SMALL_BOLD).pack(side="left")
         self._info_icon(fund_pri_hdr,
@@ -15072,14 +21556,14 @@ class BudgetApp(tk.Tk):
         self.fund_priority = ttk.Combobox(form, values=["essential", "important", "optional"],
                                            state="readonly", width=22)
         self.fund_priority.set("important")
-        self.fund_priority.grid(row=11, column=0, sticky="ew", pady=(0, 12))
-        tk.Frame(form, bg=UI_BORDER, height=1).grid(row=12, column=0, sticky="ew", pady=(0, 10))
+        self.fund_priority.grid(row=15, column=0, sticky="ew", pady=(0, 12))
+        tk.Frame(form, bg=UI_BORDER, height=1).grid(row=16, column=0, sticky="ew", pady=(0, 10))
         ttk.Button(form, text="Add Fund", style="Accent.TButton",
-                   command=self.add_fund).grid(row=13, column=0, sticky="ew", pady=(0, 6))
+                   command=self.add_fund).grid(row=17, column=0, sticky="ew", pady=(0, 6))
         ttk.Button(form, text="Update Selected",
-                   command=self.update_selected_fund).grid(row=14, column=0, sticky="ew", pady=(0, 6))
+                   command=self.update_selected_fund).grid(row=18, column=0, sticky="ew", pady=(0, 6))
         ttk.Button(form, text="Delete Selected",
-                   command=self.delete_selected_fund).grid(row=15, column=0, sticky="ew")
+                   command=self.delete_selected_fund).grid(row=19, column=0, sticky="ew")
         tbl_wrap = tk.Frame(frame, bg=UI_BG, pady=SP_XL)
         tbl_wrap.grid(row=0, column=1, sticky="nsew", padx=(0, SP_XL))
         tbl_wrap.columnconfigure(0, weight=1)
@@ -15130,7 +21614,7 @@ class BudgetApp(tk.Tk):
                  row=1, column=0, sticky="w", pady=(0, 10))
         for r, lbl, attr in [
             (2, "Goal Name",             "goal_name"),
-            (4, "Target Amount ($)",     "goal_target"),
+            (4, "Target ($) — blank = no end", "goal_target"),
             (6, "Fixed Amount or %",     "goal_value"),
             (8, "Amount Already Saved",  "goal_saved"),
         ]:
@@ -15139,6 +21623,10 @@ class BudgetApp(tk.Tk):
             e = ttk.Entry(form, width=24)
             e.grid(row=r + 1, column=0, sticky="ew", pady=(0, 2))
             setattr(self, attr, e)
+        ttk.Button(form, text="Cost guide", style="Ghost.TButton",
+                   command=lambda: self._show_cost_guide("goal")).grid(row=5, column=1, sticky="w", padx=(SP_SM, 0), pady=(0, 2))
+        for _e in (self.goal_name, self.goal_target, self.goal_value, self.goal_saved):
+            _e.bind("<Return>", lambda _ev: (self.update_selected_goal() if self.goal_tree.selection() else self.add_goal()))
         mode_hdr = tk.Frame(form, bg=UI_SURFACE)
         mode_hdr.grid(row=10, column=0, sticky="w", pady=(6, 1))
         tk.Label(mode_hdr, text="Contribution Mode", bg=UI_SURFACE, fg=UI_MUTED,
@@ -15149,9 +21637,6 @@ class BudgetApp(tk.Tk):
                         "after bills and funds are covered. Percent mode auto-adjusts "
                         "contributions to what you can actually afford.",
                         bg=UI_SURFACE).pack(side="left", padx=(SP_XS, 0))
-        tk.Label(form, text="fixed = $ per pay  ·  percent_surplus = % of leftover",
-                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_MICRO).grid(
-                 row=10, column=0, sticky="e", pady=(6, 1))
         self.goal_mode = ttk.Combobox(form, values=["fixed", "percent_surplus"],
                                        state="readonly", width=22)
         self.goal_mode.set("fixed")
@@ -15166,8 +21651,8 @@ class BudgetApp(tk.Tk):
                         "(e.g. emergency fund), higher numbers for stretch goals. "
                         "Goals with equal priority share the allocation evenly.",
                         bg=UI_SURFACE).pack(side="left", padx=(SP_XS, 0))
-        self.goal_priority = ttk.Spinbox(form, from_=1, to=10, width=24)
-        self.goal_priority.set("3")
+        self.goal_priority = ttk.Combobox(form, values=["essential", "important", "optional"], state="readonly", width=22)
+        self.goal_priority.set("important")
         self.goal_priority.grid(row=13, column=0, sticky="ew", pady=(0, 12))
         tk.Frame(form, bg=UI_BORDER, height=1).grid(row=14, column=0, sticky="ew", pady=(0, 10))
         ttk.Button(form, text="Add Goal", style="Accent.TButton",
@@ -15234,8 +21719,6 @@ class BudgetApp(tk.Tk):
                         "bills, funds, and goals are covered. Investing is the last "
                         "stop before safe-to-spend.",
                         bg=UI_SURFACE).pack(side="left", padx=(SP_XS, 0))
-        tk.Label(form, text="fixed = $ per pay  ·  percent = % of surplus",
-                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_MICRO).grid(row=2, column=0, sticky="e")
         self.invest_mode_combo = ttk.Combobox(form, values=["fixed", "percent"],
                                                state="readonly", width=22)
         self.invest_mode_combo.set(self.rule_settings["investment_mode"])
@@ -15254,14 +21737,14 @@ class BudgetApp(tk.Tk):
                         "pay would leave safe-to-spend below this amount, investing "
                         "and optional goals get trimmed first to protect the buffer.",
                         bg=UI_SURFACE).pack(side="left", padx=(SP_XS, 0))
-        tk.Label(form, text="Don't invest if safe-to-spend drops below this",
-                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_MICRO).grid(row=6, column=0, sticky="e")
         self.buffer_entry = ttk.Entry(form, width=22)
         self.buffer_entry.insert(0, str(self.rule_settings["minimum_buffer"]))
         self.buffer_entry.grid(row=7, column=0, sticky="ew", pady=(0, 16))
         tk.Frame(form, bg=UI_BORDER, height=1).grid(row=8, column=0, sticky="ew", pady=(0, 12))
         ttk.Button(form, text="Apply Settings", style="Accent.TButton",
                    command=self.apply_investment_rules).grid(row=9, column=0, sticky="ew")
+        ttk.Button(form, text="Not sure? Help me choose a percentage", style="Secondary.TButton",
+                   command=self._show_invest_helper).grid(row=10, column=0, sticky="ew", pady=(SP_SM, 0))
         # Right: info panel
         info_wrap = tk.Frame(frame, bg=UI_BG, pady=SP_LG)
         info_wrap.grid(row=0, column=1, sticky="nsew", padx=(0, SP_XL))
@@ -15307,6 +21790,7 @@ class BudgetApp(tk.Tk):
         host.rowconfigure(0, weight=1)
 
         # Create sub-frames (kept as self.X_tab for all existing build methods)
+        self.plan_tab = tk.Frame(host, bg=UI_BG)
         self.bills_tab = tk.Frame(host, bg=UI_BG)
         self.funds_tab = tk.Frame(host, bg=UI_BG)
         self.goals_tab = tk.Frame(host, bg=UI_BG)
@@ -15315,6 +21799,7 @@ class BudgetApp(tk.Tk):
         self.accounts_tab = tk.Frame(host, bg=UI_BG)
 
         sub_items = [
+            ("plan",         "Plan",       "Everything",   self.plan_tab),
             ("bills",        "Bills",      "Recurring",    self.bills_tab),
             ("funds",        "Funds",      "Sinking",      self.funds_tab),
             ("goals",        "Goals",      "Long-term",    self.goals_tab),
@@ -15338,8 +21823,8 @@ class BudgetApp(tk.Tk):
                     f.grid_remove()
             for k, meta in self._setup_sub_btns.items():
                 if k == key:
-                    meta["label"].configure(fg=UI_TEXT_BRIGHT, font=FONT_BODY_BOLD)
-                    meta["underline"].configure(bg=UI_TEXT_BRIGHT)
+                    meta["label"].configure(fg=UI_SUBTAB_ACTIVE, font=FONT_BODY_BOLD)
+                    meta["underline"].configure(bg=UI_SUBTAB_ACTIVE)
                 else:
                     meta["label"].configure(fg=UI_MUTED, font=FONT_BODY)
                     meta["underline"].configure(bg=UI_BG)
@@ -15352,15 +21837,15 @@ class BudgetApp(tk.Tk):
             lbl = tk.Label(wrap, text=label, bg=UI_BG, fg=UI_MUTED,
                            font=FONT_BODY, pady=SP_SM)
             lbl.pack()
-            underline = tk.Frame(wrap, bg=UI_BG, height=2)
+            underline = tk.Frame(wrap, bg=UI_BG, height=3)
             underline.pack(fill="x")
             def _hover_in(_e, k=key):
                 meta = self._setup_sub_btns[k]
-                if meta["underline"].cget("bg") != UI_TEXT_BRIGHT:
+                if meta["underline"].cget("bg") != UI_SUBTAB_ACTIVE:
                     meta["label"].configure(fg=UI_TEXT)
             def _hover_out(_e, k=key):
                 meta = self._setup_sub_btns[k]
-                if meta["underline"].cget("bg") != UI_TEXT_BRIGHT:
+                if meta["underline"].cget("bg") != UI_SUBTAB_ACTIVE:
                     meta["label"].configure(fg=UI_MUTED)
             for w in (wrap, lbl, underline):
                 w.bind("<Button-1>", lambda _e, k=key: _show_sub(k))
@@ -15369,6 +21854,7 @@ class BudgetApp(tk.Tk):
             self._setup_sub_btns[key] = {"label": lbl, "underline": underline, "wrap": wrap}
 
         # Build content into each sub-frame
+        self._build_plan_tab()
         self._build_bills_tab()
         self._build_funds_tab()
         self._build_goals_tab()
@@ -15376,8 +21862,8 @@ class BudgetApp(tk.Tk):
         self._build_rules_tab()
         self._build_accounts_tab()
 
-        # Default: show Bills
-        _show_sub("bills")
+        # Default: the unified Plan list
+        _show_sub("plan")
 
     def _build_gerald_tab(self):
         frame = self.gerald_tab
@@ -15571,6 +22057,8 @@ class BudgetApp(tk.Tk):
                     _draw_gerald(avatar, surf.get("avatar_w", 120),
                                  surf.get("avatar_h", 150), expression=expr)
                     surf["_last_expr"] = expr
+                    if avatar is getattr(self, "_gerald_chat_canvas", None):
+                        self._gerald_chat_expr = expr
                 except Exception:
                     pass
             # Refresh starter chips — different random set each send, so
@@ -15591,8 +22079,14 @@ class BudgetApp(tk.Tk):
         picks = _r.sample(pool, k=min(6, len(pool)))
         tk.Label(host, text="Try:", bg=UI_BG, fg=UI_MUTED,
                  font=FONT_CAPTION_BOLD).pack(side="left", padx=(0, SP_XS))
-        for prompt in picks:
-            chip = tk.Label(host, text=prompt, bg=UI_SURFACE2, fg=UI_TEXT,
+        # Two rows of three so the chips never run off the right edge
+        rows_host = tk.Frame(host, bg=UI_BG)
+        rows_host.pack(side="left", fill="x")
+        chip_rows = [tk.Frame(rows_host, bg=UI_BG), tk.Frame(rows_host, bg=UI_BG)]
+        for r_ in chip_rows:
+            r_.pack(anchor="w", pady=(0, 2))
+        for n_, prompt in enumerate(picks):
+            chip = tk.Label(chip_rows[n_ // 3], text=prompt, bg=UI_SURFACE2, fg=UI_TEXT,
                             font=FONT_SMALL, padx=SP_SM, pady=2,
                             cursor="hand2",
                             highlightthickness=1, highlightbackground=UI_BORDER)
@@ -16061,9 +22555,18 @@ class BudgetApp(tk.Tk):
              _focus("fund_name", "setup", "funds", getattr(self, "clear_fund_form", None))),
             ("Add Goal", "action",
              _focus("goal_name", "setup", "goals", getattr(self, "clear_goal_form", None))),
-            ("Import Bank Statement (PDF)", "action",
+            ("Import Bank Statement (PDF / CSV / OFX)", "action",
              (lambda: (self._show_page("transactions"),
                        self.import_pdf_transactions()))),
+            ("Sort Unrecognised Transactions", "action",
+             (lambda: (self._show_page("transactions"),
+                       self.open_review_queue()))),
+            ("Set Up Money Plan (wizard)", "action",
+             (lambda: self._show_setup_wizard())),
+            ("Add a bill / set-aside / goal", "action",
+             (lambda: self._show_quick_add("bill"))),
+            ("Toggle Focus Mode (hide the game)", "action",
+             (lambda: self._toggle_focus_mode())),
             ("Open Perk Shop", "action",
              (lambda: self._open_perk_shop()
               if hasattr(self, "_open_perk_shop") else None)),
@@ -16366,6 +22869,11 @@ class BudgetApp(tk.Tk):
                              command=lambda p=pid: self._buy_pack(p))
             btn.pack(fill="x")
             self._pack_buy_btns[pid] = btn
+        # Pity timer readout — the closer the guaranteed Epic, the harder it is to stop.
+        self._pack_pity_var = tk.StringVar(value="")
+        tk.Label(packs_row, textvariable=self._pack_pity_var, bg=UI_BG, fg=UI_AMETHYST,
+                 font=FONT_CAPTION_BOLD, anchor="w").grid(row=1, column=0, columnspan=len(PACK_TYPES),
+                                                           sticky="w", pady=(6, 0))
 
         # ── Divider ───────────────────────────────────────────────────────────
         tk.Frame(body, bg=UI_BORDER, height=1).grid(row=3, column=0, sticky="ew", pady=(14, 0))
@@ -16595,8 +23103,8 @@ class BudgetApp(tk.Tk):
         self._char_filter_btns = {}
         for label, val in [("All", "all")] + [(s.title(), s) for s in AVATAR_SLOT_ORDER]:
             btn = tk.Label(filter_inner, text=label, bg=UI_SURFACE2, fg=UI_MUTED,
-                           font=FONT_CAPTION_BOLD, padx=10, pady=3, cursor="hand2")
-            btn.pack(side="left", padx=(0, 4))
+                           font=FONT_CAPTION_BOLD, padx=7, pady=3, cursor="hand2")
+            btn.pack(side="left", padx=(0, 3))
             self._char_filter_btns[val] = btn
             btn.bind("<Button-1>", lambda e, v=val: self._set_char_filter(v))
 
@@ -16616,7 +23124,7 @@ class BudgetApp(tk.Tk):
         grid_canvas.bind("<Configure>", lambda e: grid_canvas.itemconfigure(self._char_grid_win, width=e.width))
         self._char_grid_canvas = grid_canvas
         self._scroll_canvases.append(grid_canvas)
-        self._scroll_canvas_page[id(grid_canvas)] = "collection"
+        self._scroll_canvas_page[id(grid_canvas)] = "character"   # was "collection": the Avatar grid never got the wheel
 
         # ── Right: Equipment panel ────────────────────────────────────────────
         slots_panel = tk.Frame(frame, bg=UI_SURFACE, highlightthickness=1,
@@ -16710,10 +23218,21 @@ class BudgetApp(tk.Tk):
             card = tk.Frame(glow, bg=card_bg, padx=8, pady=8)
             card.pack(fill="both", expand=True)
 
-            # Emoji thumbnail
-            emoji_fg = rfg if is_owned else UI_BORDER
-            tk.Label(card, text=item["emoji"], bg=card_bg, fg=emoji_fg,
-                     font=("Segoe UI Symbol", 26)).pack(pady=(4, 2))
+            # Mini portrait: the current look with this item equipped, so the
+            # grid shows what 100 items actually look like, not 100 emoji.
+            thumb = tk.Canvas(card, width=84, height=104, bg=card_bg, highlightthickness=0)
+            thumb.pack(pady=(2, 2))
+            preview_eq = dict(equipped)
+            preview_eq[item["slot"]] = item_id
+            try:
+                draw_avatar(thumb, preview_eq, 84, 104)
+                if not is_owned:
+                    # Dim locked items with a stipple veil (Tk has no alpha)
+                    thumb.create_rectangle(0, 0, 84, 104, fill=UI_HERO, outline="", stipple="gray12")
+                    thumb.create_text(42, 92, text="🔒", fill=UI_MUTED, font=("Segoe UI Symbol", 11))
+            except tk.TclError:
+                thumb.create_text(42, 52, text=item["emoji"], fill=rfg, font=("Segoe UI Symbol", 26))
+            thumb.bind("<Button-1>", lambda e, iid=item_id: self._char_item_clicked(iid))
 
             # Name
             name_fg = UI_TEXT if is_owned else UI_MUTED
@@ -16745,7 +23264,7 @@ class BudgetApp(tk.Tk):
                 else:
                     cost_fg = UI_MUTED
                 tk.Label(card, text=cost_text, bg=card_bg, fg=cost_fg,
-                         font=("Segoe UI Variable Text", 7)).pack()
+                         font=("Segoe UI Variable Text", 7), wraplength=104, justify="center").pack()
 
             card.bind("<Button-1>", lambda e, iid=item_id: self._char_item_clicked(iid))
             for child in card.winfo_children():
@@ -16769,6 +23288,8 @@ class BudgetApp(tk.Tk):
             if t == "card_set":
                 s = CARD_SET_BY_ID.get(v)
                 return f"🃏 Set: {s[1]}" if s else f"🃏 Set: {v}"
+            if t == "homestead":
+                return f"🏡 Homestead Tier {v}"
         ct, cost = item["cost_type"], item["cost"]
         if ct == "free" or cost == 0:
             return "FREE"
@@ -17049,17 +23570,23 @@ class BudgetApp(tk.Tk):
                 pass
 
     # ── Avatar animation loop ─────────────────────────────────────────
-    def _start_avatar_anim(self):
-        """Begin the avatar animation loop if any equipped item is rare+."""
-        self._stop_avatar_anim()
+    def _avatar_mood(self) -> str:
+        """How the avatar feels about the finances right now."""
         g = self.state.game
-        equipped = dict(g.character_equipped or {})
-        has_anim = any(
-            _RARITY_ANIM.get(AVATAR_ITEMS.get(iid, {}).get("rarity", ""), 0) > 0
-            for iid in equipped.values()
-        )
-        if not has_anim:
-            return
+        today = date.today()
+        overdue = any(b.due_date < today and b.current_saved + 0.01 < b.amount for b in self.state.bills)
+        if overdue:
+            return "worried"
+        if g.streak_pays >= 5:
+            return "proud"
+        if g.streak_pays >= 2 or g.total_score >= 250:
+            return "happy"
+        return "neutral"
+
+    def _start_avatar_anim(self):
+        """Idle loop for the Avatar tab: breathing + blink for everyone, plus
+        the rare+ item effects. Stopped when the tab is hidden."""
+        self._stop_avatar_anim()
         self._avatar_anim_frame = 0
         self._avatar_anim_active = True
         self._tick_avatar_anim()
@@ -17071,11 +23598,36 @@ class BudgetApp(tk.Tk):
         g = self.state.game
         try:
             draw_avatar(self.avatar_canvas, g.character_equipped, 280, 360,
-                        self._avatar_anim_frame)
+                        self._avatar_anim_frame, mood=self._avatar_mood())
         except tk.TclError:
             self._avatar_anim_active = False
             return
         self._avatar_anim_id = self.avatar_canvas.after(90, self._tick_avatar_anim)
+
+    # ── Gerald idle blink (Today commentator + chat portrait) ────────────
+    def _gerald_blink_tick(self):
+        """Every few seconds, close Gerald's eyes for one frame on whichever
+        portraits exist. Keeps whatever expression each portrait is showing."""
+        import random
+        targets = [
+            (getattr(self, "_gerald_canvas", None), 60, 80, getattr(self, "_gerald_today_expr", "normal")),
+            (getattr(self, "_gerald_chat_canvas", None), 120, 150, getattr(self, "_gerald_chat_expr", "normal")),
+        ]
+        for canvas, w, h, expr in targets:
+            if canvas is None:
+                continue
+            try:
+                if not canvas.winfo_exists() or not canvas.winfo_viewable():
+                    continue
+                _draw_gerald(canvas, w=w, h=h, expression=expr, blink=True)
+                canvas.after(130, lambda c=canvas, w=w, h=h, e=expr: (
+                    c.winfo_exists() and _draw_gerald(c, w=w, h=h, expression=e)))
+            except tk.TclError:
+                continue
+        try:
+            self.after(random.randint(3200, 6200), self._gerald_blink_tick)
+        except tk.TclError:
+            pass
 
     def _stop_avatar_anim(self):
         self._avatar_anim_active = False
@@ -17829,368 +24381,23 @@ class BudgetApp(tk.Tk):
             self.rule_settings["minimum_buffer"] = float(self.buffer_entry.get() or 0)
             self.rule_settings["investment_mode"] = self.invest_mode_combo.get()
         except ValueError:
-            messagebox.showerror("Invalid settings", "Enter valid numbers for investment value and buffer.")
+            self._show_toast("Investment value and buffer must be numbers.", "warning")
             return
+        self.state.investment_rules = dict(self.rule_settings)
+        self.save_state()
         self.refresh_investments_text()
 
     def _run_onboarding(self):
-        """First-run setup — 2 quick steps as an overlay on the main window."""
-        # ── Full-window overlay backdrop
-        overlay = tk.Frame(self, bg=UI_HERO)
-        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
-        overlay.lift()
-        self._onboarding_overlay = overlay  # prevent GC
-
-        # ── Centered card — use grid so nav stays pinned at bottom
-        card = tk.Frame(overlay, bg=UI_BG, highlightthickness=1,
-                        highlightbackground=UI_BORDER)
-        card.place(relx=0.5, rely=0.5, anchor="center", width=720, height=660)
-        card.grid_rowconfigure(1, weight=1)  # content row stretches
-        card.grid_columnconfigure(0, weight=1)
-
-        freq_var = tk.StringVar(value="fortnightly")
-        income_var = tk.StringVar(value="")
-        current_step = [0]
-        # Default account names — user can edit on the new accounts step
-        acct_vars = {
-            "bills":    tk.StringVar(value="Bills Account"),
-            "savings":  tk.StringVar(value="Savings Account"),
-            "invest":   tk.StringVar(value="Investment Account"),
-            "spending": tk.StringVar(value="Everyday Account"),
-        }
-
-        PRESETS = [
-            ("Emergency buffer",    "A safety net for the unexpected",          "goal", 5000.0),
-            ("Holiday fund",        "Put aside a bit for a getaway",            "fund", 2000.0),
-            ("Car costs",           "Rego, services, tyres — it adds up",       "fund", 1200.0),
-            ("Christmas & gifts",   "Don't scramble in December",               "fund", 1000.0),
-            ("House deposit",       "The big one — long-term savings",          "goal", 30000.0),
-            ("General savings",     "Just save something each pay",             "goal", 3000.0),
-            ("New tech / gadgets",  "Phone, laptop, or gear upgrade fund",      "fund", 1500.0),
-            ("Pet expenses",        "Vet bills, food, the essentials",          "fund",  800.0),
-            ("Education & courses", "Invest in yourself — courses or books",    "fund", 1000.0),
-            ("Wedding fund",        "For the big day — or someone else's",      "fund", 5000.0),
-            ("Medical & dental",    "Stay ahead of health costs",               "fund", 1000.0),
-            ("Clothing & style",    "Wardrobe refresh fund",                    "fund",  600.0),
-        ]
-        preset_vars: Dict[str, tk.BooleanVar] = {}
-
-        # ── Row 0: Header
-        header = tk.Frame(card, bg=UI_HERO, padx=SP_XL, pady=SP_MD)
-        header.grid(row=0, column=0, sticky="ew")
-        step_lbl = tk.Label(header, text="", bg=UI_HERO, fg=UI_MUTED,
-                            font=FONT_SMALL_BOLD)
-        step_lbl.pack(anchor="e")
-        title_lbl = tk.Label(header, text="", bg=UI_HERO, fg=UI_TEXT,
-                             font=FONT_DISPLAY_MD)
-        title_lbl.pack(anchor="w")
-        sub_lbl = tk.Label(header, text="", bg=UI_HERO, fg=UI_MUTED,
-                           font=FONT_SMALL, wraplength=480, justify="left")
-        sub_lbl.pack(anchor="w", pady=(2, 0))
-
-        # ── Row 1: Content (stretches)
-        content = tk.Frame(card, bg=UI_BG, padx=SP_XL, pady=SP_MD)
-        content.grid(row=1, column=0, sticky="nsew")
-
-        # ── Row 2: Nav bar (pinned at bottom)
-        nav_bar = tk.Frame(card, bg=UI_SURFACE, padx=SP_XL, pady=SP_MD)
-        nav_bar.grid(row=2, column=0, sticky="ew")
-        back_btn = ttk.Button(nav_bar, text="Back")
-        back_btn.pack(side="left")
-        next_btn = ttk.Button(nav_bar, text="Next  \u2192", style="Accent.TButton")
-        next_btn.pack(side="right")
-
-        step_frames = []
-
-        # ── Step 1: Pay basics ────────────────────────────────────────────────
-        s1 = tk.Frame(content, bg=UI_BG)
-        step_frames.append(s1)
-
-        tk.Label(s1, text="How often do you get paid?", bg=UI_BG, fg=UI_TEXT,
-                 font=FONT_SUBHEADING).pack(anchor="w", pady=(0, 8))
-
-        # Styled frequency selector — pill buttons
-        freq_row = tk.Frame(s1, bg=UI_BG)
-        freq_row.pack(anchor="w", pady=(0, 18))
-        _freq_btns = {}
-        def _pick_freq(val):
-            freq_var.set(val)
-            for v, b in _freq_btns.items():
-                if v == val:
-                    b.config(bg=UI_ACCENT, fg=UI_HERO)
-                else:
-                    b.config(bg=UI_SURFACE2, fg=UI_TEXT)
-        for val, label in [("weekly", "Weekly"), ("fortnightly", "Fortnightly"), ("monthly", "Monthly")]:
-            b = tk.Label(freq_row, text=label, bg=UI_SURFACE2, fg=UI_TEXT,
-                         font=FONT_BODY_BOLD,
-                         padx=16, pady=6, cursor="hand2")
-            b.pack(side="left", padx=(0, 8))
-            _freq_btns[val] = b
-            b.bind("<Button-1>", lambda e, v=val: _pick_freq(v))
-        _pick_freq("fortnightly")
-
-        tk.Label(s1, text="Roughly how much is each pay? ($)", bg=UI_BG, fg=UI_TEXT,
-                 font=FONT_SUBHEADING).pack(anchor="w", pady=(0, 4))
-        tk.Label(s1, text="Optional — helps calibrate your score. Skip if you'd rather not say.",
-                 bg=UI_BG, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w", pady=(0, 8))
-        income_entry = ttk.Entry(s1, textvariable=income_var, width=16,
-                                 font=("Segoe UI Variable Text", 13))
-        income_entry.pack(anchor="w")
-        income_entry.focus_force()
-
-        tip = tk.Frame(s1, bg=UI_INFO_SOFT, padx=14, pady=10,
-                       highlightthickness=1, highlightbackground=UI_ACCENT_DIM)
-        tip.pack(fill="x", pady=(18, 0))
-        tk.Label(tip, text="How this app works", bg=UI_INFO_SOFT, fg=UI_ACCENT,
-                 font=FONT_BODY_BOLD).pack(anchor="w")
-        tk.Label(tip,
-                 text="Each pay, the app tells you how to split your money across accounts. "
-                      "You do the transfers. It tracks whether you stayed on plan. "
-                      "Import a bank statement to see your real spending vs target.",
-                 bg=UI_INFO_SOFT, fg=UI_ACCENT,
-                 font=FONT_SMALL, justify="left", wraplength=520).pack(anchor="w", pady=(4, 0), fill="x")
-
-        # ── Step 2: Required bank accounts (scrollable) ─────────────────────
-        s_accts = tk.Frame(content, bg=UI_BG)
-        step_frames.append(s_accts)
-
-        sa_canvas = tk.Canvas(s_accts, bg=UI_BG, highlightthickness=0)
-        sa_vbar = ttk.Scrollbar(s_accts, orient="vertical", command=sa_canvas.yview)
-        sa_canvas.pack(side="left", fill="both", expand=True)
-        sa_vbar.pack(side="right", fill="y")
-        sa_canvas.configure(yscrollcommand=self._autohide_scrollbar(sa_vbar, "pack", side="right", fill="y"))
-        sa_inner = tk.Frame(sa_canvas, bg=UI_BG)
-        sa_win = sa_canvas.create_window((0, 0), window=sa_inner, anchor="nw")
-        def _sa_inner_cfg(_e=None):
-            sa_canvas.configure(scrollregion=sa_canvas.bbox("all"))
-        def _sa_canvas_cfg(e):
-            sa_canvas.itemconfigure(sa_win, width=e.width)
-        sa_inner.bind("<Configure>", _sa_inner_cfg)
-        sa_canvas.bind("<Configure>", _sa_canvas_cfg)
-        def _sa_wheel(e):
-            d = -1 * (int(e.delta / 120) if e.delta else 0)
-            if d:
-                sa_canvas.yview_scroll(d, "units")
-        sa_canvas.bind("<MouseWheel>", _sa_wheel)
-        sa_inner.bind("<MouseWheel>", _sa_wheel)
-
-        tk.Label(sa_inner,
-                 text="This app only works if you keep four separate accounts.",
-                 bg=UI_BG, fg=UI_TEXT, font=FONT_SUBHEADING,
-                 wraplength=620, justify="left").pack(anchor="w", pady=(0, 4), fill="x")
-        tk.Label(sa_inner,
-                 text="Open these four accounts with your bank (or use ones you already have). "
-                      "Every pay, this app will tell you exactly how much to move into each. "
-                      "Follow the plan — that's the whole system.",
-                 bg=UI_BG, fg=UI_MUTED, font=FONT_SMALL,
-                 wraplength=620, justify="left").pack(anchor="w", pady=(0, SP_MD), fill="x")
-
-        # 4-row editable list. Each row: coloured bar + purpose + editable name.
-        acct_rows = [
-            ("bills",    "Bills",     "Rent, power, subscriptions — everything fixed.", UI_RUBY),
-            ("savings",  "Savings",   "Sinking funds + long-term goals combined.",      UI_EMERALD),
-            ("invest",   "Investing", "Shares, ETFs, retirement — long-horizon only.",  UI_AMETHYST),
-            ("spending", "Everyday",  "What's left. This is your safe-to-spend.",       UI_SAPPHIRE),
-        ]
-        for key, label, hint, color in acct_rows:
-            row = tk.Frame(sa_inner, bg=UI_SURFACE,
-                           highlightthickness=1, highlightbackground=UI_BORDER)
-            row.pack(fill="x", pady=(0, 8))
-            bar = tk.Frame(row, bg=color, width=3)
-            bar.pack(side="left", fill="y")
-            inner = tk.Frame(row, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
-            inner.pack(side="left", fill="both", expand=True)
-            tk.Label(inner, text=label.upper(), bg=UI_SURFACE, fg=color,
-                     font=FONT_CAPTION_BOLD, anchor="w").pack(fill="x")
-            tk.Label(inner, text=hint, bg=UI_SURFACE, fg=UI_MUTED,
-                     font=FONT_CAPTION, anchor="w", justify="left",
-                     wraplength=580).pack(fill="x")
-            e = ttk.Entry(inner, textvariable=acct_vars[key])
-            e.pack(fill="x", pady=(6, 2))
-            e.bind("<MouseWheel>", _sa_wheel)
-            for w in (row, inner):
-                w.bind("<MouseWheel>", _sa_wheel)
-
-        tk.Label(sa_inner,
-                 text="Name each one whatever your bank calls it (e.g. \"Savings Maximiser\").",
-                 bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION,
-                 wraplength=620, justify="left").pack(anchor="w", pady=(SP_SM, SP_MD), fill="x")
-
-        # ── Step 3: Scrollable toggle cards ──────────────────────────────────
-        s2 = tk.Frame(content, bg=UI_BG)
-        step_frames.append(s2)
-
-        tk.Label(s2, text="Tap anything that sounds like you — or skip and add stuff later.",
-                 bg=UI_BG, fg=UI_MUTED,
-                 font=FONT_SMALL).pack(anchor="w", pady=(0, 10))
-
-        # Scrollable container for presets
-        s2_canvas = tk.Canvas(s2, bg=UI_BG, highlightthickness=0)
-        s2_vbar = ttk.Scrollbar(s2, orient="vertical", command=s2_canvas.yview)
-        s2_canvas.pack(side="left", fill="both", expand=True)
-        s2_vbar.pack(side="right", fill="y")
-        s2_canvas.configure(yscrollcommand=self._autohide_scrollbar(s2_vbar, "pack", side="right", fill="y"))
-        s2_inner = tk.Frame(s2_canvas, bg=UI_BG)
-        s2_win = s2_canvas.create_window((0, 0), window=s2_inner, anchor="nw")
-        def _s2_inner_cfg(_e=None):
-            s2_canvas.configure(scrollregion=s2_canvas.bbox("all"))
-        def _s2_canvas_cfg(e):
-            s2_canvas.itemconfigure(s2_win, width=e.width)
-        s2_inner.bind("<Configure>", _s2_inner_cfg)
-        s2_canvas.bind("<Configure>", _s2_canvas_cfg)
-        def _s2_wheel(e):
-            d = -1 * (int(e.delta / 120) if e.delta else 0)
-            if d:
-                s2_canvas.yview_scroll(d, "units")
-        s2_canvas.bind("<MouseWheel>", _s2_wheel)
-        s2_inner.bind("<MouseWheel>", _s2_wheel)
-
-        _preset_rows: Dict[str, dict] = {}
-
-        def _toggle_preset(pname):
-            var = preset_vars[pname]
-            var.set(not var.get())
-            info = _preset_rows[pname]
-            selected = var.get()
-            bg = UI_INFO_SOFT if selected else UI_SURFACE
-            border_col = UI_ACCENT if selected else UI_BORDER
-            icon_text = "\u2713" if selected else "+"
-            icon_fg = UI_ACCENT if selected else UI_MUTED
-            info["row"].config(bg=bg, highlightbackground=border_col)
-            info["icon"].config(text=icon_text, bg=bg, fg=icon_fg)
-            info["name_lbl"].config(bg=bg)
-            info["hint_lbl"].config(bg=bg)
-            info["txt_frame"].config(bg=bg)
-
-        for pname, phint, ptype, _ in PRESETS:
-            var = tk.BooleanVar(value=False)
-            preset_vars[pname] = var
-            row = tk.Frame(s2_inner, bg=UI_SURFACE, padx=10, pady=6,
-                           highlightthickness=1, highlightbackground=UI_BORDER,
-                           cursor="hand2")
-            row.pack(fill="x", pady=(0, 4))
-
-            icon = tk.Label(row, text="+", bg=UI_SURFACE, fg=UI_MUTED,
-                            font=("Segoe UI Variable Text", 14, "bold"),
-                            width=2, cursor="hand2")
-            icon.pack(side="left", padx=(0, 6))
-
-            txt_frame = tk.Frame(row, bg=UI_SURFACE, cursor="hand2")
-            txt_frame.pack(side="left", fill="x", expand=True)
-            name_lbl = tk.Label(txt_frame, text=pname, bg=UI_SURFACE, fg=UI_TEXT,
-                                font=FONT_BODY_BOLD,
-                                anchor="w", cursor="hand2")
-            name_lbl.pack(anchor="w")
-            hint_lbl = tk.Label(txt_frame, text=phint, bg=UI_SURFACE, fg=UI_MUTED,
-                                font=FONT_CAPTION,
-                                anchor="w", cursor="hand2")
-            hint_lbl.pack(anchor="w")
-
-            _preset_rows[pname] = {"row": row, "icon": icon, "name_lbl": name_lbl,
-                                   "hint_lbl": hint_lbl, "txt_frame": txt_frame}
-
-            for w in (row, icon, txt_frame, name_lbl, hint_lbl):
-                w.bind("<Button-1>", lambda e, p=pname: _toggle_preset(p))
-                w.bind("<MouseWheel>", _s2_wheel)
-
-        # ── Nav logic
-        STEPS = [
-            ("The Basics", "1 of 3", "Everything stays on your device."),
-            ("Your Bank Accounts", "2 of 3",
-             "Four accounts — required. This is how the app splits every pay."),
-            ("Any of these interest you?", "3 of 3",
-             "These create starter items you can edit or delete any time."),
-        ]
-
-        def _go_to(idx):
-            current_step[0] = idx
-            for f in step_frames:
-                f.pack_forget()
-            step_frames[idx].pack(fill="both", expand=True)
-            title_lbl.config(text=STEPS[idx][0])
-            step_lbl.config(text=f"Step {STEPS[idx][1]}")
-            sub_lbl.config(text=STEPS[idx][2])
-            back_btn.config(state="normal" if idx > 0 else "disabled")
-            if idx == len(STEPS) - 1:
-                next_btn.config(text="Done  \u2192")
-            else:
-                next_btn.config(text="Next  \u2192")
-
-        def _advance():
-            idx = current_step[0]
-            if idx == 0:
-                txt = income_var.get().strip()
-                if txt:
-                    try:
-                        float(txt)
-                    except ValueError:
-                        messagebox.showwarning("Oops", "Enter a number (e.g. 2400)", parent=self)
-                        return
-                _go_to(1)
-            elif idx == 1:
-                # Validate all 4 account names non-empty
-                for k, v in acct_vars.items():
-                    if not v.get().strip():
-                        messagebox.showwarning("Name needed",
-                            f"Enter a name for your {k} account (whatever your bank calls it).",
-                            parent=self)
-                        return
-                _go_to(2)
-            else:
-                _finish_onboarding()
-
-        def _finish_onboarding():
-            self.state.pay_frequency = freq_var.get()
-            txt = income_var.get().strip()
-            if txt:
-                try:
-                    self.state.income_baseline = float(txt)
-                except ValueError:
-                    pass
-
-            # Persist the user-chosen bank account names
-            for k, v in acct_vars.items():
-                if k not in self.state.transfer_accounts:
-                    self.state.transfer_accounts[k] = {}
-                self.state.transfer_accounts[k]["name"] = v.get().strip()
-
-            today = date.today()
-            for pname, phint, ptype, pamt in PRESETS:
-                if not preset_vars[pname].get():
-                    continue
-                nl = pname.lower()
-                if ptype == "bill":
-                    due = today + timedelta(days=180)
-                    self.state.bills.append(
-                        Bill(pname, pamt, due, "yearly", "essential", "bill", 0.0))
-                elif ptype == "fund":
-                    if "christmas" in nl or "gift" in nl:
-                        yr = today.year if today.month < 12 else today.year + 1
-                        due = date(yr, 12, 24)
-                    elif "car" in nl:
-                        due = today + timedelta(days=180)
-                    elif "holiday" in nl:
-                        due = today + timedelta(days=365)
-                    else:
-                        due = today + timedelta(days=180)
-                    self.state.funds.append(
-                        Fund(pname, pamt, due, "important", 0.0, "auto", 0.0, "fund"))
-                elif ptype == "goal":
-                    pri = 1 if "emergency" in nl else 2
-                    self.state.goals.append(
-                        Goal(pname, pamt, None, pri, 0.0, "fixed", round(pamt / 52, 2)))
-
+        """First run: the money-plan wizard, then Gerald's tutorial. If the user
+        chooses 'Finish later', onboarding stays incomplete and the welcome
+        checklist on Today offers the wizard again."""
+        def _after():
             self.state.onboarding_complete = True
             self.save_state()
-            self.refresh_all_views()
-            overlay.destroy()
-            self._onboarding_overlay = None
+            self._day_one_head_start_ui()
             if not self.state.tutorial_complete:
-                self.after(300, self._run_tutorial)
-
-        back_btn.config(command=lambda: _go_to(current_step[0] - 1))
-        next_btn.config(command=_advance)
-        _go_to(0)
+                self.after(2600, lambda: self._when_pack_closed(self._run_tutorial))
+        self._show_setup_wizard(first_run=True, on_done=_after)
 
     # ── Tutorial walkthrough ─────────────────────────────────────────────
     def _run_tutorial(self):
@@ -18458,25 +24665,1240 @@ class BudgetApp(tk.Tk):
         _go(0)
 
     def add_pay_and_allocate(self):
-        try:
-            amount = float(self.pay_amount_entry.get())
-        except ValueError:
-            messagebox.showerror("Invalid amount", "Enter a valid pay amount.")
+        amount = self._parse_money_field(self.pay_amount_entry.get())
+        if amount is None or amount <= 0:
+            self._show_toast("Enter the pay amount (e.g. 2,400 or $2400.50).", "warning")
+            self.pay_amount_entry.focus_set()
             return
         pay_date = self._parse_smart_date(self.pay_date_entry.get())
         if pay_date is None:
-            messagebox.showerror("Invalid date", "Enter a date like 2026-05-01, 15/05/2026, 'today', 'yesterday', or 'last friday'.")
+            self._show_toast("Date received: try 'today', 'yesterday', 'last friday' or a chip.", "warning")
             return
         pay_source = self.pay_source_entry.get().strip() or "Primary Income"
         self.pay_amount_entry.delete(0, tk.END)
         self._log_pay_and_allocate(amount, pay_date, pay_source)
 
+    # ── Shared overlay helpers ────────────────────────────────────────────────
+    @staticmethod
+    def _parse_money_field(raw: str) -> Optional[float]:
+        """'$1,234.50' -> 1234.5; blank -> 0.0; garbage -> None."""
+        s = (raw or "").strip().replace("$", "").replace(",", "")
+        if not s:
+            return 0.0
+        try:
+            return round(float(s), 2)
+        except ValueError:
+            return None
+
+    def _overlay_scroll_area(self, parent, height: int):
+        """Canvas-backed scrollable frame for lists inside overlays.
+        Returns (inner_frame, bind_wheel). Call bind_wheel(inner) after
+        populating so the wheel works over child widgets too. The canvas is
+        also registered so the global wheel handler routes to it."""
+        canvas = tk.Canvas(parent, bg=UI_SURFACE, highlightthickness=0, height=height)
+        if not hasattr(self, "_overlay_wheel_canvases"):
+            self._overlay_wheel_canvases = []
+        self._overlay_wheel_canvases = [c for c in self._overlay_wheel_canvases if c.winfo_exists()][-12:] + [canvas]
+        sb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        inner = tk.Frame(canvas, bg=UI_SURFACE)
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _cfg(_e=None):
+            try:
+                canvas.configure(scrollregion=canvas.bbox("all") or (0, 0, 0, 0))
+                canvas.itemconfigure(win, width=canvas.winfo_width())
+            except tk.TclError:
+                pass
+        inner.bind("<Configure>", _cfg)
+        canvas.bind("<Configure>", _cfg)
+
+        def _wheel(e):
+            try:
+                canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            except tk.TclError:
+                pass
+            return "break"
+
+        def bind_wheel(widget):
+            try:
+                widget.bind("<MouseWheel>", _wheel)
+                for ch in widget.winfo_children():
+                    bind_wheel(ch)
+            except tk.TclError:
+                pass
+        bind_wheel(canvas)
+        return inner, bind_wheel
+
+    def _overlay_card(self, caption: str, width: int, height: int):
+        """Scrim + centred card used by the setup wizard and allocation editor.
+        Returns (scrim, content, btn_row, step_var, close_fn)."""
+        # Fit the card to the window: on a 1366×768 laptop a 730px card would
+        # push its buttons off screen. When capped, the content scrolls.
+        try:
+            win_w, win_h = self.winfo_width(), self.winfo_height()
+        except tk.TclError:
+            win_w, win_h = width, height
+        if win_w > 200 and win_h > 200:
+            width = min(width, max(360, win_w - 32))
+            capped_h = min(height, max(320, win_h - 32))
+        else:
+            capped_h = height
+        scrim = tk.Frame(self, bg=UI_HERO)
+        scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
+        scrim.lift()
+        outer = tk.Frame(scrim, bg=UI_ACCENT, padx=1, pady=1)
+        outer.place(relx=0.5, rely=0.5, anchor="center")
+        card = tk.Frame(outer, bg=UI_SURFACE, width=width, height=capped_h)
+        card.pack()
+        card.pack_propagate(False)
+        header = tk.Frame(card, bg=UI_SURFACE)
+        header.pack(fill="x", padx=SP_XL, pady=(SP_LG, 0))
+        tk.Label(header, text=caption, bg=UI_SURFACE, fg=UI_ACCENT,
+                 font=FONT_CAPTION_BOLD).pack(side="left")
+        step_var = tk.StringVar(value="")
+        tk.Label(header, textvariable=step_var, bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_SMALL).pack(side="right")
+        btn_row = tk.Frame(card, bg=UI_SURFACE)
+        btn_row.pack(fill="x", side="bottom", padx=SP_XL, pady=(0, SP_LG))
+        if capped_h < height:
+            area = tk.Frame(card, bg=UI_SURFACE)
+            area.pack(fill="both", expand=True, padx=(SP_XL, SP_SM), pady=SP_LG)
+            content, _bind_wheel = self._overlay_scroll_area(area, max(120, capped_h - 120))
+        else:
+            content = tk.Frame(card, bg=UI_SURFACE)
+            content.pack(fill="both", expand=True, padx=SP_XL, pady=SP_LG)
+
+        def close():
+            try:
+                scrim.destroy()
+            except tk.TclError:
+                pass
+        scrim.bind("<Escape>", lambda _e: (close(), "break")[1])
+        scrim.focus_set()
+        return scrim, content, btn_row, step_var, close
+
+    # ── Flagged transactions (follow-up / forgotten subscriptions) ───────────
+    @staticmethod
+    def _flag_reminder_text(merchant: str) -> str:
+        return f"🚩 Investigate {merchant} — forgotten subscription?"
+
+    def _set_transactions_flag(self, txs: List[TransactionRecord], flagged: bool, merchant: str):
+        """Flag/unflag a merchant's transactions and keep a Gerald reminder in sync
+        so the app nudges you to look into it in a few days."""
+        for tx in txs:
+            tx.flagged = flagged
+        text = self._flag_reminder_text(merchant)
+        rems = self.state.gerald_reminders
+        if flagged:
+            if not any(r.get("text") == text and not r.get("dismissed") for r in rems):
+                nid = 1 + max((r.get("id", 0) for r in rems), default=0)
+                rems.append({
+                    "id": nid, "text": text,
+                    "due_date": (date.today() + timedelta(days=3)).isoformat(),
+                    "created": date.today().isoformat(), "dismissed": False,
+                })
+        else:
+            for r in rems:
+                if r.get("text") == text:
+                    r["dismissed"] = True
+
+    def _flagged_merchant_groups(self) -> List[dict]:
+        groups: Dict[str, dict] = {}
+        for tx in list(self.state.transactions) + list(self.latest_import):
+            if not getattr(tx, "flagged", False):
+                continue
+            name = extract_merchant_name(tx.description)
+            g = groups.setdefault(name, {"name": name, "txs": [], "total": 0.0, "last": tx.tx_date})
+            g["txs"].append(tx)
+            g["total"] += tx.amount()
+            g["last"] = max(g["last"], tx.tx_date)
+        return sorted(groups.values(), key=lambda g: -g["total"])
+
+    def _render_flagged_followups(self):
+        host = getattr(self, "_flagged_host", None)
+        if host is None:
+            return
+        for w in host.winfo_children():
+            w.destroy()
+        groups = self._flagged_merchant_groups()
+        if not groups:
+            host.pack_forget()
+            return
+        host.pack(fill="x", pady=(SP_SM, 0))
+        tk.Label(host, text="FLAGGED FOR FOLLOW-UP",
+                 bg=UI_SURFACE, fg=UI_RUBY,
+                 font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_SM, SP_XS))
+        tk.Label(host,
+                 text="You flagged these while sorting a statement. Check whether each is "
+                      "a subscription you still want, then resolve or turn it into a bill.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION,
+                 wraplength=700, justify="left").pack(anchor="w", pady=(0, SP_XS))
+        for g in groups[:6]:
+            row = tk.Frame(host, bg=UI_SURFACE2,
+                           highlightthickness=1, highlightbackground=UI_BORDER)
+            row.pack(fill="x", pady=(0, SP_XS))
+            tk.Frame(row, bg=UI_RUBY, width=3).pack(side="left", fill="y")
+            inner = tk.Frame(row, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM)
+            inner.pack(side="left", fill="x", expand=True)
+            n = len(g["txs"])
+            tk.Label(inner, text=f"🚩 {g['name']}", bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT,
+                     font=FONT_BODY_BOLD, anchor="w").pack(side="left")
+            tk.Label(inner,
+                     text=f"   {n}x · ${g['total']:,.2f} · last {g['last']:%d %b}",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL).pack(side="left")
+            btns = tk.Frame(row, bg=UI_SURFACE2, padx=SP_SM)
+            btns.pack(side="right")
+
+            def _resolve(g=g):
+                self._set_transactions_flag(g["txs"], False, g["name"])
+                self.save_state()
+                self.refresh_today_tab()
+                self.refresh_transactions_tab()
+                self._show_toast(f"Resolved {g['name']}.", "success")
+
+            def _make_bill(g=g):
+                last = g["txs"][-1]
+                self._show_page("bills")
+                try:
+                    self.clear_bill_form()
+                    self.bill_name.insert(0, g["name"])
+                    self.bill_amount.insert(0, f"{last.amount():.2f}")
+                    self.bill_frequency.set("monthly")
+                    self.bill_name.focus_set()
+                except Exception:
+                    pass
+            ttk.Button(btns, text="Resolved ✓", style="Secondary.TButton",
+                       command=_resolve).pack(side="left", padx=(0, SP_XS))
+            ttk.Button(btns, text="Make it a bill", style="Ghost.TButton",
+                       command=_make_bill).pack(side="left")
+        if len(groups) > 6:
+            tk.Label(host, text=f"+{len(groups) - 6} more flagged merchants",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+
+    # ── Starting position wizard ─────────────────────────────────────────────
+    _ACCOUNT_ORDER = ("spending", "bills", "savings", "invest")
+
+    def _account_label(self, key: str) -> str:
+        fallback = {"spending": "Everyday Account", "bills": "Bills Account",
+                    "savings": "Savings Account", "invest": "Investment Account"}
+        return self.state.transfer_accounts.get(key, {}).get("name") or fallback.get(key, key.title())
+
+    def _starting_position_summary(self) -> str:
+        bal = self.state.account_balances or {}
+        if not self.state.starting_position_set:
+            return "Not finished yet — the wizard walks through bills, set-asides, goals, accounts and what you have now."
+        total = sum(float(v) for v in bal.values())
+        parts = [f"{self._account_label(k)} ${float(bal.get(k, 0.0)):,.0f}"
+                 for k in self._ACCOUNT_ORDER if float(bal.get(k, 0.0)) > 0]
+        return f"Total ${total:,.0f}  ·  " + "  ·  ".join(parts) if parts else f"Total ${total:,.0f}"
+
+    # ── Money plan setup wizard ──────────────────────────────────────────────
+    _FUND_MODE_LABELS = [("auto", "Save up by a date"), ("fixed", "Fixed amount each pay"),
+                         ("ongoing", "Ongoing, no end"), ("buffer", "Keep a buffer topped up")]
+    _SETUP_STEP_TITLES = ("Your rhythm", "Bills", "Set aside for", "Long-term goals",
+                          "Your accounts", "Your money right now", "Your plan")
+    _SETUP_BILL_CHIPS = [
+        ("Rent / Mortgage", "monthly", "essential"), ("Electricity", "monthly", "essential"),
+        ("Gas", "monthly", "essential"), ("Water", "monthly", "essential"),
+        ("Phone", "monthly", "important"), ("Internet", "monthly", "important"),
+        ("Car insurance", "monthly", "essential"), ("Car rego", "yearly", "essential"),
+        ("Health insurance", "monthly", "important"), ("Streaming", "monthly", "optional"),
+        ("Gym", "fortnightly", "optional"),
+    ]
+    _SETUP_FUND_CHIPS = [
+        ("Car service", "buffer", 600.0), ("Holiday", "auto", 2000.0), ("Christmas", "auto", 800.0),
+        ("Gifts", "ongoing", 20.0), ("Clothes", "ongoing", 30.0), ("Home repairs", "buffer", 1000.0),
+        ("Annual insurance", "auto", 1200.0), ("Vet / pet", "buffer", 500.0),
+    ]
+    _SETUP_GOAL_CHIPS = [
+        ("Emergency fund", "fixed", 5000.0), ("House deposit", "fixed", 30000.0),
+        ("Investing pot", "percent_surplus", 0.0), ("New car", "fixed", 15000.0),
+        ("Wedding", "fixed", 10000.0), ("General savings", "percent_surplus", 0.0),
+    ]
+
+    def _fund_mode_summary(self, f: Fund) -> str:
+        m = f.contribution_mode
+        if m == "ongoing":
+            return f"${f.fixed_amount:,.0f} each pay · no end"
+        if m == "buffer":
+            s = f"keep ${f.target_amount:,.0f} topped up"
+            return s + (f" · max ${f.fixed_amount:,.0f}/pay" if f.fixed_amount > 0 else "")
+        if m == "fixed":
+            s = f"${f.fixed_amount:,.0f} each pay"
+            return s + (f" · toward ${f.target_amount:,.0f}" if f.target_amount > 0 else " · no end")
+        s = f"${f.target_amount:,.0f}"
+        return s + (f" by {f.target_date:%d %b %Y}" if f.target_date else " · no date")
+
+    def _goal_mode_summary(self, g: Goal) -> str:
+        how = f"${g.value:,.0f} each pay" if g.mode == "fixed" else f"{g.value:g}% of surplus"
+        return how + (f" · toward ${g.target_amount:,.0f}" if g.target_amount > 0 else " · no end target")
+
+    def _show_starting_position(self, *, on_done=None):
+        """Kept for older callers — the starting position now lives inside the wizard."""
+        self._show_setup_wizard(on_done=on_done)
+
+    def _show_setup_wizard(self, *, first_run: bool = False, on_done=None):
+        """Seven-step money plan setup. Bills, funds and goals are written to
+        state as they're added, so 'Finish later' keeps everything entered.
+        The last two steps turn one total ("what you have") into set-aside
+        amounts per item, account balances, and a transfer plan."""
+        old = getattr(self, "_setup_wizard_scrim", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except tk.TclError:
+                pass
+        CARD_W, CARD_H = 820, 730
+        scrim, content, btn_row, step_var, close = self._overlay_card("SET UP YOUR MONEY PLAN", CARD_W, CARD_H)
+        self._setup_wizard_scrim = scrim
+        TOTAL = len(self._SETUP_STEP_TITLES)
+        wrap_w = CARD_W - 2 * SP_XL
+        acct_bal = self.state.account_balances or {}
+        wz = {
+            "idx": 0,
+            "freq": tk.StringVar(value=self.state.pay_frequency or "fortnightly"),
+            "income": tk.StringVar(value=f"{self.state.income_baseline:.0f}" if self.state.income_baseline else ""),
+            "acct": {k: tk.StringVar(value=self._account_label(k)) for k in self._ACCOUNT_ORDER},
+            "total": tk.StringVar(value=f"{sum(acct_bal.values()):.2f}" if (self.state.starting_position_set and acct_bal) else ""),
+            "alloc": {},
+            "fund_mode": "auto",
+            "goal_mode": "fixed",
+            "prefill": {},
+        }
+
+        def _close():
+            close()
+            self._setup_wizard_scrim = None
+
+        def _clear():
+            for w in content.winfo_children():
+                w.destroy()
+            for w in btn_row.winfo_children():
+                w.destroy()
+
+        def _money(var) -> Optional[float]:
+            return self._parse_money_field(var.get() if hasattr(var, "get") else var)
+
+        def _gerald(quip: str, expr: str = "normal"):
+            row = tk.Frame(content, bg=UI_SURFACE)
+            row.pack(fill="x", pady=(0, SP_SM))
+            c = tk.Canvas(row, width=44, height=58, bg=UI_SURFACE, highlightthickness=0)
+            c.pack(side="left", padx=(0, SP_MD))
+            try:
+                _draw_gerald(c, w=44, h=58, expression=expr)
+            except Exception:
+                pass
+            tk.Label(row, text=quip, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY,
+                     wraplength=wrap_w - 70, justify="left").pack(side="left", anchor="w")
+
+        def _head(title: str, sub: str):
+            tk.Label(content, text=title, bg=UI_SURFACE, fg=UI_TEXT_BRIGHT,
+                     font=FONT_DISPLAY_MD).pack(anchor="w")
+            tk.Label(content, text=sub, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL,
+                     wraplength=wrap_w, justify="left").pack(anchor="w", pady=(2, SP_MD))
+
+        def _chip(parent, text, selected, cmd, color=UI_ACCENT):
+            return tk.Button(parent, text=text,
+                             bg=UI_ACCENT_SOFT if selected else UI_SURFACE2,
+                             fg=UI_TEXT_BRIGHT if selected else UI_TEXT,
+                             activebackground=UI_SURFACE_HOVER, activeforeground=UI_TEXT_BRIGHT,
+                             relief="flat", bd=0, highlightthickness=1,
+                             highlightbackground=color if selected else UI_BORDER,
+                             font=FONT_SMALL_BOLD if selected else FONT_SMALL,
+                             padx=SP_SM, pady=3, cursor="hand2", takefocus=0, command=cmd)
+
+        def _chip_row(parent, items, on_pick):
+            """Suggestion chips, wrapped onto rows of five."""
+            host = tk.Frame(parent, bg=UI_SURFACE)
+            host.pack(fill="x", pady=(0, SP_SM))
+            row = None
+            for n, item in enumerate(items):
+                if n % 5 == 0:
+                    row = tk.Frame(host, bg=UI_SURFACE)
+                    row.pack(fill="x", pady=(0, SP_XS))
+                _chip(row, item[0], False, lambda it=item: on_pick(it), UI_BORDER).pack(side="left", padx=(0, SP_XS))
+
+        def _field(parent, label, var, width=12, col=0):
+            cell = tk.Frame(parent, bg=UI_SURFACE)
+            cell.grid(row=0, column=col, sticky="w", padx=(0, SP_SM))
+            tk.Label(cell, text=label, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+            e = ttk.Entry(cell, textvariable=var, width=width, font=FONT_BODY)
+            e.pack(anchor="w")
+            return e
+
+        def _combo(parent, label, var, values, width=11, col=0):
+            cell = tk.Frame(parent, bg=UI_SURFACE)
+            cell.grid(row=0, column=col, sticky="w", padx=(0, SP_SM))
+            tk.Label(cell, text=label, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+            cb = ttk.Combobox(cell, textvariable=var, values=values, state="readonly", width=width)
+            cb.pack(anchor="w")
+            return cb
+
+        def _item_list(parent, rows, height=190):
+            """rows: list of (color, name, detail, right_text, remove_cb)."""
+            if not rows:
+                tk.Label(parent, text="Nothing added yet — use a suggestion above or type your own.",
+                         bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w", pady=(SP_XS, 0))
+                return
+            area = tk.Frame(parent, bg=UI_SURFACE)
+            area.pack(fill="both", expand=True)
+            inner, bind_wheel = self._overlay_scroll_area(area, height)
+            for color, name, detail, right, remove_cb in rows:
+                row = tk.Frame(inner, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER)
+                row.pack(fill="x", pady=(0, 2))
+                tk.Frame(row, bg=color, width=3).pack(side="left", fill="y")
+                body = tk.Frame(row, bg=UI_SURFACE2, padx=SP_MD, pady=SP_XS + 1)
+                body.pack(side="left", fill="x", expand=True)
+                tk.Label(body, text=name[:36], bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_BODY_BOLD,
+                         anchor="w").pack(side="left")
+                tk.Label(body, text=f"   {detail}", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL,
+                         anchor="w").pack(side="left")
+                tk.Button(row, text="✕", bg=UI_SURFACE2, fg=UI_MUTED, activebackground=UI_SURFACE_HOVER,
+                          activeforeground=UI_RUBY, relief="flat", bd=0, highlightthickness=0,
+                          font=FONT_SMALL_BOLD, padx=SP_SM, cursor="hand2", takefocus=0,
+                          command=remove_cb).pack(side="right")
+                tk.Label(row, text=right, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL_BOLD).pack(side="right", padx=(0, SP_SM))
+            bind_wheel(inner)
+
+        def _nav(*, back=True, next_text="Next  →", next_cmd=None, extra=None):
+            if back:
+                ttk.Button(btn_row, text="←  Back", command=lambda: _go(-1)).pack(side="left")
+            ttk.Button(btn_row, text="Finish later", style="Ghost.TButton",
+                       command=_close).pack(side="left", padx=(SP_SM if back else 0, 0))
+            if extra:
+                extra(btn_row)
+            ttk.Button(btn_row, text=next_text, style="Primary.TButton",
+                       command=next_cmd or (lambda: _go(1))).pack(side="right")
+
+        def _go(delta: int):
+            wz["idx"] = max(0, min(TOTAL - 1, wz["idx"] + delta))
+            _render()
+
+        def _per_pay_bills() -> float:
+            return round(sum(self.engine.bill_recommended_allocation(b) for b in self.state.bills), 2)
+
+        def _per_pay_funds() -> float:
+            return round(sum(self.engine.fund_recommended_allocation(f) for f in self.state.funds), 2)
+
+        def _per_pay_goals_fixed() -> float:
+            return round(sum(g.value for g in self.state.goals if g.mode == "fixed"), 2)
+
+        def _err_label(parent):
+            v = tk.StringVar()
+            tk.Label(parent, textvariable=v, bg=UI_SURFACE, fg=UI_RUBY, font=FONT_CAPTION).pack(anchor="w")
+            return v
+
+        # ── Step 0: rhythm ───────────────────────────────────────────────
+        def _render_rhythm():
+            _gerald("First, the rhythm. Everything in here is planned per pay, so tell me how often "
+                    "money comes in." + ("" if first_run else " You can change this any time."), "normal")
+            _head("How often are you paid?", "Pick the cycle your main income lands on.")
+            chips = tk.Frame(content, bg=UI_SURFACE)
+            chips.pack(fill="x", pady=(0, SP_LG))
+            for key, lbl in (("weekly", "Weekly"), ("fortnightly", "Fortnightly"), ("monthly", "Monthly")):
+                _chip(chips, lbl, wz["freq"].get() == key,
+                      lambda k=key: (wz["freq"].set(k), _render())).pack(side="left", padx=(0, SP_SM), ipadx=SP_MD, ipady=SP_XS)
+            tk.Label(content, text="Roughly how much is a typical pay? (optional)", bg=UI_SURFACE,
+                     fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w")
+            tk.Label(content, text="Used to preview what each pay will cover. Real pays replace it once you start logging.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(0, SP_XS))
+            cell = tk.Frame(content, bg=UI_SURFACE)
+            cell.pack(anchor="w")
+            tk.Label(cell, text="$", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_BODY).pack(side="left")
+            e = ttk.Entry(cell, textvariable=wz["income"], width=12, font=FONT_BODY)
+            e.pack(side="left")
+            e.focus_set()
+
+            def _next():
+                if _money(wz["income"]) is None:
+                    self._show_toast("Typical pay must be a number (or leave it blank).", "warning")
+                    return
+                self.state.pay_frequency = wz["freq"].get()
+                self.save_state()
+                _go(1)
+            _nav(back=False, next_cmd=_next)
+
+        # ── Step 1: bills ────────────────────────────────────────────────
+        def _render_bills():
+            _gerald("Bills first — the non-negotiables. Add everything that comes out regularly and "
+                    "I'll work out what each pay needs to put aside.", "normal")
+            _head("What do you have to pay?", "Tap a suggestion or type your own. Amount is per occurrence, "
+                  "'next due' is the next date it's taken.")
+            pf = wz["prefill"]
+            name_v = tk.StringVar(value=pf.get("bill_name", ""))
+            amt_v = tk.StringVar(value=pf.get("bill_amount", ""))
+            freq_v = tk.StringVar(value=pf.get("bill_freq", "monthly"))
+            due_v = tk.StringVar(value=pf.get("bill_due", (date.today() + timedelta(days=14)).isoformat()))
+            pri_v = tk.StringVar(value=pf.get("bill_pri", "essential"))
+
+            def _pick(item):
+                pf.update({"bill_name": item[0], "bill_freq": item[1], "bill_pri": item[2]})
+                _render()
+            _chip_row(content, self._SETUP_BILL_CHIPS, _pick)
+
+            form = tk.Frame(content, bg=UI_SURFACE)
+            form.pack(fill="x", pady=(0, SP_XS))
+            name_e = _field(form, "Name", name_v, 20, 0)
+            amt_e = _field(form, "Amount $", amt_v, 9, 1)
+            _combo(form, "Every", freq_v, ["weekly", "fortnightly", "monthly", "quarterly", "yearly", "one-off"], 11, 2)
+            _field(form, "Next due", due_v, 12, 3)
+            _combo(form, "Priority", pri_v, ["essential", "important", "optional"], 10, 4)
+            err_v = _err_label(content)
+
+            def _add(_e=None):
+                pf.clear()
+                name = name_v.get().strip()
+                amt = _money(amt_v)
+                due = self._parse_smart_date(due_v.get().strip()) if due_v.get().strip() else None
+                if not name:
+                    err_v.set("Give the bill a name."); name_e.focus_set(); return "break"
+                if amt is None or amt <= 0:
+                    err_v.set("Amount must be a number above zero."); amt_e.focus_set(); return "break"
+                if due is None:
+                    err_v.set("Next due needs a date like 15/11/2026 or 'next friday'."); return "break"
+                if self._name_exists("bill", name):
+                    err_v.set(f"You already have a bill called {name} — remove it below or use a different name."); return "break"
+                self.state.bills.append(Bill(name, amt, due, freq_v.get(), pri_v.get(), "bill", 0.0))
+                self.save_state()
+                try:
+                    self.refresh_bills()
+                except Exception:
+                    pass
+                _render()
+                return "break"
+            for w in (name_e, amt_e):
+                w.bind("<Return>", _add)
+            def _guide_pick(e, amt, ex):
+                pf.update({"bill_name": e["name"].split(" (")[0], "bill_amount": f"{amt:.0f}",
+                           "bill_freq": ex["frequency"], "bill_pri": ex["priority"]})
+                _render()
+            # Buttons on their own line so the row never runs off the card
+            btns = tk.Frame(form, bg=UI_SURFACE)
+            btns.grid(row=1, column=0, columnspan=6, sticky="e", pady=(SP_XS, 0))
+            ttk.Button(btns, text="Not sure? Cost guide", style="Ghost.TButton",
+                       command=lambda: self._show_cost_guide("bill", on_pick=_guide_pick)).pack(side="left", padx=(0, SP_SM))
+            ttk.Button(btns, text="Add bill", style="Accent.TButton", command=_add).pack(side="left")
+            if pf.get("bill_name"):
+                amt_e.focus_set()
+            else:
+                name_e.focus_set()
+
+            rows = []
+            for i, b in sorted(enumerate(self.state.bills), key=lambda x: x[1].due_date):
+                def _rm(i=i):
+                    del self.state.bills[i]
+                    self.save_state()
+                    try:
+                        self.refresh_bills()
+                    except Exception:
+                        pass
+                    _render()
+                rows.append((UI_RUBY, b.name, f"${b.amount:,.2f} {b.frequency} · due {b.due_date:%d %b} · {b.priority}",
+                             f"${self.engine.bill_recommended_allocation(b):,.0f}/pay", _rm))
+            _item_list(content, rows, 170)
+            tk.Label(content, text=f"Bills need about ${_per_pay_bills():,.2f} per pay right now.",
+                     bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w", pady=(SP_SM, 0))
+            _nav(next_text=("Next  →" if self.state.bills else "Skip for now  →"))
+
+        # ── Step 2: funds ────────────────────────────────────────────────
+        def _render_funds():
+            _gerald("Now the things you save up to spend on. These don't all need an end — some "
+                    "pots just tick along, some you keep topped up.", "wink")
+            _head("What do you want to set aside for?",
+                  "Four ways a fund can work. Pick the one that matches how you think about it.")
+            pf = wz["prefill"]
+
+            def _pick(item):
+                pf.update({"fund_name": item[0], "fund_amount": f"{item[2]:.0f}" if item[2] else ""})
+                wz["fund_mode"] = item[1]
+                _render()
+            _chip_row(content, self._SETUP_FUND_CHIPS, _pick)
+
+            modes = tk.Frame(content, bg=UI_SURFACE)
+            modes.pack(fill="x", pady=(0, SP_XS))
+            for key, lbl in self._FUND_MODE_LABELS:
+                _chip(modes, lbl, wz["fund_mode"] == key,
+                      lambda k=key: (wz.__setitem__("fund_mode", k), _render())).pack(side="left", padx=(0, SP_XS))
+            mode = wz["fund_mode"]
+            hint = {
+                "auto": "Reach a target by a date. Each pay puts in an equal share of what's left.",
+                "fixed": "A set amount every pay. Add a target if you want it to stop when full.",
+                "ongoing": "A set amount every pay, forever — gifts, clothes, little luxuries.",
+                "buffer": "Hold a level. When you spend from it, the next pays refill it.",
+            }[mode]
+            tk.Label(content, text=hint, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION,
+                     wraplength=wrap_w, justify="left").pack(anchor="w", pady=(0, SP_XS))
+
+            name_v = tk.StringVar(value=pf.get("fund_name", ""))
+            a_v = tk.StringVar(value=pf.get("fund_amount", ""))
+            b_v = tk.StringVar(value=pf.get("fund_b", ""))
+            form = tk.Frame(content, bg=UI_SURFACE)
+            form.pack(fill="x", pady=(0, SP_XS))
+            name_e = _field(form, "Name", name_v, 20, 0)
+            a_lbl, b_lbl = {
+                "auto": ("Target $", "By date"),
+                "fixed": ("$ per pay", "Target $ (optional)"),
+                "ongoing": ("$ per pay", None),
+                "buffer": ("Keep topped up to $", "Max per pay (optional)"),
+            }[mode]
+            a_e = _field(form, a_lbl, a_v, 12, 1)
+            b_e = _field(form, b_lbl, b_v, 14, 2) if b_lbl else None
+            err_v = _err_label(content)
+
+            def _add(_e=None):
+                name = name_v.get().strip()
+                if not name:
+                    err_v.set("Give the fund a name."); name_e.focus_set(); return "break"
+                a = _money(a_v)
+                if a is None or a <= 0:
+                    err_v.set(f"'{a_lbl}' must be a number above zero."); a_e.focus_set(); return "break"
+                target, per_pay, td = 0.0, 0.0, None
+                if mode == "auto":
+                    target = a
+                    td = self._parse_smart_date(b_v.get().strip()) if b_v.get().strip() else None
+                    if td is None:
+                        err_v.set("Needs a date like 'in 6 months' or 24/12/2026."); return "break"
+                elif mode == "fixed":
+                    per_pay = a
+                    target = _money(b_v)
+                    if target is None:
+                        err_v.set("Target must be a number or blank."); return "break"
+                elif mode == "ongoing":
+                    per_pay = a
+                else:
+                    target = a
+                    per_pay = _money(b_v)
+                    if per_pay is None:
+                        err_v.set("Max per pay must be a number or blank."); return "break"
+                pf.clear()
+                if self._name_exists("fund", name):
+                    err_v.set(f"You already have {name} — remove it below or use a different name."); return "break"
+                self.state.funds.append(Fund(name, target, td, "important", 0.0, mode, per_pay, "fund"))
+                self.save_state()
+                try:
+                    self.refresh_funds()
+                except Exception:
+                    pass
+                _render()
+                return "break"
+            for w in [name_e, a_e] + ([b_e] if b_e else []):
+                w.bind("<Return>", _add)
+            def _guide_pick(e, amt, ex):
+                pf.update({"fund_name": e["name"].split(" (")[0], "fund_amount": f"{amt:.0f}",
+                           "fund_b": ex["date"].isoformat() if ex.get("date") else ""})
+                wz["fund_mode"] = ex["mode"]
+                _render()
+            btns = tk.Frame(form, bg=UI_SURFACE)
+            btns.grid(row=1, column=0, columnspan=5, sticky="e", pady=(SP_XS, 0))
+            ttk.Button(btns, text="Not sure? Cost guide", style="Ghost.TButton",
+                       command=lambda: self._show_cost_guide("fund", on_pick=_guide_pick)).pack(side="left", padx=(0, SP_SM))
+            ttk.Button(btns, text="Add fund", style="Accent.TButton", command=_add).pack(side="left")
+            (a_e if pf.get("fund_name") else name_e).focus_set()
+
+            rows = []
+            for i, f in enumerate(self.state.funds):
+                def _rm(i=i):
+                    del self.state.funds[i]
+                    self.save_state()
+                    try:
+                        self.refresh_funds()
+                    except Exception:
+                        pass
+                    _render()
+                rows.append((UI_SAPPHIRE, f.name, self._fund_mode_summary(f),
+                             f"${self.engine.fund_recommended_allocation(f):,.0f}/pay", _rm))
+            _item_list(content, rows, 150)
+            tk.Label(content, text=f"Set-asides need about ${_per_pay_funds():,.2f} per pay right now.",
+                     bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w", pady=(SP_SM, 0))
+            _nav(next_text=("Next  →" if self.state.funds else "Skip for now  →"))
+
+        # ── Step 3: goals ────────────────────────────────────────────────
+        def _render_goals():
+            _gerald("Long-term goals. A target is optional — some pots just grow. "
+                    "'% of surplus' flexes with each pay, so it never squeezes you.", "normal")
+            _head("What are you building toward?",
+                  "Goals are funded after bills and set-asides, from what's left of each pay.")
+            pf = wz["prefill"]
+
+            def _pick(item):
+                pf.update({"goal_name": item[0], "goal_target": f"{item[2]:.0f}" if item[2] else ""})
+                wz["goal_mode"] = item[1]
+                _render()
+            _chip_row(content, self._SETUP_GOAL_CHIPS, _pick)
+            modes = tk.Frame(content, bg=UI_SURFACE)
+            modes.pack(fill="x", pady=(0, SP_XS))
+            for key, lbl in (("fixed", "Fixed $ each pay"), ("percent_surplus", "% of what's left")):
+                _chip(modes, lbl, wz["goal_mode"] == key,
+                      lambda k=key: (wz.__setitem__("goal_mode", k), _render())).pack(side="left", padx=(0, SP_XS))
+            mode = wz["goal_mode"]
+            name_v = tk.StringVar(value=pf.get("goal_name", ""))
+            val_v = tk.StringVar(value=pf.get("goal_value", "10" if mode == "percent_surplus" else ""))
+            tgt_v = tk.StringVar(value=pf.get("goal_target", ""))
+            pri_v = tk.StringVar(value=pf.get("goal_pri", "important"))
+            form = tk.Frame(content, bg=UI_SURFACE)
+            form.pack(fill="x", pady=(0, SP_XS))
+            name_e = _field(form, "Name", name_v, 20, 0)
+            val_e = _field(form, "$ per pay" if mode == "fixed" else "% of surplus", val_v, 10, 1)
+            tgt_e = _field(form, "Target $ (blank = no end)", tgt_v, 16, 2)
+            _combo(form, "Priority", pri_v, ["essential", "important", "optional"], 10, 3)
+            err_v = _err_label(content)
+
+            def _add(_e=None):
+                name = name_v.get().strip()
+                if not name:
+                    err_v.set("Give the goal a name."); name_e.focus_set(); return "break"
+                val = _money(val_v)
+                if val is None or val <= 0:
+                    err_v.set("Enter the amount or percentage per pay."); val_e.focus_set(); return "break"
+                if mode == "percent_surplus" and val > 100:
+                    err_v.set("Percent must be 100 or less."); return "break"
+                tgt = _money(tgt_v)
+                if tgt is None:
+                    err_v.set("Target must be a number or blank."); return "break"
+                pf.clear()
+                if self._name_exists("goal", name):
+                    err_v.set(f"You already have a goal called {name}."); return "break"
+                self.state.goals.append(Goal(name, tgt, None, self._goal_priority_from_word(pri_v.get()), 0.0, mode, val))
+                self.save_state()
+                try:
+                    self.refresh_goals()
+                except Exception:
+                    pass
+                _render()
+                return "break"
+            for w in (name_e, val_e, tgt_e):
+                w.bind("<Return>", _add)
+            def _guide_pick(e, amt, ex):
+                pays_two_years = max(1, int(round(730 / self.engine.current_cycle_days())))
+                pf.update({"goal_name": e["name"], "goal_target": f"{amt:.0f}", "goal_value": f"{amt / pays_two_years:.0f}",
+                           "goal_pri": "essential" if e.get("calc") == "emergency" else "important"})
+                wz["goal_mode"] = "fixed"
+                _render()
+            btns = tk.Frame(form, bg=UI_SURFACE)
+            btns.grid(row=1, column=0, columnspan=5, sticky="e", pady=(SP_XS, 0))
+            ttk.Button(btns, text="Not sure? Cost guide", style="Ghost.TButton",
+                       command=lambda: self._show_cost_guide("goal", on_pick=_guide_pick)).pack(side="left", padx=(0, SP_SM))
+            ttk.Button(btns, text="Add goal", style="Accent.TButton", command=_add).pack(side="left")
+            (val_e if pf.get("goal_name") else name_e).focus_set()
+
+            rows = []
+            for i, g in enumerate(self.state.goals):
+                def _rm(i=i):
+                    del self.state.goals[i]
+                    self.save_state()
+                    try:
+                        self.refresh_goals()
+                    except Exception:
+                        pass
+                    _render()
+                right = f"${g.value:,.0f}/pay" if g.mode == "fixed" else f"{g.value:g}% surplus"
+                rows.append((UI_EMERALD, g.name, self._goal_mode_summary(g) + f" · priority {g.priority}", right, _rm))
+            _item_list(content, rows, 160)
+            pct = sum(g.value for g in self.state.goals if g.mode != "fixed")
+            tk.Label(content,
+                     text=f"Goals take ${_per_pay_goals_fixed():,.2f} per pay"
+                          + (f" plus {pct:g}% of whatever is left." if pct else "."),
+                     bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w", pady=(SP_SM, 0))
+            _nav(next_text=("Next  →" if self.state.goals else "Skip for now  →"))
+
+        # ── Step 4: accounts ─────────────────────────────────────────────
+        def _render_accounts():
+            _gerald("Name your accounts the way your bank shows them. The transfer plan after every pay "
+                    "uses these names, so it reads like instructions.", "normal")
+            _head("Where will the money live?",
+                  "Most banks let you open extra accounts for free. One account for everything works too — "
+                  "just give them all the same name and the plan becomes 'keep track of' instead of 'move'.")
+            descs = {
+                "spending": ("Everyday / spending", "Pay lands here. Safe to Spend stays here.", UI_EMERALD),
+                "bills": ("Bills", "Direct debits, rent and subscriptions come out of here.", UI_RUBY),
+                "savings": ("Savings", "Set-asides and goals build up here.", UI_SAPPHIRE),
+                "invest": ("Investing (optional)", "Brokerage or high-interest account.", UI_AMETHYST),
+            }
+            grid = tk.Frame(content, bg=UI_SURFACE)
+            grid.pack(fill="x")
+            grid.columnconfigure(1, weight=1)
+            first = None
+            for r, k in enumerate(self._ACCOUNT_ORDER):
+                title, d, color = descs[k]
+                tk.Frame(grid, bg=color, width=4).grid(row=r, column=0, sticky="ns", padx=(0, SP_MD), pady=(0, SP_MD))
+                txt = tk.Frame(grid, bg=UI_SURFACE)
+                txt.grid(row=r, column=1, sticky="ew", pady=(0, SP_MD))
+                tk.Label(txt, text=title, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w")
+                tk.Label(txt, text=d, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+                e = ttk.Entry(grid, textvariable=wz["acct"][k], width=30, font=FONT_BODY)
+                e.grid(row=r, column=2, sticky="e", pady=(0, SP_MD))
+                if first is None:
+                    first = e
+            if first is not None:
+                first.focus_set()
+            # Where statements come from — one click later from the Statements tab
+            bl = tk.Frame(content, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM, highlightthickness=1, highlightbackground=UI_BORDER)
+            bl.pack(fill="x", pady=(SP_SM, 0))
+            tk.Label(bl, text="Where do you download statements? (optional)", bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w")
+            tk.Label(bl, text="Saved as a one-click button on the Statements tab. Only the address is kept — never a login.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=wrap_w - 40, justify="left").pack(anchor="w")
+            blr = tk.Frame(bl, bg=UI_SURFACE2)
+            blr.pack(fill="x", pady=(SP_XS, 0))
+            wz_preset = ttk.Combobox(blr, state="readonly", width=24, values=[p_[0] for p_ in BANK_PRESETS])
+            wz_preset.pack(side="left")
+            wz_url = ttk.Entry(blr, width=38)
+            wz_url.pack(side="left", padx=(SP_SM, SP_SM), fill="x", expand=True)
+            saved_var = tk.StringVar(value=(", ".join(l.get("name", "") for l in self.state.bank_links) + " saved ✓") if self.state.bank_links else "")
+
+            def _wz_preset(_e=None):
+                sel = next((p_ for p_ in BANK_PRESETS if p_[0] == wz_preset.get()), None)
+                wz_url.delete(0, tk.END)
+                if sel and sel[1]:
+                    wz_url.insert(0, sel[1])
+            wz_preset.bind("<<ComboboxSelected>>", _wz_preset)
+
+            def _wz_add():
+                nm = (wz_preset.get() or "My bank").split(" (")[0]
+                ok, msg = self._add_bank_link(nm, wz_url.get(), 14)
+                self._show_toast(msg, "success" if ok else "warning", 3000)
+                if ok:
+                    saved_var.set(", ".join(l.get("name", "") for l in self.state.bank_links) + " saved ✓")
+                    wz_url.delete(0, tk.END); wz_preset.set("")
+            ttk.Button(blr, text="Add link", style="Secondary.TButton", command=_wz_add).pack(side="left")
+            tk.Label(bl, textvariable=saved_var, bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_CAPTION).pack(anchor="w")
+
+            def _next():
+                for k, v in wz["acct"].items():
+                    if not v.get().strip():
+                        self._show_toast("Every account needs a name (even if it's the same one).", "warning")
+                        return
+                    self.state.transfer_accounts.setdefault(k, {})["name"] = v.get().strip()
+                self.save_state()
+                _go(1)
+            _nav(next_cmd=_next)
+
+        # ── Step 5: your money right now ─────────────────────────────────
+        def _alloc_rows():
+            rows = []
+            for i, b in sorted(enumerate(self.state.bills), key=lambda x: x[1].due_date):
+                rows.append(("bill:%d" % i, "Bill", b.name, f"${b.amount:,.0f} due {b.due_date:%d %b}", b.amount, b.current_saved, UI_RUBY))
+            for i, f in enumerate(self.state.funds):
+                cap = f.target_amount if (f.target_amount > 0 and f.contribution_mode != "ongoing") else 0.0
+                rows.append(("fund:%d" % i, "Fund", f.name, self._fund_mode_summary(f), cap, f.current_saved, UI_SAPPHIRE))
+            for i, g in enumerate(self.state.goals):
+                rows.append(("goal:%d" % i, "Goal", g.name, self._goal_mode_summary(g), g.target_amount, g.current_saved, UI_EMERALD))
+            rows.append(("invest", "Invest", "Investing", "already invested or ready to", 0.0, float(acct_bal.get("invest", 0.0)), UI_AMETHYST))
+            return rows
+
+        def _alloc_values() -> Dict[str, float]:
+            out = {}
+            for k, v in wz["alloc"].items():
+                val = _money(v)
+                out[k] = val if val is not None else 0.0
+            return out
+
+        def _render_money_now():
+            _gerald("Here's the important one. Don't worry about which account it's in today — tell me "
+                    "the total, then decide where you want each dollar to live.", "wink")
+            _head("How much do you have right now, in total?",
+                  "Add up every everyday and savings account (not super, not debt). Then put it where you want it.")
+            top = tk.Frame(content, bg=UI_SURFACE)
+            top.pack(fill="x", pady=(0, SP_SM))
+            tk.Label(top, text="Total cash  $", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(side="left")
+            total_e = ttk.Entry(top, textvariable=wz["total"], width=12, font=FONT_SUBHEADING)
+            total_e.pack(side="left", padx=(SP_XS, SP_LG))
+            left_v = tk.StringVar()
+            left_lbl = tk.Label(top, textvariable=left_v, bg=UI_SURFACE, fg=UI_EMERALD, font=FONT_BODY_BOLD)
+            left_lbl.pack(side="left")
+
+            rows = _alloc_rows()
+            for key, _k, _n, _d, _cap, saved, _c in rows:
+                if key not in wz["alloc"]:
+                    wz["alloc"][key] = tk.StringVar(value=f"{saved:.2f}" if saved else "")
+            area = tk.Frame(content, bg=UI_SURFACE)
+            area.pack(fill="both", expand=True)
+            inner, bind_wheel = self._overlay_scroll_area(area, 330)
+            inner.columnconfigure(2, weight=1)
+            for r, (key, kind, name, detail, cap, saved, color) in enumerate(rows):
+                tk.Frame(inner, bg=color, width=3).grid(row=r, column=0, sticky="ns", pady=(0, SP_XS))
+                tk.Label(inner, text=kind, bg=UI_SURFACE, fg=color, font=FONT_CAPTION_BOLD, width=6,
+                         anchor="w").grid(row=r, column=1, sticky="w", padx=(SP_SM, 0), pady=(0, SP_XS))
+                txt = tk.Frame(inner, bg=UI_SURFACE)
+                txt.grid(row=r, column=2, sticky="ew", pady=(0, SP_XS))
+                tk.Label(txt, text=name[:36], bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY, anchor="w").pack(anchor="w")
+                tk.Label(txt, text=detail, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, anchor="w").pack(anchor="w")
+                cell = tk.Frame(inner, bg=UI_SURFACE)
+                cell.grid(row=r, column=3, sticky="e", padx=(0, SP_SM), pady=(0, SP_XS))
+                tk.Label(cell, text="$", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_BODY).pack(side="left")
+                ttk.Entry(cell, textvariable=wz["alloc"][key], width=10, font=FONT_BODY, justify="right").pack(side="left")
+            bind_wheel(inner)
+            spend_name = wz["acct"]["spending"].get().strip() or "Everyday Account"
+
+            def _upd(*_a):
+                total = _money(wz["total"])
+                if total is None:
+                    left_v.set("Total must be a number"); left_lbl.configure(fg=UI_RUBY); return
+                left = round(total - sum(_alloc_values().values()), 2)
+                if left < 0:
+                    left_v.set(f"Over by ${-left:,.2f} — you've placed more than you have")
+                    left_lbl.configure(fg=UI_RUBY)
+                else:
+                    left_v.set(f"${left:,.2f} left as spending money in {spend_name}")
+                    left_lbl.configure(fg=UI_EMERALD)
+            wz["total"].trace_add("write", _upd)
+            for v in wz["alloc"].values():
+                v.trace_add("write", _upd)
+            _upd()
+            tk.Label(content,
+                     text="Tip: cover bills due before your next pay, top buffers up to their level, and "
+                          "leave the rest as spending money. Whatever you don't place stays as Safe to Spend.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_SM, 0))
+            if not wz["total"].get():
+                total_e.focus_set()
+
+            def _suggest():
+                total = _money(wz["total"]) or 0.0
+                pool = total
+                horizon = date.today() + timedelta(days=self.engine.current_cycle_days() + 2)
+                for i, b in sorted(enumerate(self.state.bills), key=lambda x: x[1].due_date):
+                    take = round(min(b.amount, pool), 2) if b.due_date <= horizon else 0.0
+                    wz["alloc"]["bill:%d" % i].set(f"{take:.2f}" if take else "")
+                    pool -= take
+                for i, f in enumerate(self.state.funds):
+                    take = round(min(f.target_amount, pool), 2) if (f.contribution_mode == "buffer" and f.target_amount > 0) else 0.0
+                    wz["alloc"]["fund:%d" % i].set(f"{take:.2f}" if take else "")
+                    pool -= take
+                for i, _g in enumerate(self.state.goals):
+                    wz["alloc"]["goal:%d" % i].set("")
+                wz["alloc"]["invest"].set("")
+                self._show_toast("Suggested: bills due before next pay, buffers to level, rest as spending.", "info", 4000)
+
+            def _next():
+                total = _money(wz["total"])
+                if total is None or total < 0:
+                    self._show_toast("Enter your total cash as a number.", "warning"); return
+                if any(_money(v) is None for v in wz["alloc"].values()):
+                    self._show_toast("One of the amounts isn't a number.", "warning"); return
+                if sum(_alloc_values().values()) > total + 0.005:
+                    self._show_toast("You've placed more than you have — reduce something first.", "warning"); return
+                _go(1)
+            _nav(next_cmd=_next, extra=lambda br: ttk.Button(br, text="Suggest a split", style="Secondary.TButton",
+                                                                command=_suggest).pack(side="left", padx=(SP_SM, 0)))
+
+        # ── Step 6: plan ─────────────────────────────────────────────────
+        def _planned_balances() -> Dict[str, float]:
+            vals = _alloc_values()
+            total = _money(wz["total"]) or 0.0
+            bills = sum(v for k, v in vals.items() if k.startswith("bill:"))
+            savings = sum(v for k, v in vals.items() if k.startswith("fund:") or k.startswith("goal:"))
+            invest = vals.get("invest", 0.0)
+            spending = max(round(total - bills - savings - invest, 2), 0.0)
+            return {"spending": round(spending, 2), "bills": round(bills, 2),
+                    "savings": round(savings, 2), "invest": round(invest, 2)}
+
+        def _render_plan():
+            _gerald("That's your plan. Move the money below, and from here it's one pay at a time — "
+                    "log it, check the split, make the transfers.", "wink")
+            _head("Your set-up transfers", "Do these once in your bank app so each account holds what it should.")
+            bal = _planned_balances()
+            colors = {"spending": UI_EMERALD, "bills": UI_RUBY, "savings": UI_SAPPHIRE, "invest": UI_AMETHYST}
+            for k in self._ACCOUNT_ORDER:
+                amt = bal[k]
+                if amt <= 0 and k != "spending":
+                    continue
+                row = tk.Frame(content, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER)
+                row.pack(fill="x", pady=2)
+                tk.Frame(row, bg=colors[k], width=3).pack(side="left", fill="y")
+                inner = tk.Frame(row, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM)
+                inner.pack(side="left", fill="x", expand=True)
+                verb = "KEEP" if k == "spending" else "HOLD"
+                tk.Label(inner, text=verb, bg=UI_SURFACE2, fg=colors[k], font=FONT_CAPTION_BOLD, width=5, anchor="w").pack(side="left")
+                tk.Label(inner, text=f"${amt:,.2f}", bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SUBHEADING).pack(side="left", padx=(SP_SM, SP_MD))
+                tk.Label(inner, text=f"in  {wz['acct'][k].get().strip()}", bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_BODY).pack(side="left")
+                ttk.Button(row, text="Copy", style="Ghost.TButton",
+                           command=lambda a=amt, n=wz['acct'][k].get().strip(): self._copy_amount_to_clipboard(a, n)).pack(side="right", padx=SP_SM)
+            tk.Label(content, text=f"Safe to Spend starts at ${bal['spending']:,.2f}.", bg=UI_SURFACE,
+                     fg=UI_EMERALD, font=FONT_BODY_BOLD).pack(anchor="w", pady=(SP_SM, 0))
+
+            # Per-pay preview (no state change — allocate_pay scratch fields restored)
+            income = _money(wz["income"]) or float(self.state.income_baseline or 0.0)
+            if income > 0 and (self.state.bills or self.state.funds or self.state.goals):
+                snap = (self.state.last_safe_to_spend, self.state.last_reserved_total, self.state.last_fund_total,
+                        self.state.last_goal_total, self.state.last_invest_total)
+                try:
+                    res = self.engine.allocate_pay(income, apply=False,
+                                                   investment_mode=self.rule_settings["investment_mode"],
+                                                   investment_value=self.rule_settings["investment_value"],
+                                                   minimum_buffer=self.rule_settings["minimum_buffer"])
+                finally:
+                    (self.state.last_safe_to_spend, self.state.last_reserved_total, self.state.last_fund_total,
+                     self.state.last_goal_total, self.state.last_invest_total) = snap
+                box = tk.Frame(content, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM, highlightthickness=1, highlightbackground=UI_BORDER)
+                box.pack(fill="x", pady=(SP_MD, 0))
+                tk.Label(box, text=f"EACH ${income:,.0f} PAY, ROUGHLY", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+                parts = [("Bills", res["bill_total"], UI_RUBY), ("Set-asides", res["fund_total"], UI_SAPPHIRE),
+                         ("Goals", res["goal_total"], UI_EMERALD), ("Invest", res["invest_total"], UI_AMETHYST),
+                         ("Safe to Spend", res["safe_to_spend"], UI_TEXT_BRIGHT)]
+                line = tk.Frame(box, bg=UI_SURFACE2)
+                line.pack(fill="x", pady=(SP_XS, 0))
+                for lbl, amt, color in parts:
+                    cell = tk.Frame(line, bg=UI_SURFACE2)
+                    cell.pack(side="left", padx=(0, SP_LG))
+                    tk.Label(cell, text=lbl, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+                    tk.Label(cell, text=f"${amt:,.0f}", bg=UI_SURFACE2, fg=color, font=FONT_SUBHEADING).pack(anchor="w")
+                if res["safe_to_spend"] <= 0:
+                    tk.Label(box, text="Heads up: this plan uses the whole pay. You'll want to trim something or it won't hold.",
+                             bg=UI_SURFACE2, fg=UI_GOLD, font=FONT_CAPTION, wraplength=wrap_w - 40, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+            tk.Label(content,
+                     text="What happens next: on pay day, log the pay on the Income tab, review the split, move the money. "
+                          "Import a bank statement any time to keep spending honest. Everything here can be edited under Setup.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_MD, 0))
+            _nav(next_text="Finish  ✓", next_cmd=_finish)
+
+        def _finish():
+            vals = _alloc_values()
+            bal = _planned_balances()
+            self.state.pay_frequency = wz["freq"].get()
+            inc = _money(wz["income"])
+            if inc and not self.state.incomes:
+                self.state.income_baseline = inc
+            for k, v in wz["acct"].items():
+                if v.get().strip():
+                    self.state.transfer_accounts.setdefault(k, {})["name"] = v.get().strip()
+            for key, val in vals.items():
+                kind, _, idx = key.partition(":")
+                if kind == "bill" and idx.isdigit() and int(idx) < len(self.state.bills):
+                    b = self.state.bills[int(idx)]
+                    b.current_saved = round(min(val, b.amount), 2)
+                elif kind == "fund" and idx.isdigit() and int(idx) < len(self.state.funds):
+                    f = self.state.funds[int(idx)]
+                    cap = f.target_amount if (f.target_amount > 0 and f.contribution_mode != "ongoing") else float("inf")
+                    f.current_saved = round(min(val, cap), 2)
+                elif kind == "goal" and idx.isdigit() and int(idx) < len(self.state.goals):
+                    g = self.state.goals[int(idx)]
+                    cap = g.target_amount if g.target_amount > 0 else float("inf")
+                    g.current_saved = round(min(val, cap), 2)
+            self.state.account_balances = bal
+            self.state.starting_position_set = True
+            self.state.starting_position_date = date.today().isoformat()
+            if not self.state.incomes:
+                self.state.last_safe_to_spend = bal["spending"]
+                self.state.last_reserved_total = bal["bills"]
+                self.state.last_fund_total = round(sum(v for k, v in vals.items() if k.startswith("fund:")), 2)
+                self.state.last_goal_total = round(sum(v for k, v in vals.items() if k.startswith("goal:")), 2)
+                self.state.last_invest_total = bal["invest"]
+            self.save_state()
+            _close()
+            self.refresh_all_views()
+            self._show_toast("Money plan saved — Today now shows where you stand.", "success", 4000)
+            if on_done:
+                on_done()
+
+        def _render():
+            _clear()
+            i = wz["idx"]
+            step_var.set(f"Step {i + 1} of {TOTAL} · {self._SETUP_STEP_TITLES[i]}")
+            dots = tk.Frame(content, bg=UI_SURFACE)
+            dots.pack(fill="x", pady=(0, SP_SM))
+            for n in range(TOTAL):
+                tk.Label(dots, text="●", bg=UI_SURFACE, fg=UI_ACCENT if n <= i else UI_BORDER,
+                         font=FONT_CAPTION_BOLD).pack(side="left", padx=(0, 4))
+            [_render_rhythm, _render_bills, _render_funds, _render_goals,
+             _render_accounts, _render_money_now, _render_plan][i]()
+
+        _render()
+
+    # ── Pay allocation editor ────────────────────────────────────────────────
     def _log_pay_and_allocate(self, amount: float, pay_date: date, pay_source: str):
+        """Entry point for every 'log a pay' path. Shows the editable split first
+        unless the user turned that off on the Income tab."""
+        review = bool(self.state.ui_prefs.get("pay.review_allocation", True))
+        has_lines = bool(self.state.bills or self.state.funds or self.state.goals) \
+            or float(self.rule_settings.get("investment_value", 0) or 0) > 0
+        if review and has_lines:
+            self._show_allocation_editor(amount, pay_date, pay_source)
+        else:
+            self._commit_pay(amount, pay_date, pay_source)
+
+    def _show_allocation_editor(self, amount: float, pay_date: date, pay_source: str):
+        """Calculated split, every line editable, Safe to Spend updates live."""
+        snapshot = (self.state.last_safe_to_spend, self.state.last_reserved_total,
+                    self.state.last_fund_total, self.state.last_goal_total,
+                    self.state.last_invest_total)
+
+        def _restore_snapshot():
+            (self.state.last_safe_to_spend, self.state.last_reserved_total,
+             self.state.last_fund_total, self.state.last_goal_total,
+             self.state.last_invest_total) = snapshot
+
+        def _calc(overrides=None):
+            return self.engine.allocate_pay(
+                amount, apply=False, overrides=overrides,
+                investment_mode=self.rule_settings["investment_mode"],
+                investment_value=self.rule_settings["investment_value"],
+                minimum_buffer=self.rule_settings["minimum_buffer"])
+
+        base = _calc()
+        scrim, content, btn_row, step_var, close = self._overlay_card("PAY DAY — YOUR SPLIT", 740, 680)
+        self._allocation_editor_scrim = scrim
+        try:
+            date_str = pay_date.strftime("%d %b %Y")
+        except Exception:
+            date_str = str(pay_date)
+        step_var.set(f"{date_str} · {pay_source}")
+
+        top = tk.Frame(content, bg=UI_SURFACE)
+        top.pack(fill="x")
+        tk.Label(top, text=f"${amount:,.2f}", bg=UI_SURFACE, fg=UI_TEXT_BRIGHT,
+                 font=FONT_DISPLAY_LG).pack(side="left")
+        tk.Label(top, text="  calculated for you — change any line, the rest adjusts.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL).pack(side="left", pady=(10, 0))
+
+        rows: List[dict] = []
+        for idx, name, actual, rec in base["bill_breakdown"]:
+            rows.append({"key": f"bill:{idx}", "kind": "Bill", "name": name, "rec": rec, "color": UI_RUBY})
+        for idx, name, actual, rec in base["fund_breakdown"]:
+            rows.append({"key": f"fund:{idx}", "kind": "Fund", "name": name, "rec": rec, "color": UI_SAPPHIRE})
+        for idx, name, actual, target in base["goal_breakdown"]:
+            rows.append({"key": f"goal:{idx}", "kind": "Goal", "name": name, "rec": target, "color": UI_EMERALD})
+        rows.append({"key": "invest", "kind": "Invest", "name": "Investing", "rec": base["invest_total"], "color": UI_AMETHYST})
+
+        area = tk.Frame(content, bg=UI_SURFACE)
+        area.pack(fill="both", expand=True, pady=(SP_MD, 0))
+        inner, bind_wheel = self._overlay_scroll_area(area, 360)
+        inner.columnconfigure(2, weight=1)
+        hdr = ("", "", "Line", "Suggested", "This pay")
+        for c, h in enumerate(hdr):
+            if h:
+                tk.Label(inner, text=h.upper(), bg=UI_SURFACE, fg=UI_MUTED,
+                         font=FONT_CAPTION_BOLD, anchor="w" if c < 3 else "e").grid(
+                    row=0, column=c, sticky="ew", padx=(0, SP_SM), pady=(0, SP_XS))
+        for r, row in enumerate(rows, start=1):
+            tk.Frame(inner, bg=row["color"], width=3).grid(row=r, column=0, sticky="ns", pady=(0, SP_XS))
+            tk.Label(inner, text=row["kind"], bg=UI_SURFACE, fg=row["color"], font=FONT_CAPTION_BOLD,
+                     width=6, anchor="w").grid(row=r, column=1, sticky="w", padx=(SP_SM, 0), pady=(0, SP_XS))
+            tk.Label(inner, text=row["name"][:40], bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY,
+                     anchor="w").grid(row=r, column=2, sticky="ew", pady=(0, SP_XS))
+            tk.Label(inner, text=f"${row['rec']:,.2f}", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL,
+                     anchor="e", width=11).grid(row=r, column=3, sticky="e", padx=(0, SP_SM), pady=(0, SP_XS))
+            initial = next((a for i, n, a, _ in base["bill_breakdown"] + base["fund_breakdown"] + base["goal_breakdown"]
+                            if f"{row['key'].split(':')[0]}:{i}" == row["key"]), base["invest_total"])
+            var = tk.StringVar(value=f"{initial:.2f}")
+            row["var"] = var
+            e = ttk.Entry(inner, textvariable=var, width=11, font=FONT_BODY, justify="right")
+            e.grid(row=r, column=4, sticky="e", padx=(0, SP_SM), pady=(0, SP_XS))
+            row["entry"] = e
+            row["note"] = tk.Label(inner, text="", bg=UI_SURFACE, fg=UI_GOLD, font=FONT_CAPTION, anchor="w")
+            row["note"].grid(row=r, column=5, sticky="w", pady=(0, SP_XS))
+        bind_wheel(inner)
+
+        totals = tk.Frame(content, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM,
+                          highlightthickness=1, highlightbackground=UI_BORDER)
+        totals.pack(fill="x", pady=(SP_MD, 0))
+        tot_vars = {k: tk.StringVar() for k in ("bills", "savings", "invest", "safe")}
+        for n, (lbl, key, color) in enumerate([("Bills", "bills", UI_RUBY), ("Savings", "savings", UI_SAPPHIRE),
+                                                ("Invest", "invest", UI_AMETHYST), ("Safe to Spend", "safe", UI_EMERALD)]):
+            cell = tk.Frame(totals, bg=UI_SURFACE2)
+            cell.grid(row=0, column=n, sticky="ew")
+            totals.columnconfigure(n, weight=1, uniform="alloc_tot")
+            tk.Label(cell, text=lbl.upper(), bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+            tk.Label(cell, textvariable=tot_vars[key], bg=UI_SURFACE2, fg=color,
+                     font=FONT_SUBHEADING if key != "safe" else FONT_DISPLAY_SM).pack(anchor="w")
+        warn_var = tk.StringVar()
+        tk.Label(content, textvariable=warn_var, bg=UI_SURFACE, fg=UI_GOLD, font=FONT_CAPTION,
+                 wraplength=680, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+
+        def _overrides() -> dict:
+            out = {}
+            for row in rows:
+                val = self._parse_money_field(row["var"].get())
+                if val is None:
+                    continue
+                if abs(val - row["rec"]) >= 0.005:
+                    out[row["key"]] = val
+            return out
+
+        def _recalc(*_a):
+            ov = _overrides()
+            res = _calc(ov)
+            tot_vars["bills"].set(f"${res['bill_total']:,.2f}")
+            tot_vars["savings"].set(f"${res['fund_total'] + res['goal_total']:,.2f}")
+            tot_vars["invest"].set(f"${res['invest_total']:,.2f}")
+            tot_vars["safe"].set(f"${res['safe_to_spend']:,.2f}")
+            actual_by_key = {f"bill:{i}": a for i, _, a, _ in res["bill_breakdown"]}
+            actual_by_key.update({f"fund:{i}": a for i, _, a, _ in res["fund_breakdown"]})
+            actual_by_key.update({f"goal:{i}": a for i, _, a, _ in res["goal_breakdown"]})
+            actual_by_key["invest"] = res["invest_total"]
+            over = 0.0
+            for row in rows:
+                val = self._parse_money_field(row["var"].get())
+                if val is None:
+                    row["note"].configure(text="not a number", fg=UI_RUBY)
+                    continue
+                got = actual_by_key.get(row["key"], val)
+                if got + 0.005 < val:
+                    row["note"].configure(text=f"only ${got:,.2f} left", fg=UI_GOLD)
+                    over += val - got
+                else:
+                    row["note"].configure(text="")
+            warn_var.set("Some lines exceed what's left of the pay — they're capped at the remaining amount."
+                         if over > 0 else "")
+        for row in rows:
+            row["var"].trace_add("write", _recalc)
+        _recalc()
+
+        def _reset():
+            for row in rows:
+                row["var"].set(f"{row['rec']:.2f}")
+
+        def _cancel():
+            _restore_snapshot()
+            close()
+            self._show_toast("Pay not logged.", "info")
+
+        def _apply():
+            if any(self._parse_money_field(r["var"].get()) is None for r in rows):
+                self._show_toast("Fix the highlighted line first.", "warning")
+                return
+            ov = _overrides()
+            close()
+            self._commit_pay(amount, pay_date, pay_source, overrides=ov)
+
+        ttk.Button(btn_row, text="Cancel", style="Ghost.TButton", command=_cancel).pack(side="left")
+        ttk.Button(btn_row, text="Reset to calculated", style="Secondary.TButton",
+                   command=_reset).pack(side="left", padx=(SP_SM, 0))
+        ttk.Button(btn_row, text="Apply this split  ✓", style="Primary.TButton",
+                   command=_apply).pack(side="right")
+        scrim.bind("<Escape>", lambda _e: (_cancel(), "break")[1])
+        scrim.bind("<Return>", lambda _e: (_apply(), "break")[1])
+        if rows and rows[0].get("entry") is not None:
+            rows[0]["entry"].focus_set()
+            rows[0]["entry"].selection_range(0, tk.END)
+
+    def _commit_pay(self, amount: float, pay_date: date, pay_source: str, overrides: Optional[dict] = None):
         self._capture_personality_snapshot()
+        pre_ratios = self.game_engine.pre_pay_ratios()
+        saved_before = {("fund", f.name): f.current_saved for f in self.state.funds}
+        saved_before.update({("goal", x.name): x.current_saved for x in self.state.goals})
         self.state.incomes.append(IncomeEntry(amount, pay_date, pay_source))
-        self.last_allocation = self.engine.allocate_pay(amount, apply=True, investment_mode=self.rule_settings["investment_mode"], investment_value=self.rule_settings["investment_value"], minimum_buffer=self.rule_settings["minimum_buffer"])
+        self.last_allocation = self.engine.allocate_pay(
+            amount, apply=True, overrides=overrides,
+            investment_mode=self.rule_settings["investment_mode"],
+            investment_value=self.rule_settings["investment_value"],
+            minimum_buffer=self.rule_settings["minimum_buffer"])
         self.game_engine._update_income_baseline(amount)
         self.last_game_result = self.game_engine.score_pay(amount, self.last_allocation)
+        self.game_engine.mark_real_action()
+        fs_bonus = self.game_engine.final_stretch_bonus(pre_ratios)
+        if fs_bonus:
+            self.last_game_result["points"] = self.last_game_result.get("points", 0) + fs_bonus
+            self.last_game_result.setdefault("breakdown", []).append(f"Final stretch — a fund/goal ≥80% funded got money: +{fs_bonus}")
+        _al = self.last_allocation
+        _reserved = _al.get("bill_total", 0) + _al.get("fund_total", 0) + _al.get("goal_total", 0) + _al.get("invest_total", 0)
+        self.game_engine.pact_note_pay(amount, _reserved)
+        self.game_engine.update_record("savings_rate", (_reserved / amount) if amount else 0)
+        self.game_engine.update_record("reserved_total", self.game_engine._reserved_total())
+        _items = [(k, o, o.current_saved - saved_before.get((k, o.name), o.current_saved))
+                  for k, coll in (("fund", self.state.funds), ("goal", self.state.goals)) for o in coll]
+        self.after(900, lambda it=_items: self._after_money_change(it))
         self.refresh_all_views()
         self.save_state()
         card = self.game_engine.draw_fortune_card()
@@ -18484,6 +25906,11 @@ class BudgetApp(tk.Tk):
         self.refresh_game_text()
         self._show_pay_day_ritual(amount, pay_date, pay_source,
                                    self.last_allocation, self.last_game_result, card)
+        g = self.state.game
+        if self.last_game_result.get("level_up"):
+            self.after(500, lambda: self._celebrate(f"Level {g.level}!", f"{self.rank_name_for_level(g.level, g.prestige_level)} — keep the rhythm", UI_EMERALD))
+        elif g.streak_pays in (3, 5, 10, 15, 20, 25, 30):
+            self.after(500, lambda n=g.streak_pays: self._celebrate(f"{n}-pay streak!", "Gems earned — don't break it now", UI_GOLD))
 
     def delete_selected_income(self):
         sel = self.income_tree.selection()
@@ -18504,13 +25931,25 @@ class BudgetApp(tk.Tk):
                          duration=6000, action_label="Undo", action_cb=_undo)
 
     def import_pdf_transactions(self):
-        path_str = filedialog.askopenfilename(title="Select bank PDF", filetypes=[("PDF Files", "*.pdf")])
+        last_dir = self.state.ui_prefs.get("import.last_dir") or ""
+        path_str = filedialog.askopenfilename(
+            title="Select a bank statement (PDF, CSV or OFX)",
+            initialdir=last_dir if isinstance(last_dir, str) and last_dir and Path(last_dir).is_dir() else None,
+            filetypes=[("Bank statements", "*.pdf *.csv *.ofx *.qfx"), ("PDF", "*.pdf"),
+                       ("CSV", "*.csv"), ("OFX / QFX", "*.ofx *.qfx"), ("All files", "*.*")])
         if not path_str:
             return
+        self.state.ui_prefs["import.last_dir"] = str(Path(path_str).parent)
+        self._import_statement_path(path_str)
+
+    def _import_statement_path(self, path_str: str):
+        """Import one statement file (PDF / CSV / OFX) — from the dialog, a
+        dropped download, or Gerald."""
         try:
-            imported, qa = self.importer.extract_transactions(Path(path_str))
+            imported, qa = self.importer.extract_any(Path(path_str))
         except Exception as exc:
             messagebox.showerror("Import failed", str(exc)); return
+        self.state.last_import_date = date.today().isoformat()
         # Month rollover detection: if this PDF spans into a new calendar month, score the previous month automatically.
         if imported:
             months = sorted({tx.tx_date.strftime("%Y-%m") for tx in imported})
@@ -18531,7 +25970,8 @@ class BudgetApp(tk.Tk):
         # Deduplicate against committed history AND current preview batch
         existing = {t.fingerprint for t in self.state.transactions}
         preview_fps = {t.fingerprint for t in self.latest_import}
-        new_rows = [t for t in imported if t.fingerprint not in existing and t.fingerprint not in preview_fps]
+        new_rows = [self.matcher.match(t) for t in imported
+                    if t.fingerprint not in existing and t.fingerprint not in preview_fps]
         skipped = len(imported) - len(new_rows)
         self.latest_import.extend(new_rows)
         self.latest_import_qa = qa + ([f"Skipped {skipped} duplicate(s) already imported or in preview"] if skipped else [])
@@ -18539,7 +25979,12 @@ class BudgetApp(tk.Tk):
         self.game_engine.complete_challenge("import")
         self.refresh_transactions_tab()
         self.refresh_game_text()
-        self._show_toast(f"Imported {len(self.latest_import)} preview rows", "success")
+        if new_rows:
+            self.game_engine.mark_real_action()
+            # Auto-matched above; now walk the user through whatever is left.
+            self.after(200, lambda: self.open_review_queue(after_import=True))
+        else:
+            self._show_toast("Nothing new — every transaction in that PDF was already imported.", "info", 4000)
 
     def auto_score_month_end(self, year: int, month: int):
         ym = f"{year:04d}-{month:02d}"
@@ -18607,6 +26052,8 @@ class BudgetApp(tk.Tk):
 
     def _post_transaction_verification_refresh(self):
         verified_count = sum(1 for t in self.latest_import if t.user_verified)
+        if verified_count >= 1:
+            self.game_engine.complete_challenge("verify_1")
         if verified_count >= 3:
             completed = self.game_engine.complete_challenge("verify_3")
             if completed:
@@ -18757,36 +26204,710 @@ class BudgetApp(tk.Tk):
             return
         unverified_out = [t for t in self.latest_import if t.direction() == "out" and not t.user_verified]
         if unverified_out:
-            messagebox.showwarning("Verification needed", "There are still outgoing transactions that are not user-verified.")
+            self._show_toast(f"{len(unverified_out)} outgoing row{'s' if len(unverified_out) != 1 else ''} still unsorted — Sort Unrecognised first.",
+                             "warning", duration=5000, action_label="Sort", action_cb=self.open_review_queue)
             return
         count = len(self.latest_import)
-        if not messagebox.askyesno("Commit Transactions", f"Commit {count} transactions to your history? This cannot be undone."):
-            return
         pending_set = set(self.state.pending_income_confirmations)
         new_pending = []
-        for tx in self.latest_import:
-            if tx.matched_type == "income" and tx.fingerprint and tx.fingerprint not in pending_set:
+        batch = list(self.latest_import)
+        hist_pays = self._log_historical_pays(batch)
+        for tx in batch:
+            if tx.matched_type == "income" and tx.fingerprint and tx.fingerprint not in pending_set and not self._is_historical(tx):
                 new_pending.append(tx.fingerprint)
                 pending_set.add(tx.fingerprint)
-        self.state.transactions.extend(self.latest_import)
+        self.state.transactions.extend(batch)
         if new_pending:
             self.state.pending_income_confirmations.extend(new_pending)
+        # Bills whose linked transaction just landed are paid — roll them forward.
+        bills_paid = self._auto_pay_bills_from_batch(batch)
+        self.game_engine.mark_real_action()
+        self._last_commit = {"txs": batch, "pending_added": list(new_pending), "bills_paid": bills_paid,
+                             "incomes_added": hist_pays, "when": datetime.now()}
+        n_hist = sum(1 for t_ in batch if self._is_historical(t_))
+        if n_hist:
+            self.after(700, lambda b=batch: self._statement_setup_offer(b))
         self.latest_import = []
         self.latest_import_qa = []
         self.refresh_all_views(); self.save_state()
+        self._show_page("today")
+        msg = f"Committed {count} transactions."
+        if bills_paid:
+            msg += f" Marked paid: {', '.join(b.name for b, _, _ in bills_paid[:3])}{' …' if len(bills_paid) > 3 else ''}."
         if new_pending:
-            self._show_toast(f"Committed {count} transactions. {len(new_pending)} income to confirm on Today.", "success", 4500)
-        else:
-            self._show_toast(f"Committed {count} transactions.", "success")
+            msg += f" {len(new_pending)} pay to confirm below."
+        if hist_pays:
+            msg += f" {len(hist_pays)} past pay{'s' if len(hist_pays) != 1 else ''} recorded as history (not allocated)."
+        self._show_toast(msg, "success", duration=10000, action_label="Undo", action_cb=self._undo_last_commit)
 
     def clear_current_import(self):
         self.latest_import = []; self.latest_import_qa = []; self.transaction_insights = {"recurring": [], "unusual": [], "new_merchants": []}; self.refresh_transactions_tab()
 
-    def add_advanced_rule(self):
+    # ── Review Queue — step-through sorting of unrecognised merchants ─────────
+    _CONFIDENT_FALLBACK_CATEGORIES = ("", "general", "uncategorized", "uncategorised")
+
+    def _tx_suggestion_is_confident(self, tx: TransactionRecord) -> bool:
+        """True when the auto-matcher produced a specific guess worth one-click accepting."""
+        if tx.matched_type in ("linked_bill", "linked_fund") and tx.matched_target:
+            return True
+        if tx.matched_type in ("transfer", "ignore"):
+            return True
+        return (tx.category or "").strip().lower() not in self._CONFIDENT_FALLBACK_CATEGORIES
+
+    def _review_queue_groups(self) -> List[dict]:
+        """Group unverified outgoing preview rows by merchant so each merchant is sorted once."""
+        groups: Dict[str, dict] = {}
+        order: List[str] = []
+        for idx, tx in enumerate(self.latest_import):
+            if tx.direction() != "out" or tx.user_verified:
+                continue
+            key = merchant_group_key(tx.description)
+            g = groups.get(key)
+            if g is None:
+                g = {
+                    "key": key,
+                    "name": extract_merchant_name(tx.description),
+                    "sample": normalize_desc_text(tx.description),
+                    "indexes": [],
+                    "total": 0.0,
+                    "first": tx.tx_date,
+                    "last": tx.tx_date,
+                    "suggested_type": tx.matched_type if tx.matched_type != "unmatched" else "discretionary",
+                    "suggested_target": tx.matched_target or "",
+                    "suggested_category": tx.category or "",
+                    "confident": self._tx_suggestion_is_confident(tx),
+                }
+                groups[key] = g
+                order.append(key)
+            g["indexes"].append(idx)
+            g["total"] += tx.money_out
+            g["first"] = min(g["first"], tx.tx_date)
+            g["last"] = max(g["last"], tx.tx_date)
+        result = [groups[k] for k in order]
+        # Unknown merchants first (they need the most attention), then by spend.
+        result.sort(key=lambda g: (g["confident"], -g["total"]))
+        return result
+
+    def _infer_recurring_bill(self, group: dict, txs: List[TransactionRecord]) -> dict:
+        """Guess name / amount / cadence / next due for a merchant group, using
+        the batch plus any committed history for the same merchant."""
+        key = group.get("key", "")
+        history = [t for t in self.state.transactions if t.direction() == "out" and merchant_group_key(t.description) == key]
+        allt = sorted({(t.tx_date, round(t.amount(), 2)) for t in list(txs) + history})
+        dates = [d for d, _ in allt]
+        amount = allt[-1][1] if allt else float(group.get("total", 0.0))
+        freq, why = "monthly", "Only one charge seen, so I've assumed monthly — change it if it's not."
+        if len(dates) >= 2:
+            gaps = sorted((dates[i + 1] - dates[i]).days for i in range(len(dates) - 1))
+            gap = gaps[len(gaps) // 2]
+            if 5 <= gap <= 9:
+                freq = "weekly"
+            elif 12 <= gap <= 16:
+                freq = "fortnightly"
+            elif 26 <= gap <= 35:
+                freq = "monthly"
+            elif 84 <= gap <= 97:
+                freq = "quarterly"
+            elif 350 <= gap <= 380:
+                freq = "yearly"
+            why = f"{len(dates)} charges seen, about every {gap} days → {freq}. Last one ${amount:,.2f} on {dates[-1]:%d %b}."
+        last = dates[-1] if dates else date.today()
+        due = self.engine.next_due_date(last, freq)
+        while due < date.today():
+            nxt = self.engine.next_due_date(due, freq)
+            if nxt <= due:
+                break
+            due = nxt
+        return {"name": group.get("name", "New bill"), "amount": float(amount), "frequency": freq, "due": due, "why": why}
+
+    def _unsorted_outgoing_count(self) -> int:
+        return sum(1 for t in self.latest_import if t.direction() == "out" and not t.user_verified)
+
+    def _ensure_merchant_rule(self, group: dict, matched_type: str, target: str, category: str):
+        """Create/update a 'contains' rule for this merchant so future imports auto-sort."""
+        keyword = (group.get("key") or "").strip().lower()
+        if len(keyword) < 4 or keyword == "unknown merchant":
+            return
+        for rule in self.state.advanced_match_rules:
+            if rule.rule_type == "contains" and rule.keyword.strip().lower() == keyword:
+                rule.matched_type = matched_type
+                rule.matched_target = target
+                rule.category = category
+                rule.is_active = True
+                return
+        self.state.advanced_match_rules.append(AdvancedMatchRule(
+            rule_name=f"Auto: {group.get('name') or keyword}",
+            rule_type="contains",
+            keyword=keyword,
+            amount=0.0,
+            matched_type=matched_type,
+            matched_target=target,
+            category=category,
+            is_active=True,
+        ))
+
+    def _assign_review_group(self, group: dict, matched_type: str, target: str,
+                             category: str, remember: bool) -> int:
+        """Apply one classification to every transaction in a merchant group."""
+        cat = self.register_expense_category(category) if category else ""
+        changed = 0
+        for idx in group["indexes"]:
+            if idx >= len(self.latest_import):
+                continue
+            tx = self.latest_import[idx]
+            tx.matched_type = matched_type
+            tx.matched_target = target
+            tx.category = cat or self.matcher.classify_category(tx.description, tx.direction())
+            tx.confidence = "manual"
+            tx.needs_review = False
+            tx.user_verified = True
+            if remember:
+                self.remember_verified_transaction(tx)
+            changed += 1
+        if remember and changed:
+            self._ensure_merchant_rule(group, matched_type, target, cat)
+        if changed:
+            self._fire_trigger("verify_1")
+        return changed
+
+    def accept_review_suggestions(self) -> int:
+        """Verify every unverified outgoing row whose auto-match is a specific guess."""
+        changed = 0
+        for tx in self.latest_import:
+            if tx.direction() != "out" or tx.user_verified:
+                continue
+            if not self._tx_suggestion_is_confident(tx):
+                continue
+            tx.needs_review = False
+            tx.user_verified = True
+            tx.confidence = "manual"
+            self.remember_verified_transaction(tx)
+            changed += 1
+        return changed
+
+    def open_review_queue(self, *, after_import: bool = False):
+        """Step-through overlay: overview of what wasn't recognised, then one card
+        per merchant where a single click assigns a category and moves on."""
+        if not self.latest_import:
+            self._show_toast("Import a bank statement first.", "warning")
+            return
+        if any(t.matched_type == "unmatched" for t in self.latest_import):
+            self.latest_import = [self.matcher.match(tx) for tx in self.latest_import]
+        groups = self._review_queue_groups()
+        if not groups:
+            if after_import:
+                self._show_toast("Every transaction was recognised — commit when ready.", "success", 4000)
+            else:
+                self._show_toast("Nothing left to sort — commit when ready.", "success")
+            self.refresh_transactions_tab()
+            return
+        old = getattr(self, "_review_queue_scrim", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except tk.TclError:
+                pass
+
+        scrim = tk.Frame(self, bg=UI_HERO)
+        scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
+        scrim.lift()
+        self._review_queue_scrim = scrim
+
+        CARD_W, CARD_H = 720, 680
         try:
-            amount = float(self.rule_amount_entry.get() or 0)
-        except ValueError:
-            messagebox.showerror("Invalid amount", "Rule amount must be numeric."); return
+            if self.winfo_height() > 200:
+                CARD_H = min(CARD_H, max(440, self.winfo_height() - 32))
+                CARD_W = min(CARD_W, max(400, self.winfo_width() - 32))
+        except tk.TclError:
+            pass
+        outer = tk.Frame(scrim, bg=UI_ACCENT, padx=1, pady=1)
+        outer.place(relx=0.5, rely=0.5, anchor="center")
+        card = tk.Frame(outer, bg=UI_SURFACE, width=CARD_W, height=CARD_H)
+        card.pack()
+        card.pack_propagate(False)
+
+        header = tk.Frame(card, bg=UI_SURFACE)
+        header.pack(fill="x", padx=SP_XL, pady=(SP_LG, 0))
+        tk.Label(header, text="SORT YOUR SPENDING", bg=UI_SURFACE, fg=UI_ACCENT,
+                 font=FONT_CAPTION_BOLD).pack(side="left")
+        step_var = tk.StringVar(value="")
+        tk.Label(header, textvariable=step_var, bg=UI_SURFACE, fg=UI_MUTED,
+                 font=FONT_SMALL).pack(side="right")
+        progress = tk.Canvas(card, height=4, bg=UI_BORDER, highlightthickness=0)
+        progress.pack(fill="x", padx=SP_XL, pady=(SP_SM, 0))
+
+        btn_row = tk.Frame(card, bg=UI_SURFACE)
+        btn_row.pack(fill="x", side="bottom", padx=SP_XL, pady=(0, SP_LG))
+        content = tk.Frame(card, bg=UI_SURFACE)
+        content.pack(fill="both", expand=True, padx=SP_XL, pady=SP_LG)
+
+        st = {
+            "idx": -1,               # -1 = overview, len(groups) = done screen
+            "skipped": [],
+            "touched": False,
+            "remember": tk.BooleanVar(value=True),
+            "bill_form": None,       # merchant key whose inline "recurring bill" form is open
+        }
+
+        def _finish():
+            if st["touched"]:
+                self.game_engine.mark_real_action()
+                self.refresh_category_combo()
+                self.refresh_rules_tab()
+                self.transaction_insights = self.matcher.summarize_import_insights(self.latest_import)
+                self._post_transaction_verification_refresh()
+            try:
+                scrim.destroy()
+            except tk.TclError:
+                pass
+            self._review_queue_scrim = None
+
+        def _draw_progress(_e=None):
+            progress.delete("all")
+            w = progress.winfo_width()
+            if w <= 1:
+                w = CARD_W - 2 * SP_XL
+            total = max(len(groups), 1)
+            pos = max(0, min(st["idx"], total))
+            progress.create_rectangle(0, 0, w * (pos / total), 4, fill=UI_ACCENT, outline="")
+
+        progress.bind("<Configure>", _draw_progress)
+
+        def _clear():
+            for w in content.winfo_children():
+                w.destroy()
+            for w in btn_row.winfo_children():
+                w.destroy()
+
+        def _go(delta: int):
+            st["idx"] = max(-1, min(len(groups), st["idx"] + delta))
+            _render()
+
+        def _describe(g: dict) -> str:
+            t = g["suggested_type"]
+            if t == "linked_bill":
+                return f"Bill · {g['suggested_target']}"
+            if t == "linked_fund":
+                return f"Fund · {g['suggested_target']}"
+            if t == "transfer":
+                return "Transfer between your accounts"
+            if t == "ignore":
+                return "Ignore"
+            return g["suggested_category"] or "General"
+
+        def _choose(matched_type: str, target: str, category: str):
+            i = st["idx"]
+            if not (0 <= i < len(groups)):
+                return
+            g = groups[i]
+            self._assign_review_group(g, matched_type, target, category, st["remember"].get())
+            g["assigned"] = True
+            if g in st["skipped"]:
+                st["skipped"].remove(g)
+            st["touched"] = True
+            _go(1)
+
+        def _skip():
+            i = st["idx"]
+            if 0 <= i < len(groups) and not groups[i].get("assigned"):
+                if groups[i] not in st["skipped"]:
+                    st["skipped"].append(groups[i])
+            _go(1)
+
+        def _accept_current():
+            i = st["idx"]
+            if 0 <= i < len(groups) and groups[i]["confident"]:
+                g = groups[i]
+                _choose(g["suggested_type"], g["suggested_target"], g["suggested_category"])
+
+        def _accept_all():
+            n = self.accept_review_suggestions()
+            st["touched"] = True
+            groups[:] = self._review_queue_groups()
+            self._show_toast(f"Accepted {n} suggested match(es).", "success")
+            st["idx"] = 0
+            _render()
+
+        def _restart_with_skipped():
+            groups[:] = self._review_queue_groups()
+            st["skipped"] = []
+            st["idx"] = 0
+            _render()
+
+        # ── Overview ──────────────────────────────────────────────────────
+        def _render_overview():
+            plural = "s" if len(groups) != 1 else ""
+            step_var.set(f"{len(groups)} merchant{plural} to sort")
+            recognised = sum(1 for t in self.latest_import
+                             if t.direction() == "out" and t.user_verified)
+            incoming = sum(1 for t in self.latest_import if t.direction() == "in")
+            suggested = [g for g in groups if g["confident"]]
+            unknown = [g for g in groups if not g["confident"]]
+
+            tk.Label(content, text=f"{len(self.latest_import)} transactions imported",
+                     bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_MD).pack(anchor="w")
+            sub = f"{recognised} outgoing already recognised from past imports."
+            if incoming:
+                sub += f"  {incoming} incoming — confirmed on Today after commit."
+            tk.Label(content, text=sub, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL,
+                     wraplength=CARD_W - 2 * SP_XL, justify="left").pack(anchor="w", pady=(2, SP_MD))
+
+            stats = tk.Frame(content, bg=UI_SURFACE)
+            stats.pack(fill="x", pady=(0, SP_MD))
+            for n, (lbl, val, color) in enumerate([
+                ("RECOGNISED", f"{recognised}", UI_EMERALD),
+                ("SUGGESTED", f"{len(suggested)}", UI_SAPPHIRE),
+                ("UNKNOWN", f"{len(unknown)}", UI_GOLD),
+            ]):
+                box = tk.Frame(stats, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM,
+                               highlightthickness=1, highlightbackground=UI_BORDER)
+                box.grid(row=0, column=n, sticky="ew", padx=(0 if n == 0 else SP_SM, 0))
+                stats.columnconfigure(n, weight=1, uniform="rqstats")
+                tk.Label(box, text=lbl, bg=UI_SURFACE2, fg=UI_MUTED,
+                         font=FONT_CAPTION_BOLD).pack(anchor="w")
+                tk.Label(box, text=val, bg=UI_SURFACE2, fg=color,
+                         font=FONT_STAT_NUM).pack(anchor="w")
+
+            tk.Label(content, text="Needs your attention", bg=UI_SURFACE, fg=UI_TEXT,
+                     font=FONT_BODY_BOLD).pack(anchor="w", pady=(0, SP_XS))
+            list_host = tk.Frame(content, bg=UI_SURFACE)
+            list_host.pack(fill="x")
+            MAX_ROWS = 8
+            for g in groups[:MAX_ROWS]:
+                row = tk.Frame(list_host, bg=UI_SURFACE2,
+                               highlightthickness=1, highlightbackground=UI_BORDER)
+                row.pack(fill="x", pady=(0, 2))
+                color = UI_SAPPHIRE if g["confident"] else UI_GOLD
+                tk.Frame(row, bg=color, width=3).pack(side="left", fill="y")
+                inner = tk.Frame(row, bg=UI_SURFACE2, padx=SP_MD, pady=SP_XS + 1)
+                inner.pack(side="left", fill="x", expand=True)
+                n = len(g["indexes"])
+                tk.Label(inner, text=g["name"][:28], bg=UI_SURFACE2, fg=UI_TEXT,
+                         font=FONT_BODY_BOLD, anchor="w", width=24).pack(side="left")
+                tk.Label(inner, text=f"{n}x  ${g['total']:,.2f}", bg=UI_SURFACE2,
+                         fg=UI_MUTED, font=FONT_SMALL, anchor="w", width=13).pack(side="left")
+                tag = f"Suggested: {_describe(g)}" if g["confident"] else "Unknown"
+                tk.Label(inner, text=tag, bg=UI_SURFACE2, fg=color,
+                         font=FONT_SMALL_BOLD, anchor="e").pack(side="right")
+            if len(groups) > MAX_ROWS:
+                tk.Label(list_host, text=f"+{len(groups) - MAX_ROWS} more",
+                         bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(2, 0))
+
+            tk.Label(content,
+                     text="Next: one card per merchant. Click a category and it moves on. "
+                          "Press Enter to accept a suggestion.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION,
+                     wraplength=CARD_W - 2 * SP_XL, justify="left").pack(anchor="w", pady=(SP_MD, 0))
+
+            ttk.Button(btn_row, text="Later", style="Ghost.TButton",
+                       command=_finish).pack(side="left")
+            ttk.Button(btn_row, text="Start sorting  →", style="Primary.TButton",
+                       command=lambda: _go(1)).pack(side="right")
+            if suggested:
+                sp = "s" if len(suggested) != 1 else ""
+                ttk.Button(btn_row, text=f"Accept {len(suggested)} suggestion{sp}",
+                           style="Accent.TButton", command=_accept_all).pack(side="right", padx=(0, SP_SM))
+
+        # ── One merchant card ─────────────────────────────────────────────
+        def _render_card(i: int):
+            g = groups[i]
+            step_var.set(f"{i + 1} of {len(groups)}")
+            confident = g["confident"]
+            color = UI_SAPPHIRE if confident else UI_GOLD
+            caption = "SUGGESTED MATCH" if confident else "NOT RECOGNISED"
+            if g.get("assigned"):
+                caption, color = "SORTED — CHANGE?", UI_EMERALD
+            tk.Label(content, text=caption, bg=UI_SURFACE, fg=color,
+                     font=FONT_CAPTION_BOLD).pack(anchor="w")
+            tk.Label(content, text=g["name"], bg=UI_SURFACE, fg=UI_TEXT_BRIGHT,
+                     font=FONT_DISPLAY_MD).pack(anchor="w")
+            tk.Label(content, text=g["sample"][:80], bg=UI_SURFACE, fg=UI_MUTED,
+                     font=FONT_SMALL).pack(anchor="w")
+            n = len(g["indexes"])
+            if n > 1:
+                when = f"{g['first']:%d %b} – {g['last']:%d %b}"
+            else:
+                when = f"{g['first']:%d %b}"
+            plural = "s" if n != 1 else ""
+            meta_row = tk.Frame(content, bg=UI_SURFACE)
+            meta_row.pack(fill="x", pady=(2, SP_MD))
+            tk.Label(meta_row,
+                     text=f"{n} transaction{plural}  ·  ${g['total']:,.2f}  ·  {when}",
+                     bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY).pack(side="left")
+            group_txs = [self.latest_import[j] for j in g["indexes"] if j < len(self.latest_import)]
+            is_flagged = bool(group_txs) and all(getattr(t, "flagged", False) for t in group_txs)
+
+            def _toggle_flag(g=g, txs=group_txs, now=is_flagged):
+                self._set_transactions_flag(txs, not now, g["name"])
+                st["touched"] = True
+                if not now:
+                    self._show_toast(f"Flagged {g['name']} — you'll be reminded to look into it.",
+                                     "info", 3500)
+                _render()
+            tk.Button(meta_row,
+                      text="🚩 Flagged — will nudge you to investigate" if is_flagged
+                      else "🚩 Flag to investigate later",
+                      bg=UI_DANGER_SOFT if is_flagged else UI_SURFACE2,
+                      fg=UI_RUBY if is_flagged else UI_MUTED,
+                      activebackground=UI_SURFACE_HOVER, activeforeground=UI_TEXT_BRIGHT,
+                      relief="flat", bd=0, highlightthickness=1,
+                      highlightbackground=UI_RUBY if is_flagged else UI_BORDER,
+                      font=FONT_CAPTION_BOLD, padx=SP_SM, pady=2, cursor="hand2",
+                      takefocus=0, command=_toggle_flag).pack(side="right")
+
+            if confident:
+                banner = tk.Frame(content, bg=UI_INFO_SOFT, padx=SP_MD, pady=SP_SM,
+                                  highlightthickness=1, highlightbackground=UI_SAPPHIRE)
+                banner.pack(fill="x", pady=(0, SP_MD))
+                tk.Label(banner, text=f"Suggested:  {_describe(g)}", bg=UI_INFO_SOFT,
+                         fg=UI_TEXT_BRIGHT, font=FONT_BODY_BOLD).pack(side="left")
+                ttk.Button(banner, text="✓  Looks right   (Enter)", style="Primary.TButton",
+                           command=_accept_current).pack(side="right")
+                tk.Label(content, text="…or pick something else:", bg=UI_SURFACE,
+                         fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w", pady=(0, SP_XS))
+            else:
+                tk.Label(content, text="What kind of spend is this?", bg=UI_SURFACE,
+                         fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w", pady=(0, SP_XS))
+
+            chips = tk.Frame(content, bg=UI_SURFACE)
+            chips.pack(fill="x")
+            COLS = 4
+            cats = list(self.state.expense_categories)
+            sug_cat = (g["suggested_category"] or "").lower() if g["suggested_type"] == "discretionary" else ""
+            for k, cat in enumerate(cats):
+                r, c = divmod(k, COLS)
+                sel = cat.lower() == sug_cat
+                b = tk.Button(chips, text=cat,
+                              bg=UI_ACCENT_SOFT if sel else UI_SURFACE2,
+                              fg=UI_TEXT_BRIGHT if sel else UI_TEXT,
+                              activebackground=UI_SURFACE_HOVER, activeforeground=UI_TEXT_BRIGHT,
+                              relief="flat", bd=0, highlightthickness=1,
+                              highlightbackground=UI_ACCENT if sel else UI_BORDER,
+                              font=FONT_SMALL_BOLD if sel else FONT_SMALL,
+                              padx=SP_SM, pady=SP_XS + 2, cursor="hand2", takefocus=0,
+                              command=lambda c_=cat: _choose("discretionary", "", c_))
+                b.grid(row=r, column=c, sticky="ew", padx=(0, SP_XS), pady=(0, SP_XS))
+            for c in range(COLS):
+                chips.columnconfigure(c, weight=1, uniform="rqchips")
+
+            new_row = tk.Frame(content, bg=UI_SURFACE)
+            new_row.pack(fill="x", pady=(SP_SM, 0))
+            tk.Label(new_row, text="New category:", bg=UI_SURFACE, fg=UI_MUTED,
+                     font=FONT_SMALL).pack(side="left")
+            new_var = tk.StringVar()
+            new_entry = ttk.Entry(new_row, textvariable=new_var, width=22)
+            new_entry.pack(side="left", padx=(SP_SM, SP_SM))
+
+            def _add_new(_e=None):
+                name = new_var.get().strip()
+                if name:
+                    _choose("discretionary", "", name)
+                return "break"
+            new_entry.bind("<Return>", _add_new)
+            ttk.Button(new_row, text="Add & use", command=_add_new).pack(side="left")
+
+            more = tk.Frame(content, bg=UI_SURFACE)
+            more.pack(fill="x", pady=(SP_MD, 0))
+            tk.Label(more, text="Or:", bg=UI_SURFACE, fg=UI_MUTED,
+                     font=FONT_SMALL).pack(side="left")
+            bill_names = [b.name for b in self.state.bills]
+            if bill_names:
+                bill_cb = ttk.Combobox(more, values=bill_names, state="readonly", width=18)
+                bill_cb.set("Link to a bill…")
+                bill_cb.pack(side="left", padx=(SP_SM, 0))
+
+                def _pick_bill(_e=None):
+                    name = bill_cb.get()
+                    bill = next((b for b in self.state.bills if b.name == name), None)
+                    if bill:
+                        _choose("linked_bill", bill.name, bill.category)
+                bill_cb.bind("<<ComboboxSelected>>", _pick_bill)
+            fund_names = [f.name for f in self.state.funds]
+            if fund_names:
+                fund_cb = ttk.Combobox(more, values=fund_names, state="readonly", width=18)
+                fund_cb.set("Link to a fund…")
+                fund_cb.pack(side="left", padx=(SP_SM, 0))
+
+                def _pick_fund(_e=None):
+                    name = fund_cb.get()
+                    fund = next((f for f in self.state.funds if f.name == name), None)
+                    if fund:
+                        _choose("linked_fund", fund.name, fund.category)
+                fund_cb.bind("<<ComboboxSelected>>", _pick_fund)
+            # Second line of options so the row never runs off the card
+            more2 = tk.Frame(content, bg=UI_SURFACE)
+            more2.pack(fill="x", pady=(SP_XS, 0))
+            ttk.Button(more2, text="Transfer", style="Secondary.TButton",
+                       command=lambda: _choose("transfer", "", "Transfer")).pack(side="left")
+            ttk.Button(more2, text="Ignore", style="Ghost.TButton",
+                       command=lambda: _choose("ignore", "", "Ignored")).pack(side="left", padx=(SP_SM, 0))
+
+            # "Make it a recurring bill" — seeing it on a statement is often the
+            # moment you realise you're paying for it. Infers cadence from the
+            # dates in the batch and the committed history for this merchant.
+            def _toggle_bill_form(g=g):
+                st["bill_form"] = None if st.get("bill_form") == g["key"] else g["key"]
+                _render()
+            ttk.Button(more2, text="Make it a recurring bill", style="Accent.TButton",
+                       command=_toggle_bill_form).pack(side="left", padx=(SP_MD, 0))
+            if st.get("bill_form") == g["key"]:
+                guess = self._infer_recurring_bill(g, group_txs)
+                bf = tk.Frame(content, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_RUBY, padx=SP_MD, pady=SP_SM)
+                bf.pack(fill="x", pady=(SP_SM, 0))
+                tk.Label(bf, text="NEW RECURRING BILL", bg=UI_SURFACE2, fg=UI_RUBY, font=FONT_CAPTION_BOLD).pack(anchor="w")
+                tk.Label(bf, text=guess["why"], bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=600, justify="left").pack(anchor="w", pady=(0, SP_XS))
+                row = tk.Frame(bf, bg=UI_SURFACE2)
+                row.pack(fill="x")
+                bn_v = tk.StringVar(value=guess["name"]); ba_v = tk.StringVar(value=f"{guess['amount']:.2f}")
+                bfreq_v = tk.StringVar(value=guess["frequency"]); bdue_v = tk.StringVar(value=guess["due"].isoformat())
+                bpri_v = tk.StringVar(value="important")
+                for col, (lbl, var, width) in enumerate([("Name", bn_v, 15), ("Amount $", ba_v, 8), ("Next due", bdue_v, 10)]):
+                    cell = tk.Frame(row, bg=UI_SURFACE2)
+                    cell.grid(row=0, column=col, sticky="w", padx=(0, SP_SM))
+                    tk.Label(cell, text=lbl, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+                    ttk.Entry(cell, textvariable=var, width=width, font=FONT_BODY).pack(anchor="w")
+                for col, (lbl, var, vals, width) in enumerate([("Every", bfreq_v, ["weekly", "fortnightly", "monthly", "quarterly", "yearly"], 10),
+                                                              ("Priority", bpri_v, ["essential", "important", "optional"], 9)], start=3):
+                    cell = tk.Frame(row, bg=UI_SURFACE2)
+                    cell.grid(row=0, column=col, sticky="w", padx=(0, SP_SM))
+                    tk.Label(cell, text=lbl, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+                    ttk.Combobox(cell, textvariable=var, values=vals, state="readonly", width=width).pack(anchor="w")
+                err_b = tk.StringVar()
+                tk.Label(bf, textvariable=err_b, bg=UI_SURFACE2, fg=UI_RUBY, font=FONT_CAPTION).pack(anchor="w")
+
+                def _create_bill(g=g):
+                    name = bn_v.get().strip()
+                    amt = self._parse_money_field(ba_v.get())
+                    due = self._parse_smart_date(bdue_v.get().strip()) if bdue_v.get().strip() else None
+                    if not name:
+                        err_b.set("Give the bill a name."); return
+                    if amt is None or amt <= 0:
+                        err_b.set("Amount must be a number above zero."); return
+                    if due is None:
+                        err_b.set("Next due needs a date like 15/11/2026."); return
+                    if any(b.name.lower() == name.lower() for b in self.state.bills):
+                        err_b.set("A bill with that name already exists — use 'Link to a bill' instead."); return
+                    cat = g["suggested_category"] if g["suggested_type"] == "discretionary" and g["suggested_category"] not in ("", "General") else "Bills"
+                    bill = Bill(name, amt, due, bfreq_v.get(), bpri_v.get(), cat, 0.0)
+                    self.state.bills.append(bill)
+                    try:
+                        self.refresh_bills()
+                    except Exception:
+                        pass
+                    st["bill_form"] = None
+                    self._show_toast(f"Added recurring bill '{name}' — ${amt:,.2f} {bfreq_v.get()}, next due {due:%d %b}.", "success", 5000)
+                    _choose("linked_bill", bill.name, cat)
+                ttk.Button(bf, text="Create bill & link these  ✓", style="Primary.TButton", command=_create_bill).pack(anchor="e", pady=(SP_XS, 0))
+
+            tk.Checkbutton(content, text="Remember this merchant so future imports sort automatically",
+                           variable=st["remember"], bg=UI_SURFACE, fg=UI_MUTED,
+                           activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                           selectcolor=UI_SURFACE2, font=FONT_CAPTION, bd=0,
+                           highlightthickness=0, cursor="hand2").pack(anchor="w", pady=(SP_MD, 0))
+
+            ttk.Button(btn_row, text="←  Back", command=lambda: _go(-1)).pack(side="left")
+            ttk.Button(btn_row, text="Finish later", style="Ghost.TButton",
+                       command=_finish).pack(side="left", padx=(SP_SM, 0))
+            ttk.Button(btn_row, text="Skip  →", style="Secondary.TButton",
+                       command=_skip).pack(side="right")
+
+        # ── Done ──────────────────────────────────────────────────────────
+        def _render_done():
+            remaining = self._unsorted_outgoing_count()
+            verified = sum(1 for t in self.latest_import
+                           if t.direction() == "out" and t.user_verified)
+            step_var.set("Done")
+            tk.Label(content, text="ALL DONE" if remaining == 0 else "ALMOST THERE",
+                     bg=UI_SURFACE, fg=UI_EMERALD if remaining == 0 else UI_GOLD,
+                     font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_LG, 0))
+            rp = "s" if remaining != 1 else ""
+            tk.Label(content,
+                     text="Everything is sorted ✓" if remaining == 0
+                     else f"{remaining} transaction{rp} still unsorted",
+                     bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_MD).pack(anchor="w")
+            skipped_n = len(st["skipped"])
+            vp = "s" if verified != 1 else ""
+            summary = f"{verified} outgoing transaction{vp} verified"
+            if skipped_n:
+                summary += f"  ·  {skipped_n} merchant{'s' if skipped_n != 1 else ''} skipped"
+            flagged_n = len({extract_merchant_name(t.description) for t in self.latest_import
+                             if getattr(t, "flagged", False)})
+            if flagged_n:
+                summary += f"  ·  🚩 {flagged_n} flagged for follow-up (see Today)"
+            tk.Label(content, text=summary, bg=UI_SURFACE, fg=UI_MUTED,
+                     font=FONT_BODY).pack(anchor="w", pady=(SP_XS, SP_LG))
+            if st["remember"].get() and st["touched"]:
+                tk.Label(content,
+                         text="Merchants you sorted were saved as rules, so next month's statement "
+                              "will sort them for you.",
+                         bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL,
+                         wraplength=CARD_W - 2 * SP_XL, justify="left").pack(anchor="w")
+            if remaining == 0:
+                tk.Label(content,
+                         text="Commit this batch to add it to your history and update the spending charts.",
+                         bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL,
+                         wraplength=CARD_W - 2 * SP_XL, justify="left").pack(anchor="w", pady=(SP_MD, 0))
+                ttk.Button(btn_row, text="Commit now  ✓", style="Primary.TButton",
+                           command=lambda: (_finish(), self.commit_imported_transactions())).pack(side="right")
+            else:
+                tk.Label(content,
+                         text="You can sort the rest now, or later from the Transactions tab. "
+                              "Unsorted rows block the commit.",
+                         bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL,
+                         wraplength=CARD_W - 2 * SP_XL, justify="left").pack(anchor="w", pady=(SP_MD, 0))
+                ttk.Button(btn_row, text="Sort the rest  →", style="Primary.TButton",
+                           command=_restart_with_skipped).pack(side="right")
+            ttk.Button(btn_row, text="Back to table", style="Ghost.TButton",
+                       command=_finish).pack(side="left")
+
+        def _render():
+            _clear()
+            if not groups:
+                st["idx"] = 0
+                _render_done()
+            elif st["idx"] < 0:
+                _render_overview()
+            elif st["idx"] >= len(groups):
+                _render_done()
+            else:
+                _render_card(st["idx"])
+            _draw_progress()
+            scrim.focus_set()
+
+        def _on_enter(_e=None):
+            if not groups or st["idx"] >= len(groups):
+                _finish()
+            elif st["idx"] < 0:
+                _go(1)
+            else:
+                _accept_current()
+            return "break"
+
+        def _on_escape(_e=None):
+            _finish()
+            return "break"
+
+        def _on_right(_e=None):
+            if st["idx"] >= 0:
+                _skip()
+            else:
+                _go(1)
+            return "break"
+
+        def _on_left(_e=None):
+            _go(-1)
+            return "break"
+
+        scrim.bind("<Return>", _on_enter)
+        scrim.bind("<Escape>", _on_escape)
+        scrim.bind("<Right>", _on_right)
+        scrim.bind("<Left>", _on_left)
+        _render()
+
+    def add_advanced_rule(self):
+        amount = self._parse_money_field(self.rule_amount_entry.get())
+        if amount is None:
+            self._show_toast("Rule amount must be a number (or blank).", "warning"); return
         self.state.advanced_match_rules.append(AdvancedMatchRule(
             self.rule_name_entry.get().strip() or "Unnamed Rule",
             self.rule_type_combo.get(),
@@ -18802,10 +26923,9 @@ class BudgetApp(tk.Tk):
     def update_selected_rule(self):
         sel = self.rules_tree.selection()
         if not sel: return
-        try:
-            amount = float(self.rule_amount_entry.get() or 0)
-        except ValueError:
-            messagebox.showerror("Invalid amount", "Rule amount must be numeric."); return
+        amount = self._parse_money_field(self.rule_amount_entry.get())
+        if amount is None:
+            self._show_toast("Rule amount must be a number (or blank).", "warning"); return
         self.state.advanced_match_rules[int(sel[0])] = AdvancedMatchRule(
             self.rule_name_entry.get().strip() or "Unnamed Rule",
             self.rule_type_combo.get(),
@@ -18844,17 +26964,29 @@ class BudgetApp(tk.Tk):
         self.rule_type_combo.set("contains")
         self.rule_match_type_combo.set("discretionary")
 
-    def add_bill(self):
+    def _bill_from_form(self, exclude_idx: Optional[int] = None) -> Optional[Bill]:
+        name = self.bill_name.get().strip()
+        if not name:
+            self._show_toast("Give the bill a name.", "warning"); return None
+        if self._name_exists("bill", name, exclude_idx):
+            self._show_toast(f"You already have a bill called {name} — edit it in the Plan instead.", "warning"); return None
         due = self._parse_smart_date(self.bill_due.get())
         if due is None:
-            messagebox.showerror("Invalid date", "Enter a date like 2026-05-01, 15/05/2026, 'next friday', 'in 2 weeks', or 'end of month'.")
+            self._show_toast("Due date: try 15/11/2026, '15th', 'next friday' or a chip below the field.", "warning"); return None
+        amt = self._parse_money_field(self.bill_amount.get())
+        saved = self._parse_money_field(self.bill_saved.get())
+        if amt is None or amt <= 0:
+            self._show_toast("Amount must be a number above zero (e.g. 1,200 or $85.50).", "warning"); return None
+        if saved is None:
+            self._show_toast("'Already saved' must be a number or blank.", "warning"); return None
+        return Bill(name, amt, due, self.bill_frequency.get(), self.bill_priority.get(), "bill", saved)
+
+    def add_bill(self):
+        bill = self._bill_from_form()
+        if bill is None:
             return
-        try:
-            bill = Bill(self.bill_name.get().strip(), float(self.bill_amount.get()), due, self.bill_frequency.get(), self.bill_priority.get(), "bill", float(self.bill_saved.get() or 0))
-            self.state.bills.append(bill)
-        except ValueError:
-            messagebox.showerror("Invalid entry", "Check bill values."); return
-        self.clear_bill_form(); self.refresh_bills(); self.save_state()
+        self.state.bills.append(bill)
+        self.clear_bill_form(); self.refresh_bills(); self.refresh_today_tab(); self.save_state()
         def _undo():
             if bill in self.state.bills:
                 self.state.bills.remove(bill)
@@ -18866,15 +26998,11 @@ class BudgetApp(tk.Tk):
     def update_selected_bill(self):
         sel = self.bill_tree.selection()
         if not sel: return
-        due = self._parse_smart_date(self.bill_due.get())
-        if due is None:
-            messagebox.showerror("Invalid date", "Enter a date like 2026-05-01, 15/05/2026, 'next friday', 'in 2 weeks', or 'end of month'.")
+        bill = self._bill_from_form(exclude_idx=int(sel[0]))
+        if bill is None:
             return
-        try:
-            self.state.bills[int(sel[0])] = Bill(self.bill_name.get().strip(), float(self.bill_amount.get()), due, self.bill_frequency.get(), self.bill_priority.get(), "bill", float(self.bill_saved.get() or 0))
-        except ValueError:
-            messagebox.showerror("Invalid entry", "Check bill values."); return
-        self.clear_bill_form(); self.refresh_bills(); self.save_state()
+        self.state.bills[int(sel[0])] = bill
+        self.clear_bill_form(); self.refresh_bills(); self.refresh_today_tab(); self.save_state()
 
     def delete_selected_bill(self):
         sel = self.bill_tree.selection()
@@ -18900,20 +27028,68 @@ class BudgetApp(tk.Tk):
         if not sel: return
         self._mark_bill_paid_with_undo(self.state.bills[int(sel[0])])
 
-    def add_fund(self):
-        raw_td = self.fund_date.get().strip()
+    def _fund_mode_from_label(self, label: str) -> str:
+        for key, lbl in self._FUND_MODE_LABELS:
+            if lbl == label:
+                return key
+        return "auto"
+
+    def _fund_label_from_mode(self, mode: str) -> str:
+        for key, lbl in self._FUND_MODE_LABELS:
+            if key == mode:
+                return lbl
+        return self._FUND_MODE_LABELS[0][1]
+
+    def _sync_fund_form_mode(self):
+        """Relabel the fund form fields for the selected contribution mode."""
+        mode = self._fund_mode_from_label(self.fund_mode.get())
+        labels = {
+            "auto":    ("Target Amount ($)", "Per-pay Amount — calculated (leave blank)", "Target Date"),
+            "fixed":   ("Target Amount ($) — blank = no end", "Per-pay Amount ($)", "Target Date (optional)"),
+            "ongoing": ("Target — not used", "Per-pay Amount ($)", "Target Date — not used"),
+            "buffer":  ("Keep topped up to ($)", "Max per pay ($, optional)", "Target Date — not used"),
+        }[mode]
+        self._fund_target_label.configure(text=labels[0])
+        self._fund_per_pay_label.configure(text=labels[1])
+        self._fund_date_label.configure(text=labels[2])
+        self.fund_target.configure(state="disabled" if mode == "ongoing" else "normal")
+        self.fund_date.configure(state="normal" if mode in ("auto", "fixed") else "disabled")
+        self.fund_per_pay.configure(state="disabled" if mode == "auto" else "normal")
+
+    def _fund_from_form(self, exclude_idx: Optional[int] = None) -> Optional[Fund]:
+        """Build a Fund from the Setup form; shows an error and returns None if invalid."""
+        mode = self._fund_mode_from_label(self.fund_mode.get())
+        raw_td = self.fund_date.get().strip() if str(self.fund_date.cget("state")) == "normal" else ""
         td = None
         if raw_td:
             td = self._parse_smart_date(raw_td)
             if td is None:
-                messagebox.showerror("Invalid date", "Enter a date like 2026-12-01, 15/12/2026, 'next month', 'in 6 months', or leave blank.")
-                return
-        try:
-            fund = Fund(self.fund_name.get().strip(), float(self.fund_target.get()), td, self.fund_priority.get(), float(self.fund_saved.get() or 0), "auto", 0.0, "fund")
-            self.state.funds.append(fund)
-        except ValueError:
-            messagebox.showerror("Invalid entry", "Check fund values."); return
-        self.clear_fund_form(); self.refresh_funds(); self.save_state()
+                self._show_toast("Target date: try 15/12/2026, 'in 6 months' or a chip.", "warning")
+                return None
+        name = self.fund_name.get().strip()
+        if not name:
+            self._show_toast("Give the fund a name.", "warning"); return None
+        if self._name_exists("fund", name, exclude_idx):
+            self._show_toast(f"You already have {name} — edit it in the Plan instead.", "warning"); return None
+        target = self._parse_money_field(self.fund_target.get()) if mode != "ongoing" else 0.0
+        per_pay = self._parse_money_field(self.fund_per_pay.get()) if mode != "auto" else 0.0
+        saved = self._parse_money_field(self.fund_saved.get())
+        if None in (target, per_pay, saved):
+            self._show_toast("Check fund values — amounts must be numbers.", "warning"); return None
+        if mode == "auto" and target <= 0:
+            self._show_toast("'Save up by a date' needs a target amount.", "warning"); return None
+        if mode in ("fixed", "ongoing") and per_pay <= 0:
+            self._show_toast("Enter how much to put in each pay.", "warning"); return None
+        if mode == "buffer" and target <= 0:
+            self._show_toast("Enter the level to keep this fund topped up to.", "warning"); return None
+        return Fund(name, target, td, self.fund_priority.get(), saved, mode, per_pay, "fund")
+
+    def add_fund(self):
+        fund = self._fund_from_form()
+        if fund is None:
+            return
+        self.state.funds.append(fund)
+        self.clear_fund_form(); self.refresh_funds(); self.refresh_today_tab(); self.save_state()
         def _undo():
             if fund in self.state.funds:
                 self.state.funds.remove(fund)
@@ -18925,18 +27101,11 @@ class BudgetApp(tk.Tk):
     def update_selected_fund(self):
         sel = self.fund_tree.selection()
         if not sel: return
-        raw_td = self.fund_date.get().strip()
-        td = None
-        if raw_td:
-            td = self._parse_smart_date(raw_td)
-            if td is None:
-                messagebox.showerror("Invalid date", "Enter a date like 2026-12-01, 15/12/2026, 'next month', 'in 6 months', or leave blank.")
-                return
-        try:
-            self.state.funds[int(sel[0])] = Fund(self.fund_name.get().strip(), float(self.fund_target.get()), td, self.fund_priority.get(), float(self.fund_saved.get() or 0), "auto", 0.0, "fund")
-        except ValueError:
-            messagebox.showerror("Invalid entry", "Check fund values."); return
-        self.clear_fund_form(); self.refresh_funds(); self.save_state()
+        fund = self._fund_from_form(exclude_idx=int(sel[0]))
+        if fund is None:
+            return
+        self.state.funds[int(sel[0])] = fund
+        self.clear_fund_form(); self.refresh_funds(); self.refresh_today_tab(); self.save_state()
 
     def delete_selected_fund(self):
         sel = self.fund_tree.selection()
@@ -18957,13 +27126,27 @@ class BudgetApp(tk.Tk):
         self._show_toast(f"Deleted '{snapshot.name}'.", "success",
                          duration=6000, action_label="Undo", action_cb=_undo)
 
+    def _goal_from_form(self, exclude_idx: Optional[int] = None) -> Optional[Goal]:
+        name = self.goal_name.get().strip()
+        if not name:
+            self._show_toast("Give the goal a name.", "warning"); return None
+        if self._name_exists("goal", name, exclude_idx):
+            self._show_toast(f"You already have a goal called {name} — edit it in the Plan instead.", "warning"); return None
+        tgt = self._parse_money_field(self.goal_target.get())
+        val = self._parse_money_field(self.goal_value.get())
+        saved = self._parse_money_field(self.goal_saved.get())
+        if None in (tgt, val, saved):
+            self._show_toast("Check the goal amounts — numbers only (target can be blank).", "warning"); return None
+        if val <= 0:
+            self._show_toast("Enter the amount or percentage per pay.", "warning"); return None
+        return Goal(name, tgt, None, self._goal_priority_from_word(self.goal_priority.get()), saved, self.goal_mode.get(), val)
+
     def add_goal(self):
-        try:
-            goal = Goal(self.goal_name.get().strip(), float(self.goal_target.get()), None, int(self.goal_priority.get() or 3), float(self.goal_saved.get() or 0), self.goal_mode.get(), float(self.goal_value.get() or 0))
-            self.state.goals.append(goal)
-        except ValueError:
-            messagebox.showerror("Invalid entry", "Check goal values."); return
-        self.clear_goal_form(); self.refresh_goals(); self.save_state()
+        goal = self._goal_from_form()
+        if goal is None:
+            return
+        self.state.goals.append(goal)
+        self.clear_goal_form(); self.refresh_goals(); self.refresh_today_tab(); self.save_state()
         def _undo():
             if goal in self.state.goals:
                 self.state.goals.remove(goal)
@@ -18975,11 +27158,11 @@ class BudgetApp(tk.Tk):
     def update_selected_goal(self):
         sel = self.goal_tree.selection()
         if not sel: return
-        try:
-            self.state.goals[int(sel[0])] = Goal(self.goal_name.get().strip(), float(self.goal_target.get()), None, int(self.goal_priority.get() or 3), float(self.goal_saved.get() or 0), self.goal_mode.get(), float(self.goal_value.get() or 0))
-        except ValueError:
-            messagebox.showerror("Invalid entry", "Check goal values."); return
-        self.clear_goal_form(); self.refresh_goals(); self.save_state()
+        goal = self._goal_from_form(exclude_idx=int(sel[0]))
+        if goal is None:
+            return
+        self.state.goals[int(sel[0])] = goal
+        self.clear_goal_form(); self.refresh_goals(); self.refresh_today_tab(); self.save_state()
 
     def delete_selected_goal(self):
         sel = self.goal_tree.selection()
@@ -19011,26 +27194,36 @@ class BudgetApp(tk.Tk):
         sel = self.fund_tree.selection()
         if not sel: return
         f = self.state.funds[int(sel[0])]
-        self.clear_fund_form(); self.fund_name.insert(0, f.name); self.fund_target.insert(0, str(f.target_amount)); self.fund_saved.insert(0, str(f.current_saved)); self.fund_priority.set(f.priority)
-        if f.target_date: self.fund_date.insert(0, f.target_date.isoformat())
+        self.clear_fund_form()
+        self.fund_mode.set(self._fund_label_from_mode(f.contribution_mode)); self._sync_fund_form_mode()
+        self.fund_name.insert(0, f.name)
+        if f.target_amount > 0 and str(self.fund_target.cget("state")) == "normal":
+            self.fund_target.insert(0, str(f.target_amount))
+        if f.fixed_amount > 0 and str(self.fund_per_pay.cget("state")) == "normal":
+            self.fund_per_pay.insert(0, str(f.fixed_amount))
+        self.fund_saved.insert(0, str(f.current_saved)); self.fund_priority.set(f.priority)
+        if f.target_date and str(self.fund_date.cget("state")) == "normal": self.fund_date.insert(0, f.target_date.isoformat())
 
     def on_goal_select(self, _=None):
         sel = self.goal_tree.selection()
         if not sel: return
         g = self.state.goals[int(sel[0])]
-        self.clear_goal_form(); self.goal_name.insert(0, g.name); self.goal_target.insert(0, str(g.target_amount)); self.goal_value.insert(0, str(g.value)); self.goal_saved.insert(0, str(g.current_saved)); self.goal_mode.set(g.mode); self.goal_priority.set(str(g.priority))
+        self.clear_goal_form(); self.goal_name.insert(0, g.name); self.goal_target.insert(0, str(g.target_amount) if g.target_amount > 0 else ""); self.goal_value.insert(0, str(g.value)); self.goal_saved.insert(0, str(g.current_saved)); self.goal_mode.set(g.mode); self.goal_priority.set(self._priority_word(g.priority))
 
     def clear_bill_form(self):
         for w in [self.bill_name, self.bill_amount, self.bill_due, self.bill_saved]: w.delete(0, tk.END)
         self.bill_priority.set("essential"); self.bill_frequency.set("monthly")
 
     def clear_fund_form(self):
-        for w in [self.fund_name, self.fund_target, self.fund_date, self.fund_saved]: w.delete(0, tk.END)
+        for w in [self.fund_target, self.fund_date, self.fund_per_pay]:
+            w.configure(state="normal")
+        for w in [self.fund_name, self.fund_target, self.fund_date, self.fund_saved, self.fund_per_pay]: w.delete(0, tk.END)
         self.fund_priority.set("important")
+        self.fund_mode.set(self._FUND_MODE_LABELS[0][1]); self._sync_fund_form_mode()
 
     def clear_goal_form(self):
         for w in [self.goal_name, self.goal_target, self.goal_value, self.goal_saved]: w.delete(0, tk.END)
-        self.goal_mode.set("fixed"); self.goal_priority.set("3")
+        self.goal_mode.set("fixed"); self.goal_priority.set("important")
 
     def _recent_income_average(self, lookback_count: int = 6) -> float:
         incomes = sorted(self.state.incomes, key=lambda x: x.received_on)
@@ -19353,8 +27546,14 @@ class BudgetApp(tk.Tk):
         # ── Vision ────────────────────────────────────────────────────────────
         fund_count = len(state.funds)
         goal_count = len(state.goals)
-        fund_progress = (sum(min(1.0, f.current_saved / max(f.target_amount, 1.0)) for f in state.funds) / fund_count) if fund_count else 0.0
-        goal_progress = (sum(min(1.0, go.current_saved / max(go.target_amount, 1.0)) for go in state.goals) / goal_count) if goal_count else 0.0
+        # Open-ended funds/goals (no target) can't be "full" — count them as on
+        # track once they hold anything, so they don't drag the score down.
+        def _prog(item) -> float:
+            if not BudgetEngine.has_end_target(item):
+                return 1.0 if item.current_saved > 0 else 0.5
+            return min(1.0, item.current_saved / max(item.target_amount, 1.0))
+        fund_progress = (sum(_prog(f) for f in state.funds) / fund_count) if fund_count else 0.0
+        goal_progress = (sum(_prog(go) for go in state.goals) / goal_count) if goal_count else 0.0
         breadth = min(1.0, (fund_count + goal_count) / 8.0)
         prestige_bonus = min(0.25, (g.prestige_level or 0) * 0.08)
         has_invest = state.last_invest_total > 0
@@ -19488,6 +27687,10 @@ class BudgetApp(tk.Tk):
     # refresh
     def refresh_all_views(self):
         self.refresh_today_tab(); self.refresh_review_tab(); self.refresh_income_history(); self.refresh_transactions_tab(); self.refresh_rules_tab(); self.refresh_bills(); self.refresh_funds(); self.refresh_goals(); self.refresh_investments_text(); self.refresh_game_text(); self.refresh_collection(); self.refresh_character_tab()
+        if hasattr(self, "_homestead_canvas"):
+            self.refresh_homestead_tab()
+        if hasattr(self, "_plan_host"):
+            self.refresh_plan_tab()
 
     def rank_name_for_level(self, level: int, prestige: int = 0) -> str:
         if prestige >= 3:
@@ -19517,6 +27720,8 @@ class BudgetApp(tk.Tk):
         return icons[min(level - 1, len(icons) - 1)]
 
     def refresh_income_history(self):
+        if hasattr(self, "_quick_pay_host"):
+            self._render_quick_pay()
         for row in self.income_tree.get_children(): self.income_tree.delete(row)
         for idx, entry in reversed(list(enumerate(self.state.incomes))):
             self.income_tree.insert("", tk.END, iid=str(idx), values=(self._format_date_with_relative(entry.received_on), entry.source, f"${entry.amount:,.2f}"))
@@ -19658,11 +27863,15 @@ class BudgetApp(tk.Tk):
         self.refresh_transactions_tab()
 
     def refresh_transactions_tab(self):
+        if hasattr(self, "_bank_links_host"):
+            self._render_bank_buttons()
         self._update_nav_badges()
         self.refresh_category_combo()
         for row in self.transaction_tree.get_children(): self.transaction_tree.delete(row)
         for idx, tx in enumerate(self.latest_import):
             status = "Verified" if tx.user_verified else "Needs review"
+            if getattr(tx, "flagged", False):
+                status = "🚩 " + status
             tag = "matched" if tx.user_verified else "review" if tx.needs_review else "urgent"
             self.transaction_tree.insert("", tk.END, iid=str(idx), values=(
                 tx.tx_date.isoformat(),
@@ -19694,7 +27903,7 @@ class BudgetApp(tk.Tk):
                 continue
             self.tx_history_tree.insert("", tk.END, iid=str(idx), values=(
                 tx.tx_date.isoformat(),
-                tx.description[:40],
+                ("🚩 " if getattr(tx, "flagged", False) else "") + tx.description[:40],
                 f"${tx.amount():,.2f}",
                 tx.matched_type,
                 tx.matched_target,
@@ -19712,6 +27921,9 @@ class BudgetApp(tk.Tk):
         self.transaction_log_text.delete("1.0", tk.END)
         verified = sum(1 for t in self.latest_import if t.user_verified)
         needs_review = sum(1 for t in self.latest_import if t.direction() == "out" and not t.user_verified)
+        if hasattr(self, "tx_sort_btn_var"):
+            self.tx_sort_btn_var.set(
+                f"Sort Unrecognised ({needs_review})" if needs_review else "Sort Unrecognised")
         summary = [
             f"Preview transactions: {len(self.latest_import)}",
             f"Verified in preview: {verified}",
@@ -19731,13 +27943,13 @@ class BudgetApp(tk.Tk):
         if new_merchants:
             insight_lines.append("New merchants needing review: " + ", ".join(new_merchants[:5]))
         if not insight_lines:
-            insight_lines.append("No notable insights yet. Import a statement and run Suggest Matches.")
+            insight_lines.append("No notable insights yet. Import a statement to see recurring and unusual spend.")
         if not self.latest_import:
             self.transaction_workflow_state_var.set("Step 1: import a bank statement PDF to start a review batch.")
         elif needs_review > 0:
-            self.transaction_workflow_state_var.set(f"Step 2–3: {needs_review} outgoing transaction(s) still need verification before commit.")
+            self.transaction_workflow_state_var.set(f"Step 2: {needs_review} outgoing transaction(s) still unsorted — click Sort Unrecognised.")
         else:
-            self.transaction_workflow_state_var.set("Step 4: all outgoing preview rows are verified — commit this batch when ready.")
+            self.transaction_workflow_state_var.set("Step 3: every outgoing row is sorted — commit this batch when ready.")
         self.transaction_insights_var.set("\n".join(insight_lines))
         # Collapsed-header summaries
         self.tx_log_summary_var.set(
@@ -19769,7 +27981,7 @@ class BudgetApp(tk.Tk):
     def _frequency_pill(self, freq: str) -> str:
         key = (freq or "").strip().lower()
         icon = {"weekly": "\U0001f535", "fortnightly": "\U0001f7e3",
-                "monthly": "\U0001f7e2", "yearly": "\U0001f7e1",
+                "monthly": "\U0001f7e2", "quarterly": "\U0001f7e0", "yearly": "\U0001f7e1",
                 "one-off": "\u26aa", "one_off": "\u26aa"}.get(key, "\u26aa")
         return f"{icon} {freq}" if freq else icon
 
@@ -19874,6 +28086,8 @@ class BudgetApp(tk.Tk):
         return f"{self._category_icon_for(name)}  {name}"
 
     def refresh_bills(self):
+        if hasattr(self, "_plan_host"):
+            self._debounce_after("plan_list", 60, self.refresh_plan_tab)
         for row in self.bill_tree.get_children(): self.bill_tree.delete(row)
         for idx, bill in sorted(enumerate(self.state.bills), key=lambda x: x[1].due_date):
             days = (bill.due_date - date.today()).days
@@ -19883,21 +28097,37 @@ class BudgetApp(tk.Tk):
         self._toggle_tree_empty_state(self.bill_tree)
 
     def refresh_funds(self):
+        if hasattr(self, "_plan_host"):
+            self._debounce_after("plan_list", 60, self.refresh_plan_tab)
         for row in self.fund_tree.get_children(): self.fund_tree.delete(row)
         for idx, fund in sorted(enumerate(self.state.funds), key=lambda x: self.engine.days_until(x[1].target_date)):
             days = self.engine.days_until(fund.target_date)
             tag = "overdue" if days < 0 else "urgent" if days <= self.engine.current_cycle_days() else "good"
-            self.fund_tree.insert("", tk.END, iid=str(idx), text=self._label_with_icon(fund.name), values=(f"${fund.target_amount:,.2f}", self._format_date_with_relative(fund.target_date) if fund.target_date else "No date", self._priority_pill(fund.priority), f"${fund.current_saved:,.0f} {self._progress_bar(fund.current_saved, fund.target_amount)}", f"${self.engine.fund_recommended_allocation(fund):,.2f}"), tags=(tag,))
+            mode = fund.contribution_mode
+            if mode == "ongoing":
+                target_text, bar = "Ongoing", f"${fund.current_saved:,.0f} saved"
+            elif mode == "buffer":
+                target_text, bar = f"Buffer ${fund.target_amount:,.0f}", f"${fund.current_saved:,.0f} {self._progress_bar(fund.current_saved, fund.target_amount)}"
+            elif fund.target_amount <= 0:
+                target_text, bar = "No end", f"${fund.current_saved:,.0f} saved"
+            else:
+                target_text, bar = f"${fund.target_amount:,.2f}", f"${fund.current_saved:,.0f} {self._progress_bar(fund.current_saved, fund.target_amount)}"
+            if mode in ("ongoing", "buffer"):
+                tag = "good"
+            self.fund_tree.insert("", tk.END, iid=str(idx), text=self._label_with_icon(fund.name), values=(target_text, self._format_date_with_relative(fund.target_date) if fund.target_date else ("—" if mode in ("ongoing", "buffer") else "No date"), self._priority_pill(fund.priority), bar, f"${self.engine.fund_recommended_allocation(fund):,.2f}"), tags=(tag,))
         self._restripe_tree(self.fund_tree)
         self._toggle_tree_empty_state(self.fund_tree)
 
     def refresh_goals(self):
+        if hasattr(self, "_plan_host"):
+            self._debounce_after("plan_list", 60, self.refresh_plan_tab)
         for row in self.goal_tree.get_children(): self.goal_tree.delete(row)
         for idx, goal in enumerate(self.state.goals):
-            progress = 0 if goal.target_amount <= 0 else goal.current_saved / goal.target_amount
-            tag = "good" if progress >= 1 else "urgent" if progress >= 0.5 else "overdue"
+            open_ended = goal.target_amount <= 0
+            progress = 0 if open_ended else goal.current_saved / goal.target_amount
+            tag = "good" if (open_ended or progress >= 1) else "urgent" if progress >= 0.5 else "overdue"
             value_text = f"${goal.value:,.2f}" if goal.mode == "fixed" else f"{goal.value:.1f}%"
-            self.goal_tree.insert("", tk.END, iid=str(idx), text=self._label_with_icon(goal.name), values=(f"${goal.target_amount:,.2f}", f"${goal.current_saved:,.2f}", goal.mode, value_text, self._progress_bar(goal.current_saved, goal.target_amount)), tags=(tag,))
+            self.goal_tree.insert("", tk.END, iid=str(idx), text=self._label_with_icon(goal.name), values=("No end" if open_ended else f"${goal.target_amount:,.2f}", f"${goal.current_saved:,.2f}", goal.mode, value_text, "growing" if open_ended else self._progress_bar(goal.current_saved, goal.target_amount)), tags=(tag,))
         self._restripe_tree(self.goal_tree)
         self._toggle_tree_empty_state(self.goal_tree)
 
@@ -20108,6 +28338,8 @@ class BudgetApp(tk.Tk):
 
     def refresh_game_text(self):
         self._update_nav_badges()
+        if hasattr(self, "_records_host"):
+            self._render_records()
         g = self.state.game
         # Stats cards
         self.level_var.set(str(g.level))
@@ -20122,8 +28354,8 @@ class BudgetApp(tk.Tk):
         self.rank_icon_var.set(self.rank_icon_for_level(g.level, g.prestige_level))
         self.rank_name_var.set(rank_name)
         self.rank_desc_var.set(RANK_DESCRIPTIONS[min(g.level, 10) - 1])
-        next_thr = g.level * 250
-        prev_thr = (g.level - 1) * 250
+        next_thr = level_threshold(g.level + 1)
+        prev_thr = level_threshold(g.level)
         span = max(next_thr - prev_thr, 1)
         prog = max(0.0, min(1.0, (g.total_score - prev_thr) / span))
         self.rank_progress_bar["value"] = prog * 100.0
@@ -20176,6 +28408,11 @@ class BudgetApp(tk.Tk):
             "verify_3":     "How: Mark 3+ transactions as verified on Transactions tab",
             "streak":       "How: Already active if you have a streak running",
             "import":       "How: Use Import PDF on the Transactions tab",
+            "pulse":        "How: Finish the three Daily Pulse beats on Today",
+            "no_spend":     "How: Tick 'No spend' in the Daily Pulse",
+            "verify_1":     "How: Sort one row in the Pulse or the Sort queue",
+            "contribute":   "How: Add $ on the Plan, or 'add 50 to holiday' to Gerald",
+            "homestead":    "How: Open the Homestead page",
         }
         self.game_engine.generate_daily_challenges()
         for i, ch in enumerate(self.state.game.daily_challenges[:3]):
@@ -20195,6 +28432,8 @@ class BudgetApp(tk.Tk):
                     w.configure(bg=bg)
                 except Exception:
                     pass
+        if hasattr(self, "_weekly_host"):
+            self._render_weekly_challenges()
 
     def refresh_season_pass(self):
         """Update the season pass XP bar and tier claim buttons."""
@@ -20216,7 +28455,7 @@ class BudgetApp(tk.Tk):
             if i in g.season_claimed_tiers:
                 btn.configure(text="Claimed ✓", state="disabled")
             elif g.season_xp >= xp:
-                btn.configure(text=f"Claim! {reward_str}", state="normal")
+                btn.configure(text=f"Claim {reward_str}", state="normal")
             else:
                 btn.configure(text=reward_str, state="disabled")
 
@@ -20771,6 +29010,10 @@ class BudgetApp(tk.Tk):
                 _, pname, _, cost_type, cost, _, _, _ = pack
                 can_afford = g.total_score >= cost if cost_type == "gold" else g.gems >= cost
                 btn.configure(state="normal" if can_afford else "disabled")
+        if hasattr(self, "_pack_pity_var"):
+            left = max(1, 5 - g.packs_since_epic)
+            self._pack_pity_var.set("✦ Next pack has a guaranteed Epic or better!" if left == 1
+                                    else f"✦ Epic or better guaranteed within {left} packs")
 
         # Update filter pill styling
         current_filt = self._coll_filter_var.get()
@@ -20861,6 +29104,11 @@ class BudgetApp(tk.Tk):
         self.refresh_collection()
         self.refresh_character_tab()
         self._open_pack_animation(result["cards"], result.get("set_completions", []))
+        if result.get("set_completions"):
+            names = ", ".join(s for s, _ in result["set_completions"])
+            self.after(400, lambda n=names: self._celebrate("Set complete!", f"{n} — reward unlocked on your avatar", UI_AMETHYST))
+        elif result.get("pity_used"):
+            self._show_toast("Pity timer paid out — that Epic was guaranteed.", "info", 3500)
 
     def _recycle_card(self, card_id: str):
         result = self.game_engine.recycle_duplicate(card_id)
@@ -20875,7 +29123,9 @@ class BudgetApp(tk.Tk):
     def _open_pack_animation(self, cards: list, set_completions: list = None):
         """Reveal cards one by one in a dramatic popup with set-completion rewards."""
         win = tk.Toplevel(self)
+        self._pack_win = win
         win.title("Pack Opened!")
+        win.after(10, lambda: _dark_titlebar(win))
         height = 440 if set_completions else 400
         win.geometry(f"680x{height}")
         win.resizable(False, False)
@@ -20973,6 +29223,195 @@ class BudgetApp(tk.Tk):
         win.after(500, reveal_next)
 
 
+
+# ── Reminders: Windows toasts from a scheduled task (`--remind`) ─────────────
+# Settings → "Turn reminders on" registers a Task Scheduler job that runs this
+# program with `--remind --data <path>` every hour from 8 am. That mode loads
+# the data file read-only, decides what is at stake today, shows at most two
+# native toasts, logs what it sent to budget_reminders.json and exits. No Tk.
+REMINDER_TASK_NAME = "BudgetPlanner Reminders"
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _app_launch_command() -> List[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    py = Path(sys.executable)
+    pyw = py.with_name("pythonw.exe")
+    return [str(pyw if pyw.exists() else py), str(Path(__file__).resolve())]
+
+
+def reminder_task_command(data_path: Path) -> str:
+    parts = _app_launch_command() + ["--remind", "--data", str(data_path)]
+    return " ".join(f'"{p}"' for p in parts)
+
+
+def reminder_task_installed() -> bool:
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", REMINDER_TASK_NAME], capture_output=True, creationflags=_NO_WINDOW, timeout=15)
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def install_reminder_task(data_path: Path) -> tuple:
+    cmd = ["schtasks", "/Create", "/F", "/SC", "DAILY", "/ST", "08:00", "/RI", "60", "/DU", "14:00",
+           "/TN", REMINDER_TASK_NAME, "/TR", reminder_task_command(data_path)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, creationflags=_NO_WINDOW, timeout=20)
+        return r.returncode == 0, (r.stdout or r.stderr or "").strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+
+
+def remove_reminder_task() -> tuple:
+    try:
+        r = subprocess.run(["schtasks", "/Delete", "/F", "/TN", REMINDER_TASK_NAME], capture_output=True, text=True, creationflags=_NO_WINDOW, timeout=20)
+        return r.returncode == 0, (r.stdout or r.stderr or "").strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+
+
+def _send_windows_toast(title: str, body: str) -> bool:
+    """Native Windows 10/11 toast via PowerShell + WinRT. Uses PowerShell's own
+    AppUserModelID so no registration is needed."""
+    from xml.sax.saxutils import escape
+    xml = ("<toast><visual><binding template=\"ToastGeneric\">"
+           f"<text>{escape(title)}</text><text>{escape(body)}</text>"
+           "<text placement=\"attribution\">Budget Planner</text>"
+           "</binding></visual></toast>")
+    ps = "\n".join([
+        "$AppId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'",
+        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null",
+        "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null",
+        "$doc = New-Object Windows.Data.Xml.Dom.XmlDocument",
+        "$doc.LoadXml(@'",
+        xml,
+        "'@)",
+        "$toast = [Windows.UI.Notifications.ToastNotification]::new($doc)",
+        "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($AppId).Show($toast)",
+    ])
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                           capture_output=True, text=True, creationflags=_NO_WINDOW, timeout=25)
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _reminder_messages(state: "AppState", now: datetime) -> List[tuple]:
+    """(key, title, body) for everything worth a nudge right now. Pure; tested directly."""
+    prefs = state.ui_prefs
+    g = state.game
+    today = now.date()
+    out = []
+    pulse_hour = prefs.get("reminders.pulse_hour"); pulse_hour = 18 if pulse_hour is None else int(pulse_hour)
+    if prefs.get("reminders.pulse", True) and now.hour >= pulse_hour and g.pulse_last_date != today.isoformat():
+        alive = g.pulse_streak >= 2 and g.pulse_last_date == (today - timedelta(days=1)).isoformat()
+        body = (f"Your {g.pulse_streak}-day run ends at midnight. 60 seconds on Today keeps it alive." if alive
+                else "60 seconds on Today: yesterday's spending, one card to sort, open the vault.")
+        out.append(("pulse", "Daily Pulse not done", body))
+    if now.hour >= 8 and state.incomes:
+        last = max(i.received_on for i in state.incomes)
+        cycle = BudgetEngine.PAY_CYCLE_DAYS.get(state.pay_frequency, 14)
+        expected = last + timedelta(days=cycle)
+        streak = g.streak_pays
+        if expected == today + timedelta(days=1):
+            out.append(("payday", "Pay lands tomorrow",
+                        f"Log it on the day: Gold, Season XP and streak {streak} → {streak + 1}." if streak else "Log it on the day and see the split in two minutes."))
+        elif expected == today:
+            out.append(("payday", "Pay day",
+                        f"Two minutes to log it and run the split. Keeps the {streak}-pay streak." if streak else "Two minutes to log it and run the split."))
+        elif today > expected and (today - expected).days <= 3:
+            d = (today - expected).days
+            out.append(("payday", "A pay was expected", f"{d} day{'s' if d != 1 else ''} ago. Log it to keep the streak and the plan honest."))
+    if now.hour >= 8:
+        for b in state.bills:
+            short = b.amount - b.current_saved
+            days = (b.due_date - today).days
+            if short <= 0.01 or days > 2:
+                continue
+            if days < 0:
+                out.append((f"bill:{b.name}", f"{b.name} is overdue", f"${b.amount:,.0f} was due {b.due_date:%a %d %b}. ${short:,.0f} still to set aside."))
+            else:
+                when = "today" if days == 0 else "tomorrow" if days == 1 else b.due_date.strftime("%A")
+                out.append((f"bill:{b.name}", f"{b.name} due {when}", f"${b.amount:,.0f}. ${short:,.0f} still to set aside."))
+    if now.hour >= 8:
+        try:
+            _ge = BudgetGameEngine(state)
+            _mill = _ge.mill_status(now)
+            _ripe = [p_ for p_ in _ge.plot_status(now) if p_['ripe']]
+            if _mill['capped'] or _ripe:
+                out.append(("harvest", "Harvest ready on the Homestead", (f"{_mill['gold']} Gold milled" if _mill['gold'] else "") + (" · " if _mill['gold'] and _ripe else "") + (f"{len(_ripe)} plot{'s' if len(_ripe) != 1 else ''} ripe" if _ripe else "") + ". One click collects it."))
+        except Exception:
+            pass
+    if now.hour >= 9 and state.bank_links:
+        try:
+            _d = (today - date.fromisoformat(state.last_import_date)).days if state.last_import_date else 999
+        except ValueError:
+            _d = 999
+        _due = [l for l in state.bank_links if _d >= int(l.get('every_days', 14) or 14)]
+        if _due and _d > 0:
+            out.append(("statement", "Statement time", (f"Last import {_d} days ago. " if _d < 999 else "") + f"Open {_due[0].get('name', 'your bank')} from the Statements tab — the app catches the download."))
+    if now.hour >= 8 and today.day <= 3:
+        last_prev = today.replace(day=1) - timedelta(days=1)
+        ym = last_prev.strftime("%Y-%m")
+        if state.last_month_report_seen != ym:
+            start, end = month_bounds(last_prev)
+            if any(start <= i.received_on <= end for i in state.incomes) or any(start <= t.tx_date <= end for t in state.transactions):
+                out.append(("report", f"Your {last_prev:%B} report is ready", "Income, spending against your target mix, and what stood out."))
+    return out
+
+
+def run_reminder_check(argv: List[str], now: Optional[datetime] = None) -> int:
+    """Headless `--remind` entry. Returns the number of toasts shown. `now` is injectable for tests."""
+    data = Path(argv[argv.index("--data") + 1]) if "--data" in argv and argv.index("--data") + 1 < len(argv) else DATA_FILE
+    if not data.exists():
+        return 0
+    try:
+        state = AppState.from_dict(json.loads(data.read_text(encoding="utf-8")))
+    except Exception:
+        return 0
+    prefs = state.ui_prefs
+    now = now or datetime.now()
+    qs = prefs.get("reminders.quiet_start"); qs = 22 if qs is None else int(qs)
+    qe = prefs.get("reminders.quiet_end"); qe = 8 if qe is None else int(qe)
+    quiet = (now.hour >= qs or now.hour < qe) if qs > qe else (qs <= now.hour < qe)
+    if quiet:
+        return 0
+    log_path = data.with_name("budget_reminders.json")
+    try:
+        log = json.loads(log_path.read_text(encoding="utf-8"))
+    except Exception:
+        log = {}
+    sent = dict(log.get("sent", {}))
+    t = now.date().isoformat()
+    fired = 0
+    dry = "--dry-run" in argv
+    for key, title, body in _reminder_messages(state, now):
+        if sent.get(key) == t:
+            continue
+        if dry:
+            print(f"[{key}] {title}: {body}")
+            fired += 1
+            continue
+        if _send_windows_toast(title, body):
+            sent[key] = t
+            fired += 1
+        if fired >= 2:
+            break
+    if not dry:
+        log["sent"] = {k: v for k, v in sent.items() if v == t}
+        log["last_run"] = now.isoformat(timespec="minutes")
+        try:
+            log_path.write_text(json.dumps(log, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+    return fired
+
+
 if __name__ == "__main__":
+    if "--remind" in sys.argv:
+        sys.exit(run_reminder_check(sys.argv))
     app = BudgetApp()
     app.mainloop()
