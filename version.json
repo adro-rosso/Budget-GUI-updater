@@ -1,10 +1,15 @@
 {
-  "version": "1.0.7",
-  "date": "2026-04-22",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.7/BudgetPlanner.exe",
-  "sha256": "5f2e32ac8e61e0061d045861a910648a262b18a9215ebd2af0c89e0217434d6e",
-  "notes": "pdf import: pdfminer.six fallback for stubborn PDFs",
+  "version": "1.0.8",
+  "date": "2026-10-11",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.8/BudgetPlanner.exe",
+  "sha256": "22b482f36ab67fa01c7eedccce2eb0d5f04f10e5ecf4ae9a2fd30d74491efff5",
+  "notes": "Daily Pulse and vault chests, Windows reminders, Homestead harvest/decor/palettes, pacts, savings challenges, bank links with download watcher, history mode for first statements, monthly events and seasonal card sets, Gerald's letters, weekly race, share cards, Analysis quarter/FY/custom periods, text size, sample data, visual polish",
   "history": [
+    {
+      "version": "1.0.8",
+      "date": "2026-10-11",
+      "notes": "Daily Pulse and vault chests, Windows reminders, Homestead harvest/decor/palettes, pacts, savings challenges, bank links with download watcher, history mode for first statements, monthly events and seasonal card sets, Gerald's letters, weekly race, share cards, Analysis quarter/FY/custom periods, text size, sample data, visual polish"
+    },
     {
       "version": "1.0.7",
       "date": "2026-04-22",
