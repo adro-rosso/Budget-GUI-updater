@@ -50,6 +50,7 @@ app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 app._startup_progression_migration(); app.refresh_today_tab(); app.update()
 app._celebrate = lambda *a, **k: None
+app._show_tier_up_card = lambda *a, **k: None   # the Rent bill earns Homestead tier 1; its card would land mid-test
 st = app.state; g = st.game
 assert app._history_cutoff() == today
 

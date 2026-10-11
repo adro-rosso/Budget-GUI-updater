@@ -61,7 +61,7 @@ btn(app._bank_links_host, "Add your bank's statement page…")[0].invoke(); app.
 sc = scrims(app)[-1]
 w = app._bank_editor_widgets
 w["preset"].set("CommBank (NetBank)"); w["preset"].event_generate("<<ComboboxSelected>>"); app.update()
-assert w["url"].get().startswith("https://www.my.commbank.com.au") and w["name"].get() == "CommBank"
+assert w["url"].get().startswith("https://netbank.web.commbank.com.au") and w["name"].get() == "CommBank"
 w["add"](); app.update()
 assert len(st.bank_links) == 1 and st.bank_links[0]["name"] == "CommBank" and st.bank_links[0]["every_days"] == 14
 # duplicate refused, bad URL refused, custom link accepted

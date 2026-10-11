@@ -58,7 +58,7 @@ assert eng.check_event_set() == "" and any("Collector" in a for a in g.achieveme
 # double XP only on a pay-week weekend
 st.pay_frequency = "fortnightly"
 sat = today + timedelta(days=(5 - today.weekday()) % 7)
-st.incomes.append(bg.IncomeEntry(2000.0, sat - timedelta(days=12), "Pay"))      # expected pay lands Thu that week
+st.incomes.append(bg.IncomeEntry(2000.0, sat - timedelta(days=16), "Pay"))      # expected pay lands Thu that week (16 days before Sat + 14)
 assert eng.xp_window_active(sat) and eng.xp_window_active(sat + timedelta(days=1)) and not eng.xp_window_active(sat - timedelta(days=1))
 st.incomes[0] = bg.IncomeEntry(2000.0, sat - timedelta(days=3), "Pay")            # next pay is 11 days away → no window
 assert not eng.xp_window_active(sat)
@@ -92,6 +92,7 @@ app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 app._startup_progression_migration(); app.refresh_today_tab(); app.update()
 app._celebrate = lambda *a, **k: None
+app._show_tier_up_card = lambda *a, **k: None   # the Rent bill below earns tier 1; its card would land mid-test
 st = app.state; g = st.game; eng = app.game_engine
 # event banner on Today
 tt = texts(app._event_host)
@@ -125,7 +126,7 @@ g.letters_read = 11; g.pulse_days_total = 12; app._render_letters_card(); app.up
 btn(app._letters_host, "Open the letter")[0].invoke(); app.update(); sc = scrims(app)[-1]
 assert btn(sc, "The wrap scarf")
 btn(sc, "The wrap scarf")[0].invoke(); app.update()
-assert "acc_scarf" in g.character_items_owned and not scrims(app)
+assert "acc_scarf" in g.character_items_owned and not scrims(app), ("acc_scarf" in g.character_items_owned, g.letter_choices, [texts(s_)[:3] for s_ in scrims(app)])
 # perk shop shows the deal
 app._open_perk_shop(); app.update()
 tops = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)]

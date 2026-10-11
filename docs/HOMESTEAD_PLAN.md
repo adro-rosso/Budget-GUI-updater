@@ -87,8 +87,8 @@ stateless like the other engines), then drawn by `draw_homestead(canvas, snapsho
 | Phase | Scope | Effort |
 |---|---|---|
 | 1. Static scene — **DONE 2026-10-07** (plus windmill/cloud/star animation, weeds, day/night pulled forward from phase 2) | `HomesteadEngine.snapshot`, `draw_homestead` with sky/land/house/plots/orchard/fence/path/mailbox, Homestead page + Today thumbnail. Tier computation and the 5 companion items. | 1 session |
-| 2. Life | Windmill, weeds, weather, day/night, harvest animation on spend-from-fund, Gerald quips reacting to the scene ("your orchard's looking thin"), tier-up celebration overlay (reuse the Pay Day Ritual card). | 1 session |
-| 3. Ownership | Decor shop (Gold/Gem sink), seasonal palettes tied to the season pass, "Your Homestead" legendary background, share-to-PNG button using the rasteriser from this session. | 1 session |
+| 2. Life — **DONE 2026-10-11** | Windmill, weeds, weather, day/night, harvest animation on spend-from-fund, Gerald quips reacting to the scene ("your orchard's looking thin"), tier-up celebration overlay (reuse the Pay Day Ritual card). | 1 session |
+| 3. Ownership — **DONE 2026-10-11** (share uses ImageGrab) | Decor shop (Gold/Gem sink), seasonal palettes tied to the season pass, "Your Homestead" legendary background, share-to-PNG button using the rasteriser from this session. | 1 session |
 
 ## Risks and how they are handled
 

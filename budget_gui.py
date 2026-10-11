@@ -5013,6 +5013,12 @@ class GameStats:
     event_sets_claimed: List[str] = field(default_factory=list)
     weekly_xp: int = 0
     weekly_xp_week: str = ""
+    # Weekly race
+    rival_league: str = "bronze"
+    rival_week: str = ""
+    rival_seed: int = 0
+    rival_prev_user_xp: int = 0
+    rival_last: dict = field(default_factory=dict)
 
     def to_dict(self):
         return asdict(self)
@@ -5105,6 +5111,11 @@ class GameStats:
             event_sets_claimed=list(data.get("event_sets_claimed", [])),
             weekly_xp=int(data.get("weekly_xp", 0)),
             weekly_xp_week=str(data.get("weekly_xp_week", "")),
+            rival_league=str(data.get("rival_league", "bronze") or "bronze"),
+            rival_week=str(data.get("rival_week", "")),
+            rival_seed=int(data.get("rival_seed", 0)),
+            rival_prev_user_xp=int(data.get("rival_prev_user_xp", 0)),
+            rival_last=dict(data.get("rival_last", {}) or {}),
         )
 
 
@@ -6715,6 +6726,107 @@ class BudgetGameEngine:
         if item_id not in g.character_items_owned:
             g.character_items_owned.append(item_id)
         return True, f"{AVATAR_ITEMS.get(item_id, {}).get('name', item_id)} is yours."
+
+    # ── Weekly race against the villagers (clearly fictional rivals) ────
+    RIVALS = [("Marta the Miller", 0.95, "🌾"), ("Old Tobias", 0.55, "🪵"), ("Pip", 1.15, "🍯"), ("Hazel Thorne", 1.35, "📘")]
+    LEAGUES = ["bronze", "silver", "gold"]
+    LEAGUE_MULT = {"bronze": 0.7, "silver": 1.0, "gold": 1.3}
+
+    def _rival_baseline(self) -> float:
+        g = self.state.game
+        prev = float(g.rival_prev_user_xp or 0)
+        return max(80.0, min(900.0, prev if prev > 0 else 120.0))
+
+    def rival_standings(self, today: Optional[date] = None, full_week: bool = False, week: Optional[str] = None) -> List[dict]:
+        """Standings for the current (or a given) week. NPC XP follows a pace curve
+        scaled to the user's previous week, with a per-week jitter so it stays close."""
+        import random
+        today = today or date.today()
+        g = self.state.game
+        week = week or today.strftime("%G-W%V")
+        f = 1.0 if full_week else (today.weekday() + 1) / 7.0
+        base = self._rival_baseline() * self.LEAGUE_MULT.get(g.rival_league, 0.7)
+        rows = [{"name": "You", "emoji": "★", "xp": int(g.weekly_xp), "you": True}]
+        for i, (name, pace, emoji) in enumerate(self.RIVALS):
+            rnd = random.Random(f"{week}:{i}:{g.rival_seed}")
+            jitter = 0.85 + rnd.random() * 0.3
+            rows.append({"name": name, "emoji": emoji, "xp": int(base * pace * jitter * f), "you": False})
+        rows.sort(key=lambda r: (-r["xp"], r["you"]))
+        for i, r in enumerate(rows):
+            r["place"] = i + 1
+        return rows
+
+    def ensure_rival_week(self, today: Optional[date] = None) -> Optional[dict]:
+        """Settle last week's race when a new ISO week starts. Returns the result once."""
+        g = self.state.game
+        today = today or date.today()
+        week = today.strftime("%G-W%V")
+        if not g.rival_week:
+            g.rival_week = week
+            g.rival_seed = g.rival_seed or int(datetime.now().timestamp()) % 100000
+            return None
+        if g.rival_week == week:
+            return None
+        # settle the week that just ended using the XP accumulated under it
+        prev_week = g.rival_week
+        user_xp = int(g.weekly_xp) if g.weekly_xp_week == prev_week else 0
+        rows = self.rival_standings(today, full_week=True, week=prev_week)
+        for r in rows:
+            if r["you"]:
+                r["xp"] = user_xp
+        rows.sort(key=lambda r: (-r["xp"], r["you"]))
+        place = next(i + 1 for i, r in enumerate(rows) if r["you"])
+        league = g.rival_league
+        li = self.LEAGUES.index(league) if league in self.LEAGUES else 0
+        reward = ""
+        if place == 1:
+            g.gems += 4; g.lifetime_gems_earned += 4; reward = "+4 Gems"
+            li = min(2, li + 1)
+        elif place == 2:
+            g.gems += 2; g.lifetime_gems_earned += 2; reward = "+2 Gems"
+            li = min(2, li + 1)
+        elif place == 3:
+            g.total_score += 40; g.level = self.level_from_score(g.total_score); reward = "+40 Gold"
+        else:
+            li = max(0, li - 1)
+        new_league = self.LEAGUES[li]
+        moved = "promoted to " + new_league if new_league != league and li > self.LEAGUES.index(league) else ("relegated to " + new_league if new_league != league else "stayed in " + league)
+        g.rival_league = new_league
+        g.rival_prev_user_xp = user_xp
+        g.rival_week = week
+        g.rival_last = {"week": prev_week, "place": place, "xp": user_xp, "reward": reward, "moved": moved, "league": new_league}
+        if g.weekly_xp_week != week:
+            g.weekly_xp = 0
+            g.weekly_xp_week = week
+        return dict(g.rival_last)
+
+    # ── Share cards (month / year) ───────────────────────────────────────
+    def share_card_data(self, year: int, month: Optional[int], app) -> dict:
+        """Stats for a poster: month (year, month) or year-to-date (month=None)."""
+        g = self.state.game
+        today = date.today()
+        if month:
+            d = app._monthly_report_data(year, month)
+            label = d["label"]; start, end = d["start"], d["end"]
+            income, spent, net, rate, top = d["income"], d["spent"], d["net"], d["savings_rate"], d["top"]
+            prev_line = (f"Spending {abs(d['spend_delta']):.0f}% {'up' if d['spend_delta'] > 0 else 'down'} on {d['prev_label']}" if d.get("prev_spent") else "")
+        else:
+            start, end = date(year, 1, 1), (today if year == today.year else date(year, 12, 31))
+            cur = app._current_month_review_data(bounds=(start, end))
+            label = f"{year} so far" if year == today.year else str(year)
+            income, spent, rate = cur["income_total"], cur["outgoing_total"], cur["savings_rate"]
+            net = income - spent
+            cats = outgoing_category_totals(self.state.transactions, start, end)
+            top = sorted(cats.items(), key=lambda kv: -kv[1])[:5]
+            prev_line = ""
+        biggest = max((t for t in self.state.transactions if t.money_out > 0 and start <= t.tx_date <= end and t.matched_type not in ("transfer", "ignore")),
+                      key=lambda t: t.money_out, default=None)
+        no_spend = sum(1 for d_ in g.no_spend_dates if start <= date.fromisoformat(d_) <= end) if g.no_spend_dates else 0
+        return {"label": label, "income": income, "spent": spent, "net": net, "rate": rate, "top": top, "prev_line": prev_line,
+                "biggest": (extract_merchant_name(biggest.description), biggest.money_out, biggest.tx_date) if biggest else None,
+                "no_spend": no_spend, "pulse_best": g.pulse_best, "pay_streak_best": g.best_streak,
+                "level": g.level, "rank": app.rank_name_for_level(g.level, g.prestige_level), "tier": g.homestead_tier,
+                "cards": len(set(g.cards_owned)), "pacts": g.pacts_won, "reserved": self._reserved_total()}
 
     def check_homestead_tiers(self, tier: int) -> list:
         """Record the Homestead tier and award any companion not yet claimed.
@@ -13294,6 +13406,7 @@ class BudgetApp(tk.Tk):
         self._achievements_frame = tk.Frame(ach_inner, bg=UI_SURFACE)
         self._achievements_frame.grid(row=2, column=0, sticky="nsew")
 
+        self._build_rivals_section(frame)
         self._build_records_section(frame)
 
         # ── Arcade section (hosts Budget Sprint + future mini-games) ─────────
@@ -18632,6 +18745,14 @@ class BudgetApp(tk.Tk):
         except Exception:
             pass
         try:
+            rows_ = self.game_engine.rival_standings()
+            you_ = next(r_ for r_ in rows_ if r_['you'])
+            if you_['place'] > 1:
+                ahead_ = [r_ for r_ in rows_ if r_['place'] < you_['place']][-1]
+                items.append((f"Weekly race: {['', '', '2nd', '3rd', '4th', '5th'][you_['place']]}", min(1.0, you_['xp'] / max(1, ahead_['xp'])), f"{ahead_['xp'] - you_['xp'] + 1} XP to pass {ahead_['name']} · {self.state.game.rival_league} league", "score", UI_SAPPHIRE))
+        except Exception:
+            pass
+        try:
             if self.game_engine.letter_waiting():
                 items.append(("Letter waiting ✉", 1.0, "Gerald wrote — read it at the Homestead mailbox", "homestead", UI_GOLD))
         except Exception:
@@ -18923,6 +19044,7 @@ class BudgetApp(tk.Tk):
             self._show_page("review")
 
         ttk.Button(btn_row, text="Open full analysis  →", style="Secondary.TButton", command=_open_analysis).pack(side="left")
+        ttk.Button(btn_row, text="Share card ↗", style="Ghost.TButton", command=lambda: self._show_share_card(year, month)).pack(side="left", padx=(SP_SM, 0))
         ttk.Button(btn_row, text="Done  ✓", style="Primary.TButton", command=_done).pack(side="right")
         scrim.bind("<Escape>", lambda _e: (_done(), "break")[1])
         scrim.bind("<Return>", lambda _e: (_done(), "break")[1])
@@ -19991,6 +20113,7 @@ class BudgetApp(tk.Tk):
         row.grid(row=1, column=0, sticky="w")
         ttk.Button(row, text="Transactions → CSV…", style="Secondary.TButton", command=lambda: self._settings_export("transactions")).pack(side="left")
         ttk.Button(row, text="Plan (bills, funds, goals) → CSV…", style="Secondary.TButton", command=lambda: self._settings_export("plan")).pack(side="left", padx=(SP_SM, 0))
+        ttk.Button(row, text="Your year card ↗", style="Secondary.TButton", command=lambda: self._show_share_card(date.today().year, None)).pack(side="left", padx=(SP_SM, 0))
         tk.Label(exp, text="Opens in Excel or Google Sheets.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
 
         imp = section("IMPORTS", 3)
@@ -20295,6 +20418,7 @@ class BudgetApp(tk.Tk):
             eng.check_money_milestones(award=False)   # existing savings aren't a windfall
         eng.sync_challenge_funds()
         eng.settle_pacts()
+        eng.ensure_rival_week()
         if not self.state.first_launch_date:
             # existing profiles: anything after the last logged pay is still new
             self.state.first_launch_date = (max(i.received_on for i in self.state.incomes).isoformat() if self.state.incomes else date.today().isoformat())
@@ -22010,7 +22134,13 @@ class BudgetApp(tk.Tk):
                 pass
         step()
 
-    def _show_tier_up_card(self, tier: int, item_ids: list):
+    def _show_tier_up_card(self, tier: int, item_ids: list, _tries: int = 0):
+        # Don't stack on top of a wizard, the sort queue or another card — wait for it to close.
+        busy = any(isinstance(w_, tk.Frame) and str(w_.cget("bg")) == UI_HERO and w_.winfo_manager() == "place"
+                   for w_ in self.winfo_children()) or any(isinstance(w_, tk.Toplevel) for w_ in self.winfo_children())
+        if busy and _tries < 40:
+            self.after(3000, lambda: self._show_tier_up_card(tier, item_ids, _tries + 1))
+            return
         scrim, content, btn_row, step_var, close = self._overlay_card(f"HOMESTEAD TIER {tier}", 560, 400)
         names = []
         for iid in item_ids:
@@ -22385,6 +22515,187 @@ class BudgetApp(tk.Tk):
                     ttk.Button(row, text=label, style="Secondary.TButton", command=_pick).pack(side="left", padx=(0, SP_SM))
         self._letter_widgets = {"letter": letter, "close": close}
         ttk.Button(btn_row, text="Keep it", style="Primary.TButton", command=lambda: (close(), self._render_letters_card())).pack(side="right")
+
+    # ── Weekly race panel (Score tab) ────────────────────────────────────
+    def _build_rivals_section(self, frame):
+        self._rivals_summary_var = tk.StringVar(value="")
+        wrap, content = self._collapsible_section(frame, "Weekly race — the villagers", "score.rivals",
+                                                  default_open=True, summary_var=self._rivals_summary_var)
+        wrap.grid(row=5, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
+        content.columnconfigure(0, weight=1)
+        self._rivals_host = tk.Frame(content, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
+        self._rivals_host.grid(row=0, column=0, sticky="ew")
+
+    def _render_rivals(self):
+        host = getattr(self, "_rivals_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        eng = self.game_engine
+        g = self.state.game
+        res = eng.ensure_rival_week()
+        if res:
+            self.save_state()
+            self.after(400, lambda r=res: self._celebrate(f"Weekly race: {['1st', '2nd', '3rd', '4th', '5th'][r['place'] - 1]}", f"{r['reward'] + ' · ' if r['reward'] else ''}{r['moved']}", UI_GOLD if r["place"] <= 2 else UI_SAPPHIRE))
+        rows = eng.rival_standings()
+        league = g.rival_league.title()
+        head = tk.Frame(host, bg=UI_SURFACE)
+        head.pack(fill="x")
+        tk.Label(head, text=f"{league.upper()} LEAGUE", bg=UI_SURFACE, fg=UI_GOLD, font=FONT_CAPTION_BOLD).pack(side="left")
+        tk.Label(head, text="Season XP this week · resets Monday · top 2 promote, bottom 2 relegate", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(side="right")
+        top_xp = max(1, max(r["xp"] for r in rows))
+        for r in rows:
+            row = tk.Frame(host, bg=UI_SURFACE2 if r["you"] else UI_SURFACE, highlightthickness=1,
+                           highlightbackground=UI_GOLD if r["you"] else UI_BORDER, padx=SP_SM, pady=3)
+            row.pack(fill="x", pady=(3, 0))
+            tk.Label(row, text=f"{r['place']}.", bg=row.cget("bg"), fg=UI_TEXT_BRIGHT if r["you"] else UI_MUTED, font=FONT_SMALL_BOLD, width=3).pack(side="left")
+            tk.Label(row, text=f"{r['emoji']} {r['name']}", bg=row.cget("bg"), fg=UI_TEXT_BRIGHT if r["you"] else UI_TEXT, font=FONT_SMALL_BOLD, width=20, anchor="w").pack(side="left")
+            bar = tk.Canvas(row, height=8, width=10, bg=UI_SURFACE, highlightthickness=0)
+            bar.pack(side="left", fill="x", expand=True, padx=(SP_SM, SP_SM))
+            bar.bind("<Configure>", lambda e, b=bar, p=r["xp"] / top_xp, col=UI_GOLD if r["you"] else UI_SAPPHIRE: (b.delete("all"), b.create_rectangle(0, 0, max(2, e.width * p), 8, fill=col, outline="")))
+            tk.Label(row, text=f"{r['xp']} XP", bg=row.cget("bg"), fg=UI_GOLD if r["you"] else UI_MUTED, font=FONT_CAPTION_BOLD, width=8, anchor="e").pack(side="right")
+        you = next(r for r in rows if r["you"])
+        ahead = [r for r in rows if r["place"] < you["place"]]
+        gap = (ahead[-1]["xp"] - you["xp"] + 1) if ahead else 0
+        foot = tk.Frame(host, bg=UI_SURFACE)
+        foot.pack(fill="x", pady=(SP_XS, 0))
+        tk.Label(foot, text=(f"{gap} XP to {['1st', '2nd', '3rd', '4th'][you['place'] - 2]} place. Pulses, pays and challenges all count." if ahead else "You're leading — hold it to Sunday night."),
+                 bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL).pack(side="left")
+        last = g.rival_last
+        if last:
+            tk.Label(foot, text=f"Last week: {['1st', '2nd', '3rd', '4th', '5th'][last['place'] - 1]} ({last['xp']} XP) · {last['moved']}" + (f" · {last['reward']}" if last.get("reward") else ""),
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(side="right")
+        tk.Label(host, text="Marta, Tobias, Pip and Hazel are characters from the Homestead, not real people — their pace tracks yours so the race stays close.",
+                 bg=UI_SURFACE, fg=UI_BORDER_LT, font=FONT_CAPTION, wraplength=760, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+        self._rivals_summary_var.set(f"{league} league · you're {['1st', '2nd', '3rd', '4th', '5th'][you['place'] - 1]} with {you['xp']} XP")
+
+    # ── Share cards ──────────────────────────────────────────────────────
+    def _show_share_card(self, year: int, month: Optional[int] = None):
+        d = self.game_engine.share_card_data(year, month, self)
+        scrim, content, btn_row, step_var, close = self._overlay_card("SHARE CARD", 640, 720)
+        W, H = 540, 560
+        c = tk.Canvas(content, width=W, height=H, bg=UI_HERO, highlightthickness=0)
+        c.pack(pady=(0, SP_SM))
+        self._draw_share_card(c, d, W, H)
+        self._share_card_canvas = c
+        self._share_card_data_last = d
+        tk.Label(content, text="Save it as an image to post, or as a web page you can open anywhere. No account, no upload — it's a file.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=560, justify="left").pack(anchor="w")
+        ttk.Button(btn_row, text="Close", style="Ghost.TButton", command=close).pack(side="left")
+        ttk.Button(btn_row, text="Save as web page", style="Secondary.TButton", command=lambda: self._save_share_html(d)).pack(side="right", padx=(SP_SM, 0))
+        ttk.Button(btn_row, text="Save as image", style="Primary.TButton", command=lambda: self._save_canvas_png(c, f"budget-{d['label'].replace(' ', '-').lower()}.png")).pack(side="right")
+
+    def _draw_share_card(self, c, d: dict, W: int, H: int):
+        c.delete("all")
+        steps = 24
+        for i in range(steps):
+            col = _lerp_color("#141a33", "#0a0b0f", i / (steps - 1))
+            c.create_rectangle(0, i * H / steps, W, (i + 1) * H / steps + 1, fill=col, outline="")
+        c.create_text(28, 30, text="BUDGET PLANNER", anchor="w", fill=UI_MUTED, font=FONT_CAPTION_BOLD)
+        c.create_text(28, 62, text=d["label"], anchor="w", fill=UI_TEXT_BRIGHT, font=FONT_DISPLAY_LG)
+        c.create_text(W - 28, 30, text=f"{d['rank']} · Level {d['level']}", anchor="e", fill=UI_GOLD, font=FONT_CAPTION_BOLD)
+        tiles = [("INCOME", f"${d['income']:,.0f}", UI_EMERALD), ("SPENT", f"${d['spent']:,.0f}", UI_RUBY),
+                 ("SAVED", f"{'+' if d['net'] >= 0 else '−'}${abs(d['net']):,.0f}", UI_EMERALD if d["net"] >= 0 else UI_RUBY),
+                 ("SAVINGS RATE", f"{d['rate']:.0f}%", UI_SAPPHIRE)]
+        tw = (W - 56 - 3 * 10) / 4
+        for i, (lab, val, col) in enumerate(tiles):
+            x = 28 + i * (tw + 10)
+            c.create_rectangle(x, 96, x + tw, 170, fill="#161923", outline=UI_BORDER)
+            c.create_text(x + 10, 112, text=lab, anchor="w", fill=UI_MUTED, font=FONT_MICRO)
+            c.create_text(x + 10, 146, text=val, anchor="w", fill=col, font=FONT_SUBHEADING)
+        y = 200
+        c.create_text(28, y, text="WHERE IT WENT", anchor="w", fill=UI_MUTED, font=FONT_CAPTION_BOLD)
+        tot = max(1.0, float(d["spent"]))
+        for cat, amt in d["top"][:5]:
+            y += 26
+            frac = min(1.0, amt / tot)
+            c.create_text(28, y, text=cat, anchor="w", fill=UI_TEXT, font=FONT_SMALL_BOLD)
+            c.create_rectangle(150, y - 6, 150 + 270 * frac, y + 6, fill=UI_SAPPHIRE, outline="")
+            c.create_text(W - 28, y, text=f"${amt:,.0f} · {frac * 100:.0f}%", anchor="e", fill=UI_MUTED, font=FONT_CAPTION)
+        y += 40
+        c.create_text(28, y, text="STOOD OUT", anchor="w", fill=UI_MUTED, font=FONT_CAPTION_BOLD)
+        lines = []
+        if d["prev_line"]:
+            lines.append(d["prev_line"])
+        if d["biggest"]:
+            n, a, dt = d["biggest"]
+            lines.append(f"Biggest single spend: {n} ${a:,.0f} on {dt:%d %b}")
+        if d["no_spend"]:
+            lines.append(f"{d['no_spend']} no-spend day{'s' if d['no_spend'] != 1 else ''}")
+        lines.append(f"${d['reserved']:,.0f} set aside across the plan right now")
+        for ln in lines[:4]:
+            y += 22
+            c.create_text(28, y, text="• " + ln, anchor="w", fill=UI_TEXT, font=FONT_SMALL)
+        y = H - 70
+        c.create_line(28, y - 14, W - 28, y - 14, fill=UI_BORDER)
+        badges = [f"🔥 Pulse run best {d['pulse_best']}", f"💸 Pay streak best {d['pay_streak_best']}", f"🏡 Homestead tier {d['tier']}", f"🂠 {d['cards']} cards", f"🤝 {d['pacts']} pacts kept"]
+        c.create_text(28, y, text="   ".join(badges[:3]), anchor="w", fill=UI_GOLD, font=FONT_CAPTION_BOLD)
+        c.create_text(28, y + 22, text="   ".join(badges[3:]), anchor="w", fill=UI_GOLD, font=FONT_CAPTION_BOLD)
+        c.create_text(W - 28, H - 24, text="made with Budget Planner", anchor="e", fill=UI_BORDER_LT, font=FONT_MICRO)
+
+    def _save_canvas_png(self, c, default_name: str):
+        try:
+            from PIL import ImageGrab
+        except Exception:
+            self._show_toast("Image export needs Pillow (pip install pillow). Save as web page works without it.", "warning", 6000)
+            return
+        try:
+            self.update_idletasks()
+            x, y = c.winfo_rootx(), c.winfo_rooty()
+            img = ImageGrab.grab(bbox=(x, y, x + c.winfo_width(), y + c.winfo_height()))
+            if sum(img.convert("L").resize((16, 16)).getdata()) / 256.0 < 2:
+                self._show_toast("The capture came back black — the desktop needs to be visible. Try 'Save as web page'.", "warning", 6000); return
+        except Exception as e:
+            self._show_toast(f"Couldn't capture: {e}", "warning", 5000); return
+        path = filedialog.asksaveasfilename(title="Save image", defaultextension=".png", initialfile=default_name, filetypes=[("PNG image", "*.png")])
+        if not path:
+            return
+        try:
+            img.save(path)
+        except Exception as e:
+            self._show_toast(f"Couldn't save: {e}", "warning", 5000); return
+        self._log_engagement("share_card")
+        self._show_toast(f"Saved {Path(path).name}.", "success", 5000, action_label="Open folder", action_cb=lambda p=path: os.startfile(str(Path(p).parent)))
+
+    def _share_card_html(self, d: dict) -> str:
+        from html import escape as _esc
+        tot = max(1.0, float(d["spent"]))
+        rows = "".join(f"<div class='row'><span>{_esc(str(cat))}</span><div class='bar'><i style='width:{min(100, amt / tot * 100):.0f}%'></i></div><b>${amt:,.0f}</b></div>" for cat, amt in d["top"][:5])
+        stood = []
+        if d["prev_line"]:
+            stood.append(d["prev_line"])
+        if d["biggest"]:
+            n, a, dt = d["biggest"]; stood.append(f"Biggest single spend: {n} ${a:,.0f} on {dt:%d %b}")
+        if d["no_spend"]:
+            stood.append(f"{d['no_spend']} no-spend days")
+        stood.append(f"${d['reserved']:,.0f} set aside across the plan")
+        li = "".join(f"<li>{_esc(s)}</li>" for s in stood)
+        net_sign = "+" if d["net"] >= 0 else "−"
+        return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{_esc(d['label'])} — Budget Planner</title>
+<style>body{{margin:0;background:#0a0b0f;color:#dee0e4;font-family:'Segoe UI',system-ui,sans-serif}}.card{{max-width:560px;margin:24px auto;padding:28px;background:linear-gradient(#141a33,#0a0b0f);border:1px solid #22242d;border-radius:14px}}
+h1{{margin:4px 0 18px;font-size:30px;color:#f4f5f7}}.k{{font-size:11px;letter-spacing:.08em;color:#8a8f9c;font-weight:700}}.tiles{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.t{{background:#161923;border:1px solid #22242d;border-radius:10px;padding:10px}}.t b{{display:block;font-size:18px;margin-top:6px}}
+.row{{display:grid;grid-template-columns:110px 1fr 70px;align-items:center;gap:10px;margin:8px 0;font-size:13px}}.bar{{height:10px;background:#161923;border-radius:5px;overflow:hidden}}.bar i{{display:block;height:100%;background:#7b9ad8}}.row b{{text-align:right;color:#8a8f9c;font-weight:600}}
+ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;font-size:12px;font-weight:700;line-height:1.9}}.foot{{text-align:right;color:#2f323d;font-size:11px;margin-top:10px}}
+.green{{color:#62b38a}}.red{{color:#c87284}}.blue{{color:#7b9ad8}}</style></head><body><div class="card">
+<div class="k">BUDGET PLANNER · {_esc(d['rank'])} · LEVEL {d['level']}</div><h1>{_esc(d['label'])}</h1>
+<div class="tiles"><div class="t"><span class="k">INCOME</span><b class="green">${d['income']:,.0f}</b></div><div class="t"><span class="k">SPENT</span><b class="red">${d['spent']:,.0f}</b></div>
+<div class="t"><span class="k">SAVED</span><b class="{'green' if d['net'] >= 0 else 'red'}">{net_sign}${abs(d['net']):,.0f}</b></div><div class="t"><span class="k">SAVINGS RATE</span><b class="blue">{d['rate']:.0f}%</b></div></div>
+<p class="k" style="margin-top:22px">WHERE IT WENT</p>{rows}<p class="k" style="margin-top:18px">STOOD OUT</p><ul>{li}</ul>
+<div class="badges">🔥 Pulse run best {d['pulse_best']} &nbsp; 💸 Pay streak best {d['pay_streak_best']} &nbsp; 🏡 Homestead tier {d['tier']}<br>🂠 {d['cards']} cards &nbsp; 🤝 {d['pacts']} pacts kept</div>
+<div class="foot">made with Budget Planner</div></div></body></html>"""
+
+    def _save_share_html(self, d: dict):
+        path = filedialog.asksaveasfilename(title="Save web page", defaultextension=".html",
+                                            initialfile=f"budget-{d['label'].replace(' ', '-').lower()}.html", filetypes=[("Web page", "*.html")])
+        if not path:
+            return
+        try:
+            Path(path).write_text(self._share_card_html(d), encoding="utf-8")
+        except OSError as e:
+            self._show_toast(f"Couldn't save: {e}", "warning", 5000); return
+        self._log_engagement("share_card")
+        self._show_toast(f"Saved {Path(path).name}.", "success", 5000, action_label="Open", action_cb=lambda p=path: os.startfile(p))
 
     def _build_rules_tab(self):
         frame = self.rules_tab
@@ -29668,6 +29979,8 @@ class BudgetApp(tk.Tk):
             self._render_weekly_challenges()
 
     def refresh_season_pass(self):
+        if hasattr(self, "_rivals_host"):
+            self._render_rivals()
         """Update the season pass XP bar and tier claim buttons."""
         self.game_engine.ensure_season()
         g = self.state.game

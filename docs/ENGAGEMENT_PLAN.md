@@ -2,7 +2,7 @@
 
 Written 8 Oct 2026. Companion to `HOMESTEAD_PLAN.md`.
 
-**Status (9 Oct 2026): Phase A built** — items 1, 2, 3, 5, 6 and 13 (Daily Pulse, freezes/repair, Windows reminders, any-day + weekly challenges, day-one head start, variable vault, level curve). **Phase B built (9 Oct)** — items 4, 7, 8 and 9 (Homestead idle accrual, money milestones + records + final-stretch bonus, Pacts with Gerald, savings challenges). Phase C is open.
+**Status (9 Oct 2026): Phase A built** — items 1, 2, 3, 5, 6 and 13 (Daily Pulse, freezes/repair, Windows reminders, any-day + weekly challenges, day-one head start, variable vault, level curve). **Phase B built (9 Oct)** — items 4, 7, 8 and 9 (Homestead idle accrual, money milestones + records + final-stretch bonus, Pacts with Gerald, savings challenges). **Phase C built (11 Oct)** — items 10, 11, 12, 14, 15 plus the Tier 4 economy tuning. The plan is complete.
 
 ## 1. Diagnosis — why the current loop can't be habit-forming
 

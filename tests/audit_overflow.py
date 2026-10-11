@@ -138,6 +138,12 @@ audit(sc, "cost-guide"); btn(sc, "Close")[0].invoke(); app.update()
 for k in ("bill", "fund", "goal"):
     app._show_quick_add(k); app.update(); sc = scrims(app)[-1]; audit(sc, f"quick-add:{k}"); btn(sc, "Cancel")[0].invoke(); app.update()
 
+# Phase C2: share card + rivals on Score
+app._show_share_card(_d.today().year, _d.today().month) if False else None
+from datetime import date as _dd
+app._show_share_card(_dd.today().year, None); app.update(); sc = scrims(app)[-1]; audit(sc, "share-card"); btn(sc, "Close")[0].invoke(); app.update()
+app._show_page("score"); app.refresh_season_pass(); app.update(); audit(app.score_tab if hasattr(app, "score_tab") else app.game_tab, "page:score+rivals")
+
 # Phase C1: welcome back, letter, letters section
 app.state.game.mill_last_collected = (__import__("datetime").datetime.now() - __import__("datetime").timedelta(hours=9)).isoformat(timespec="minutes")
 app.state.game.pulse_days_total = 3
