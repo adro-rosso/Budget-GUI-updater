@@ -89,7 +89,8 @@ eng.start_challenge("payfirst", today); assert st.goals[-1].mode == "percent_sur
 # round trip
 s2 = bg.AppState.from_dict(st.to_dict()); assert s2.funds[1].challenge == "52week" and s2.game.records["mill_haul"]["value"] == 64 and s2.game.nospend_challenge["started"]
 # reminders: harvest
-g.mill_last_collected = (datetime.now() - timedelta(hours=9)).isoformat(timespec="minutes")
-msgs = bg._reminder_messages(st, datetime.combine(today, datetime.min.time()).replace(hour=9))
+_at9 = datetime.combine(today, datetime.min.time()).replace(hour=9)
+g.mill_last_collected = (_at9 - timedelta(hours=9)).isoformat(timespec="minutes")   # relative to the injected clock
+msgs = bg._reminder_messages(st, _at9)
 assert any(k == "harvest" for k, _, _ in msgs), msgs
 print("engine 12 OK")

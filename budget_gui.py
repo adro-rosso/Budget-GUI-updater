@@ -18800,7 +18800,7 @@ class BudgetApp(tk.Tk):
         except Exception:
             pass
         items.sort(key=lambda it: -it[1])
-        return items[:4]
+        return items[:5]   # letters, the race and the harvest joined the list
 
     def _render_next_up(self):
         host = self._next_up_host
