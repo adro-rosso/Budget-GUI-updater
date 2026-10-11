@@ -3084,6 +3084,102 @@ def season_for_month(month: int) -> str:
             6: "winter", 7: "winter", 8: "winter"}.get(month, "spring")
 
 
+# ── Live events: a theme per month, a 4-card set per season ───────────────────
+MONTHLY_EVENTS = {
+    1:  ("Fresh Start January",   "New year, same plan — just better kept. Every Pulse this month counts double for the season."),
+    2:  ("Frugal February",       "Shortest month, sharpest spending. Keep the takeaway line flat and the set cards come easy."),
+    3:  ("Autumn Harvest",        "The orchard turns. Plots ripen a little faster in the Homestead."),
+    4:  ("Tax-time Tune-up",      "Receipts, deductions, and a plan that survives July. Import statements and sort them while they're fresh."),
+    5:  ("May Matters",           "Mid-year check: are the set-asides on pace? The Homestead's windmill hums while you look."),
+    6:  ("End of Financial Year", "Close the year clean. Analysis → FY shows exactly where it went."),
+    7:  ("Winter Stores",         "Cold months, warm buffers. Keep the emergency fund topped up and the fence stands tall."),
+    8:  ("August Ascent",         "A level-up month. Daily Pulses and pacts push the rank."),
+    9:  ("Spring Clean",          "Cancel one thing you don't use. The flagged-follow-ups card is where it hides."),
+    10: ("October Oath",          "Pacts month. Make one, keep one, earn the Oath cards."),
+    11: ("No-spend November",     "The quiet challenge. Two no-spend days a week is the pace."),
+    12: ("December Sprint",       "The expensive month, planned. The Christmas fund exists for exactly this."),
+}
+
+# Seasonal card sets: drawable from packs only during their season (Australian seasons).
+EVENT_CARD_SETS = {
+    "summer": ("Summer Set", [
+        ("s_summer_1", "Beach Fund",       "rare", "🏖", "Sand, sun, and a holiday that was already paid for.", ""),
+        ("s_summer_2", "Cold Drink Saver", "rare", "🥤", "Skipped the servo drink. Twice. That's a pack.", ""),
+        ("s_summer_3", "Long Light",       "epic", "🌅", "Evenings that stretch. So does a plan that's working.", ""),
+        ("s_summer_4", "Heatwave Buffer",  "epic", "🌡", "The power bill came. The buffer was there.", ""),
+    ]),
+    "autumn": ("Autumn Set", [
+        ("s_autumn_1", "Leaf Ledger",      "rare", "🍂", "Everything falls into place — and into a category.", ""),
+        ("s_autumn_2", "Harvest Moon",     "rare", "🌕", "The windmill turned all night.", ""),
+        ("s_autumn_3", "Rego Ready",       "epic", "🚗", "The set-aside met the bill on the exact day.", ""),
+        ("s_autumn_4", "Golden Hour",      "epic", "✨", "A month that closed with more than it opened.", ""),
+    ]),
+    "winter": ("Winter Set", [
+        ("s_winter_1", "Woollen Buffer",   "rare", "🧣", "Warm, boring, essential. Like an emergency fund.", ""),
+        ("s_winter_2", "Hearth Keeper",    "rare", "🔥", "The streak survived the cold months.", ""),
+        ("s_winter_3", "Frost Line",       "epic", "❄", "A freeze used wisely — the run never broke.", ""),
+        ("s_winter_4", "Long Night Ledger","epic", "🕯", "Every line sorted before midnight.", ""),
+    ]),
+    "spring": ("Spring Set", [
+        ("s_spring_1", "First Sprout",     "rare", "🌱", "A new set-aside, planted on pay day.", ""),
+        ("s_spring_2", "Clean Slate",      "rare", "🧹", "One subscription cancelled. The flag came down.", ""),
+        ("s_spring_3", "Blossom Pact",     "epic", "🌸", "A promise made in spring and kept by summer.", ""),
+        ("s_spring_4", "Tall Grass",       "epic", "🌾", "The Homestead at its greenest.", ""),
+    ]),
+}
+SEASONAL_CARD_SEASON = {c[0]: s for s, (_n, cards) in EVENT_CARD_SETS.items() for c in cards}
+for _s, (_n, _cards) in EVENT_CARD_SETS.items():
+    CARD_POOL.extend(_cards)
+CARD_BY_ID.update({c[0]: c for _s, (_n, _cards) in EVENT_CARD_SETS.items() for c in _cards})
+
+# ── Gerald's letters: one unlocks per Daily Pulse day, read at the mailbox ──────
+# {"title", "body", optional "choice": [(label, avatar_item_id), (label, avatar_item_id)]}
+GERALD_LETTERS = [
+    {"title": "Welcome to the valley", "body": "I got here a week before you did, with a waistcoat and a ledger and not much else. The place was mostly fence posts. It's looking better already. Keep showing up — the Homestead notices."},
+    {"title": "The windmill", "body": "It was built by a woman called Marta, forty years back, and it has turned for every family that kept their books straight. It's turning for you now. Don't read too much into the days it's still — just log the pay."},
+    {"title": "Marigold", "body": "The hen has opinions. Mostly about mornings. She laid an egg on my ledger this morning and I'm choosing to call it encouragement."},
+    {"title": "Old Tobias", "body": "There's a man at the end of the lane who hasn't logged a thing in years and says he's doing fine. He is not doing fine. He is doing 'roughly'. Don't be Tobias."},
+    {"title": "On no-spend days", "body": "The quietest days are the ones that compound. A day where nothing leaves the account isn't a sacrifice — it's a brick. I count bricks."},
+    {"title": "The fence", "body": "Each post is a bill. When one leans, the whole line looks wrong. One overdue bill makes a plan feel broken when it's really just one post. Stand it up and move on."},
+    {"title": "Pip's market stall", "body": "A kid called Pip runs a stall by the gate on Saturdays. Everything is three dollars. I bought a jar of honey I didn't need and logged it immediately, which is the only honest way to buy honey you don't need."},
+    {"title": "Freezes", "body": "You've probably got a freeze banked by now. Here's the thing nobody says: a freeze isn't an excuse, it's a cushion. Use it when life happens. Don't spend it on a Tuesday because the couch was comfortable."},
+    {"title": "Weather", "body": "Clear skies mean a streak alive. Cloud means one slipped. It's not a judgement — it's a weather report. Tomorrow's forecast is entirely up to you."},
+    {"title": "The orchard", "body": "Goals are trees. They look like nothing for a long time and then one spring they're fruiting and you can't remember the place without them. Plant one even if it's open-ended."},
+    {"title": "Hazel Thorne", "body": "Hazel keeps the best books in the valley and will tell you so. She does one thing you don't yet: she reads her month-end report the day it lands. Try it once. Just once."},
+    {"title": "A small gift", "body": "I had two things left over from a market trade and only one head. Pick whichever suits you — it's yours, no Gold, no fuss.",
+     "choice": [("The circle glasses", "acc_glasses"), ("The wrap scarf", "acc_scarf")]},
+    {"title": "The first pact", "body": "A pact is just a promise with witnesses. I'm the witness. The Gems are the handshake. The first one you keep changes how the second one feels."},
+    {"title": "Rain", "body": "It rained for three days and the plots loved it. Your version of rain is a pay landing and going where you said it would. Boring. Wonderful."},
+    {"title": "The miller's ledger", "body": "Marta's old ledger turned up in the mill loft. Forty years of pays in pencil. The handwriting gets steadier around year two. So will yours."},
+    {"title": "On duplicates", "body": "Pip tried to sell me the same jar twice. Statements do that too. The app catches it — same date, same amount, same merchant — and quietly throws the second one out. You're welcome."},
+    {"title": "Ledger the cat", "body": "Sits on whatever I'm reading. Currently sitting on your Analysis tab, metaphorically. Go look at the quarter view. The cat insists."},
+    {"title": "A bad week", "body": "Everyone has one. The run breaks, the streak slips, a bill lands early. The only difference between the people who are fine in a year and the people who aren't is whether they open the app the day after."},
+    {"title": "The path", "body": "Every statement you import lays a stone from the door to the gate. Six stones and the path's done. It's the single most useful habit in this place, and the least glamorous."},
+    {"title": "Tobias, again", "body": "He came round. Asked what the windmill was for. I showed him the Pulse. He did two days and said it was 'alright'. From Tobias that's a standing ovation."},
+    {"title": "Final stretch", "body": "When a fund is nearly full, people slow down. Strange, but true. That's why the last stretch pays extra Gold — to get you over the line while the line is in sight."},
+    {"title": "The fox", "body": "A fox has moved in under the greenhouse. Keeps the mice down. The Homestead awards it at tier three, which is about when a plan stops being a project and starts being a place."},
+    {"title": "What the report is for", "body": "The month report isn't a grade. It's a weather map of where the money went. Read it like a map, not a verdict."},
+    {"title": "Hazel's rule", "body": "'Decide before you spend, not after.' She says it every market day. It is annoying because it is correct."},
+    {"title": "Cash days", "body": "A market stall takes cash and the statement never sees it. That's what the Pulse's first beat is for. Two seconds, logged, done. Pip's honey goes in Food."},
+    {"title": "The owl", "body": "There's an owl in the big tree that only appears at tier four. It watches the fence. It has never once seen a leaning post and said nothing."},
+    {"title": "Quarter day", "body": "Rego, insurance, electricity — the big ones come quarterly or yearly and they arrive like weather. A set-aside turns a storm into a Tuesday."},
+    {"title": "Streak maths", "body": "Seven pays in a row sounds small until you count the weeks. For most people that's a season of their life kept straight. Worth a celebration. The app agrees."},
+    {"title": "The sack", "body": "When the windmill's milled all it can, a sack appears by the door. Gold waiting. Marta used to say a full sack and an empty hand was the only real sin in the valley."},
+    {"title": "Another gift", "body": "Market day again, and I've overbought again. Two things, one of you. Choose.",
+     "choice": [("A soft glow aura", "aura_soft_glow"), ("The headband", "acc_headband")]},
+    {"title": "The dragonet", "body": "Tier five. I've only seen it twice in forty years of ledgers. It sits on the shoulder of someone whose Homestead has everything standing at once. Not many. Could be you."},
+    {"title": "On decor", "body": "A lantern, a pond, a flag. None of it changes a number. All of it changes whether you want to come back and look. That's allowed. That's the point."},
+    {"title": "Marta's palette", "body": "Each season she'd repaint the mill's door. The valley changes colour if you earn the season — claim the top tier and it's yours to keep."},
+    {"title": "Rivals", "body": "Marta, Tobias, Pip and Hazel keep score against each other every week. It's friendly. Mostly. Pip cheats by being twelve and having no bills."},
+    {"title": "The letter you'll keep", "body": "Someday you'll open this app and realise you haven't worried about money in a while. Not because there's more of it — because you know where it is. That's the letter. Keep it."},
+    {"title": "Late pay", "body": "Pays land late sometimes. Weeds appear. One log and they clear. Don't let a late pay turn into a late month."},
+    {"title": "A pact kept", "body": "If you've kept a pact by now, you know the feeling: it's not the Gems. It's that past-you and present-you agreed on something and both showed up."},
+    {"title": "Hazel's confession", "body": "She broke a run once. Fourteen days. Said it was the best thing that happened to her books, because she learned the run was for her, not for the app. Then she started again."},
+    {"title": "Spring clean", "body": "One subscription you don't use, cancelled, is worth more than a month of Pulses. Check the flagged card. Be ruthless. Netflix will survive."},
+    {"title": "The last one, for now", "body": "Forty letters. If you've read them all, you've done forty Pulses, which means you've done the one thing that works. I'll write more when there's news. Marigold says hello. She means it."},
+]
+
+
 def _draw_homestead_decor(canvas, decor_ids, X, Y, m, ink, lw, frame, tod):
     """Draw owned decor at fixed anchors. Small, readable shapes in the scene's style."""
     for did in decor_ids:
@@ -4911,6 +5007,12 @@ class GameStats:
     homestead_decor: List[str] = field(default_factory=list)
     homestead_palettes: List[str] = field(default_factory=list)
     homestead_palette: str = "classic"
+    # Phase C: letters, events, weekly XP
+    letters_read: int = 0
+    letter_choices: Dict[str, str] = field(default_factory=dict)
+    event_sets_claimed: List[str] = field(default_factory=list)
+    weekly_xp: int = 0
+    weekly_xp_week: str = ""
 
     def to_dict(self):
         return asdict(self)
@@ -4998,6 +5100,11 @@ class GameStats:
             homestead_decor=list(data.get("homestead_decor", [])),
             homestead_palettes=list(data.get("homestead_palettes", [])),
             homestead_palette=str(data.get("homestead_palette", "classic") or "classic"),
+            letters_read=int(data.get("letters_read", 0)),
+            letter_choices=dict(data.get("letter_choices", {}) or {}),
+            event_sets_claimed=list(data.get("event_sets_claimed", [])),
+            weekly_xp=int(data.get("weekly_xp", 0)),
+            weekly_xp_week=str(data.get("weekly_xp_week", "")),
         )
 
 
@@ -5575,7 +5682,11 @@ class BudgetGameEngine:
         g = self.state.game
         self.ensure_season()
         bonus = 1.25 if "season_boost" in g.perks_unlocked else 1.0
-        g.season_xp += max(1, int(round(amount * bonus)))
+        if self.xp_window_active():
+            bonus *= 2.0   # pay-week weekend: double XP
+        gain = max(1, int(round(amount * bonus)))
+        g.season_xp += gain
+        self._track_weekly_xp(gain)
         return [i for i, (xp, _, _, _) in enumerate(SEASON_TIERS)
                 if g.season_xp >= xp and i not in g.season_claimed_tiers]
 
@@ -5676,6 +5787,7 @@ class BudgetGameEngine:
         if not perk:
             return False, "Unknown perk."
         pid, name, _, gem_cost, max_stacks = perk
+        gem_cost = self.featured_cost(pid, gem_cost)   # today's deal
         if g.perks_unlocked.count(perk_id) >= max_stacks:
             return False, f"{name} is already at max level."
         if g.gems < gem_cost:
@@ -6514,6 +6626,96 @@ class BudgetGameEngine:
         g.homestead_palettes.append(pid)
         return pid
 
+    # ── Live events, XP window, daily deal ───────────────────────────────
+    def current_event(self, today: Optional[date] = None) -> dict:
+        today = today or date.today()
+        name, blurb = MONTHLY_EVENTS.get(today.month, ("This month", ""))
+        season = season_for_month(today.month)
+        set_name, cards = EVENT_CARD_SETS[season]
+        owned = set(self.state.game.cards_owned)
+        have = sum(1 for c in cards if c[0] in owned)
+        return {"name": name, "blurb": blurb, "season": season, "set_name": set_name, "set_have": have, "set_total": len(cards),
+                "set_claimed": season in self.state.game.event_sets_claimed, "xp_window": self.xp_window_active(today),
+                "deal": self.featured_perk(today)}
+
+    def xp_window_active(self, today: Optional[date] = None) -> bool:
+        """Double Season XP on the Saturday/Sunday of a week in which a pay is expected."""
+        today = today or date.today()
+        if today.weekday() < 5 or not self.state.incomes:
+            return False
+        last = max(i.received_on for i in self.state.incomes)
+        cycle = BudgetEngine.PAY_CYCLE_DAYS.get(self.state.pay_frequency, 14)
+        expected = last + timedelta(days=cycle)
+        while expected < today - timedelta(days=cycle):
+            expected += timedelta(days=cycle)
+        monday = today - timedelta(days=today.weekday())
+        return monday <= expected <= monday + timedelta(days=6)
+
+    def featured_perk(self, today: Optional[date] = None) -> tuple:
+        today = today or date.today()
+        perk = PERK_SHOP_ITEMS[today.toordinal() % len(PERK_SHOP_ITEMS)]
+        return perk[0], max(1, int(round(perk[3] * 0.7)))
+
+    def featured_cost(self, perk_id: str, gem_cost: int) -> int:
+        pid, disc = self.featured_perk()
+        return disc if pid == perk_id else gem_cost
+
+    def _track_weekly_xp(self, gain: int):
+        g = self.state.game
+        week = date.today().strftime("%G-W%V")
+        if g.weekly_xp_week != week:
+            g.weekly_xp_week = week
+            g.weekly_xp = 0
+        g.weekly_xp += int(gain)
+
+    def check_event_set(self) -> str:
+        """All four of this season's cards owned → +8 Gems once. Returns the set name or ''."""
+        g = self.state.game
+        season = season_for_month(date.today().month)
+        if season in g.event_sets_claimed:
+            return ""
+        set_name, cards = EVENT_CARD_SETS[season]
+        if all(c[0] in g.cards_owned for c in cards):
+            g.event_sets_claimed.append(season)
+            g.gems += 8
+            g.lifetime_gems_earned += 8
+            ach = f"{set_name} Collector"
+            if ach not in g.achievements:
+                g.achievements.append(ach)
+            return set_name
+        return ""
+
+    # ── Gerald's letters ─────────────────────────────────────────────────
+    def letters_available(self) -> int:
+        return min(len(GERALD_LETTERS), int(self.state.game.pulse_days_total))
+
+    def letter_waiting(self) -> bool:
+        return self.letters_available() > self.state.game.letters_read
+
+    def read_next_letter(self) -> Optional[dict]:
+        g = self.state.game
+        if not self.letter_waiting():
+            return None
+        idx = g.letters_read
+        g.letters_read += 1
+        letter = dict(GERALD_LETTERS[idx])
+        letter["index"] = idx
+        return letter
+
+    def choose_letter_gift(self, idx: int, item_id: str) -> tuple:
+        g = self.state.game
+        if idx < 0 or idx >= len(GERALD_LETTERS):
+            return False, "No such letter."
+        choices = GERALD_LETTERS[idx].get("choice") or []
+        if not any(iid == item_id for _l, iid in choices):
+            return False, "That wasn't on offer."
+        if str(idx) in g.letter_choices:
+            return False, "You already chose from this letter."
+        g.letter_choices[str(idx)] = item_id
+        if item_id not in g.character_items_owned:
+            g.character_items_owned.append(item_id)
+        return True, f"{AVATAR_ITEMS.get(item_id, {}).get('name', item_id)} is yours."
+
     def check_homestead_tiers(self, tier: int) -> list:
         """Record the Homestead tier and award any companion not yet claimed.
         Returns the list of newly awarded item ids."""
@@ -6614,8 +6816,11 @@ class BudgetGameEngine:
         rarities = list(rarity_weights.keys())
         weights = list(rarity_weights.values())
         pool_by_rarity: dict = {}
+        _season_now = season_for_month(date.today().month)
         for cid, cname, crarity, *_ in CARD_POOL:
             if cid in EXCLUSIVE_CARD_IDS:
+                continue
+            if cid in SEASONAL_CARD_SEASON and SEASONAL_CARD_SEASON[cid] != _season_now:
                 continue
             pool_by_rarity.setdefault(crarity, []).append((cid, cname, crarity) + tuple(_))
         drawn = []
@@ -6678,7 +6883,8 @@ class BudgetGameEngine:
             g.achievements.append("Fortune's Favourite")
         # Check card set completions — auto-claim rewards
         set_completions = self.check_card_set_completions()
-        return {"success": True, "message": f"Opened {name}!", "cards": drawn,
+        event_set = self.check_event_set()
+        return {"success": True, "event_set": event_set, "message": f"Opened {name}!", "cards": drawn,
                 "cost_type": cost_type, "cost": cost,
                 "set_completions": set_completions, "pity_used": pity_used}
 
@@ -11201,6 +11407,7 @@ class BudgetApp(tk.Tk):
             self.after(1500, self._gerald_startup_alert)
             # End-of-month report prompt (once per month, after the UI settles)
             self.after(2200, self._maybe_prompt_monthly_report)
+            self.after(2800, self._maybe_welcome_back)
         # Background update check — non-blocking, silent on failure.
         self.after(5000, self._check_for_updates_silent)
 
@@ -15134,6 +15341,7 @@ class BudgetApp(tk.Tk):
         self._flagged_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._month_report_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._pact_host = tk.Frame(quick_inner, bg=UI_SURFACE)
+        self._event_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         quick_mode_row = tk.Frame(quick_inner, bg=UI_SURFACE)
         quick_mode_row.pack(anchor="w", pady=(SP_MD, 0), fill="x")
         ttk.Button(quick_mode_row, text="Log Pay", style="Primary.TButton",
@@ -17262,6 +17470,7 @@ class BudgetApp(tk.Tk):
             self._settle_pacts_ui()
             self._render_pact_card()
             self._update_today_harvest()
+            self._render_event_banner()
         if hasattr(self, "_month_report_host"):
             self._render_month_report_card()
         if hasattr(self, "_vault_host"):
@@ -18158,7 +18367,14 @@ class BudgetApp(tk.Tk):
         self._homestead_shop_summary = tk.StringVar(value="Decor and seasonal palettes — a place to spend Gold and Gems")
         shop_wrap, shop = self._collapsible_section(frame, "Decor & palettes", "homestead.shop", default_open=False,
                                                     summary_var=self._homestead_shop_summary)
-        shop_wrap.grid(row=4, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_XL))
+        shop_wrap.grid(row=4, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
+        self._letters_summary = tk.StringVar(value="")
+        let_wrap, let = self._collapsible_section(frame, "Letters from Gerald", "homestead.letters", default_open=True,
+                                                  summary_var=self._letters_summary)
+        let_wrap.grid(row=5, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_XL))
+        let.columnconfigure(0, weight=1)
+        self._letters_host = tk.Frame(let, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
+        self._letters_host.grid(row=0, column=0, sticky="ew")
         shop.columnconfigure(0, weight=1)
         self._homestead_shop_host = tk.Frame(shop, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
         self._homestead_shop_host.grid(row=0, column=0, sticky="ew")
@@ -18198,6 +18414,7 @@ class BudgetApp(tk.Tk):
         self._draw_homestead_canvas()
         self._render_homestead_harvest()
         self._render_homestead_shop()
+        self._render_letters_card()
         if hasattr(self, "_homestead_shop_summary"):
             _g = self.state.game
             self._homestead_shop_summary.set(f"{len(_g.homestead_decor)} of {len(HOMESTEAD_DECOR)} decor placed · palette {HOMESTEAD_PALETTES.get(_g.homestead_palette or 'classic', HOMESTEAD_PALETTES['classic'])['name']}")
@@ -18412,6 +18629,11 @@ class BudgetApp(tk.Tk):
             if nm:
                 items.append((f"Pulse run {nm} 🔥", ps / float(nm), f"{nm - ps} more day{'s' if nm - ps != 1 else ''} of the Daily Pulse"
                               + (" · earns a ❄ freeze" if nm % 7 == 0 else ""), "today", UI_GOLD))
+        except Exception:
+            pass
+        try:
+            if self.game_engine.letter_waiting():
+                items.append(("Letter waiting ✉", 1.0, "Gerald wrote — read it at the Homestead mailbox", "homestead", UI_GOLD))
         except Exception:
             pass
         try:
@@ -19722,6 +19944,7 @@ class BudgetApp(tk.Tk):
         except tk.TclError:
             pass
         self.state.ui_prefs["last_page"] = self.current_page_key
+        self.state.ui_prefs["last_close"] = datetime.now().isoformat(timespec="minutes")
 
     # ── Shortcut sheet ───────────────────────────────────────────────────
     def _show_shortcuts(self):
@@ -20305,6 +20528,8 @@ class BudgetApp(tk.Tk):
         if p.get("logged"):
             bits.append(f"${float(p['logged']):,.0f} logged")
         bits.append(f"best run {st['best']}")
+        if self.game_engine.letter_waiting():
+            bits.append("✉ letter waiting")
         bits.append(f"❄ at {nxt_freeze}" if st["freezes"] < BudgetGameEngine.PULSE_FREEZE_CAP else "freezes full")
         tk.Label(body, text=" · ".join(bits) + ". Back tomorrow.", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=300, justify="left").pack(anchor="w", pady=(SP_XS, 0))
 
@@ -21956,6 +22181,210 @@ class BudgetApp(tk.Tk):
         self._log_engagement("share_homestead")
         self._show_toast(f"Saved {Path(path).name}.", "success", 5000, action_label="Open folder",
                          action_cb=lambda p=path: os.startfile(str(Path(p).parent)))
+
+    # ── Today: live event banner ─────────────────────────────────────────
+    def _render_event_banner(self):
+        host = getattr(self, "_event_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        if self.state.ui_prefs.get("focus_mode"):
+            host.pack_forget()
+            return
+        host.pack(fill="x", pady=(SP_SM, 0))
+        ev = self.game_engine.current_event()
+        box = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_GOLD if ev["xp_window"] else UI_BORDER, padx=SP_MD, pady=SP_SM)
+        box.pack(fill="x")
+        head = tk.Frame(box, bg=UI_SURFACE2)
+        head.pack(fill="x")
+        tk.Label(head, text="THIS MONTH", bg=UI_SURFACE2, fg=UI_GOLD, font=FONT_CAPTION_BOLD).pack(side="left")
+        tk.Label(head, text=ev["name"], bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD).pack(side="left", padx=(SP_SM, 0))
+        if ev["xp_window"]:
+            tk.Label(head, text="×2 SEASON XP THIS WEEKEND", bg=UI_GOLD, fg=UI_HERO, font=FONT_MICRO, padx=6, pady=1).pack(side="right")
+        tk.Label(box, text=ev["blurb"], bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=640, justify="left").pack(anchor="w", pady=(2, 0))
+        foot = tk.Frame(box, bg=UI_SURFACE2)
+        foot.pack(fill="x", pady=(SP_XS, 0))
+        set_txt = (f"{ev['set_name']}: complete ✓" if ev["set_claimed"] else
+                   f"{ev['set_name']}: {ev['set_have']}/{ev['set_total']} cards — only in packs until the season ends")
+        sl = tk.Label(foot, text="🂠 " + set_txt, bg=UI_SURFACE2, fg=UI_AMETHYST, font=FONT_CAPTION_BOLD, cursor="hand2")
+        sl.pack(side="left")
+        sl.bind("<Button-1>", lambda _e: self._show_page("collection"))
+        pid, disc = ev["deal"]
+        perk = next((p_ for p_ in PERK_SHOP_ITEMS if p_[0] == pid), None)
+        if perk:
+            dl = tk.Label(foot, text=f"Today's deal: {perk[1]} {disc} Gems (was {perk[3]})", bg=UI_SURFACE2, fg=UI_SAPPHIRE, font=FONT_CAPTION_BOLD, cursor="hand2")
+            dl.pack(side="right")
+            dl.bind("<Button-1>", lambda _e: self._open_perk_shop())
+
+    # ── While you were away ──────────────────────────────────────────────
+    def _maybe_welcome_back(self):
+        raw = self.state.ui_prefs.get("last_close")
+        if not raw or self.state.ui_prefs.get("sample_mode"):
+            return
+        try:
+            away_h = (datetime.now() - datetime.fromisoformat(str(raw))).total_seconds() / 3600.0
+        except ValueError:
+            return
+        if away_h < 6:
+            return
+        if getattr(self, "_setup_wizard_scrim", None) is not None:
+            return
+        self._show_welcome_back(away_h)
+
+    def _welcome_back_lines(self) -> list:
+        """(icon, text, page_key) — what changed or is waiting."""
+        lines = []
+        eng = self.game_engine
+        g = self.state.game
+        today = date.today()
+        try:
+            mill = eng.mill_status()
+            ripe = [p_ for p_ in eng.plot_status() if p_["ripe"]]
+            if mill["gold"] >= 1 or ripe:
+                lines.append(("🌾", f"The windmill milled {mill['gold']} Gold" + (f" and {len(ripe)} plot{'s' if len(ripe) != 1 else ''} ripened" if ripe else "") + " — collect on the Homestead.", "homestead"))
+        except Exception:
+            pass
+        try:
+            st = eng.vault_status()
+            if not st["opened_today"]:
+                lines.append(("🔥", f"Today's Pulse isn't done" + (f" — your {st['streak']}-day run is waiting." if st["streak"] else "."), "today"))
+            if st.get("repair"):
+                lines.append(("❄", f"Your {st['repair']['length']}-day run broke while you were away — repair for {st['repair']['cost']} Gems within {st['repair']['hours_left']} h.", "today"))
+        except Exception:
+            pass
+        due = [b for b in self.state.bills if 0 <= (b.due_date - today).days <= 3 and b.current_saved + 0.01 < b.amount]
+        for b in due[:3]:
+            lines.append(("📅", f"{b.name} is due {'today' if b.due_date == today else b.due_date.strftime('%A')} — ${b.amount - b.current_saved:,.0f} still to set aside.", "setup"))
+        overdue = [b for b in self.state.bills if b.due_date < today and b.current_saved + 0.01 < b.amount]
+        if overdue:
+            lines.append(("⚠", f"{len(overdue)} bill{'s' if len(overdue) != 1 else ''} overdue: {', '.join(b.name for b in overdue[:3])}.", "setup"))
+        risk = self._streak_risk()
+        if risk:
+            lines.append(("💸", risk[0], "income"))
+        prog = eng.pact_progress()
+        if prog:
+            lines.append(("🤝", f"Pact: {prog['title']} — {prog['text']} {prog['days_left']} day{'s' if prog['days_left'] != 1 else ''} left.", "today"))
+        if eng.letter_waiting():
+            lines.append(("✉", "A letter from Gerald is waiting at the mailbox.", "homestead"))
+        sd = self._statement_due()
+        if sd:
+            lines.append(("🏦", f"Statement time — last import {sd['days']} days ago." if sd["days"] < 999 else "No statement imported yet — open your bank from Statements.", "transactions"))
+        pend = self._pending_report_month()
+        if pend:
+            lines.append(("📊", f"Your {date(pend[0], pend[1], 1):%B} report is ready.", "today"))
+        ev = eng.current_event()
+        if ev["xp_window"]:
+            lines.append(("✨", "Double Season XP all weekend — pay week.", "score"))
+        return lines
+
+    def _show_welcome_back(self, away_h: float):
+        lines = self._welcome_back_lines()
+        if not lines:
+            return
+        scrim, content, btn_row, step_var, close = self._overlay_card("WHILE YOU WERE AWAY", 600, 460)
+        head = tk.Frame(content, bg=UI_SURFACE)
+        head.pack(fill="x")
+        c = tk.Canvas(head, width=56, height=74, bg=UI_SURFACE, highlightthickness=0)
+        c.pack(side="left", padx=(0, SP_MD))
+        try:
+            _draw_gerald(c, 56, 74, "happy")
+        except Exception:
+            pass
+        gone = f"{away_h / 24:.0f} day{'s' if away_h >= 36 else ''}" if away_h >= 24 else f"{away_h:.0f} hours"
+        tk.Label(head, text=f"Gone {gone}. Here's what moved.", bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_HEADING, wraplength=460, justify="left").pack(side="left", anchor="w")
+        lst = tk.Frame(content, bg=UI_SURFACE)
+        lst.pack(fill="x", pady=(SP_SM, 0))
+        for icon, text, page in lines[:8]:
+            row = tk.Frame(lst, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_SM, pady=SP_XS, cursor="hand2")
+            row.pack(fill="x", pady=(0, SP_XS))
+            tk.Label(row, text=icon, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_BODY).pack(side="left", padx=(0, SP_SM))
+            lbl = tk.Label(row, text=text, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=480, justify="left", anchor="w")
+            lbl.pack(side="left", fill="x", expand=True)
+            for w_ in (row, lbl):
+                w_.bind("<Button-1>", lambda _e, p=page: (close(), self._show_page(p)))
+        self._welcome_back_lines_shown = lines
+        ttk.Button(btn_row, text="Close", style="Ghost.TButton", command=close).pack(side="left")
+        ttk.Button(btn_row, text="Start the Pulse  →", style="Primary.TButton", command=lambda: (close(), self._pulse_focus())).pack(side="right")
+
+    # ── Letters from Gerald (Homestead mailbox) ──────────────────────────
+    def _render_letters_card(self):
+        host = getattr(self, "_letters_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        eng = self.game_engine
+        g = self.state.game
+        waiting = eng.letter_waiting()
+        avail = eng.letters_available()
+        box = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_GOLD if waiting else UI_BORDER, padx=SP_MD, pady=SP_SM)
+        box.pack(fill="x")
+        tk.Label(box, text="✉  " + ("A letter is waiting." if waiting else ("Nothing new — the next letter arrives with tomorrow's Pulse." if g.letters_read < len(GERALD_LETTERS) else "You've read every letter Gerald has written so far.")),
+                 bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT if waiting else UI_MUTED, font=FONT_SMALL_BOLD).pack(anchor="w")
+        tk.Label(box, text=f"{g.letters_read} of {len(GERALD_LETTERS)} read · one unlocks per Daily Pulse day ({avail} earned so far)",
+                 bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+        row = tk.Frame(box, bg=UI_SURFACE2)
+        row.pack(anchor="w", pady=(SP_XS, 0))
+        if waiting:
+            ttk.Button(row, text="Open the letter", style="Primary.TButton", command=self._show_letter).pack(side="left")
+        if g.letters_read:
+            ttk.Button(row, text="Re-read the last one", style="Ghost.TButton", command=lambda: self._show_letter(reread=True)).pack(side="left", padx=(SP_SM, 0))
+        if hasattr(self, "_letters_summary"):
+            self._letters_summary.set(("✉ a letter is waiting · " if waiting else "") + f"{g.letters_read}/{len(GERALD_LETTERS)} read")
+
+    def _show_letter(self, reread: bool = False):
+        eng = self.game_engine
+        g = self.state.game
+        if reread:
+            if not g.letters_read:
+                return
+            idx = g.letters_read - 1
+            letter = dict(GERALD_LETTERS[idx]); letter["index"] = idx
+        else:
+            letter = eng.read_next_letter()
+            if not letter:
+                self._show_toast("No letter yet — finish today's Pulse and one arrives.", "info", 3500)
+                return
+            self.save_state()
+            self._log_engagement("letter")
+        scrim, content, btn_row, step_var, close = self._overlay_card(f"LETTER {letter['index'] + 1} OF {len(GERALD_LETTERS)}", 560, 420)
+        head = tk.Frame(content, bg=UI_SURFACE)
+        head.pack(fill="x")
+        c = tk.Canvas(head, width=70, height=92, bg=UI_SURFACE, highlightthickness=0)
+        c.pack(side="left", padx=(0, SP_MD))
+        try:
+            _draw_gerald(c, 70, 92, "normal")
+        except Exception:
+            pass
+        tk.Label(head, text=letter["title"], bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_HEADING, wraplength=420, justify="left").pack(side="left", anchor="w")
+        paper = tk.Frame(content, bg="#f4ecd8", padx=SP_LG, pady=SP_MD)
+        paper.pack(fill="x", pady=(SP_SM, 0))
+        tk.Label(paper, text=letter["body"], bg="#f4ecd8", fg="#2b2418", font=("Georgia", 11), wraplength=470, justify="left").pack(anchor="w")
+        tk.Label(paper, text="— Gerald", bg="#f4ecd8", fg="#5a4a30", font=("Georgia", 10, "italic")).pack(anchor="e", pady=(SP_SM, 0))
+        choice = letter.get("choice")
+        if choice:
+            chosen = g.letter_choices.get(str(letter["index"]))
+            row = tk.Frame(content, bg=UI_SURFACE)
+            row.pack(fill="x", pady=(SP_SM, 0))
+            if chosen:
+                tk.Label(row, text=f"You chose {AVATAR_ITEMS.get(chosen, {}).get('name', chosen)}.", bg=UI_SURFACE, fg=UI_EMERALD, font=FONT_SMALL_BOLD).pack(anchor="w")
+            else:
+                for label, iid in choice:
+                    def _pick(i=iid):
+                        ok, msg = eng.choose_letter_gift(letter["index"], i)
+                        self._show_toast(msg, "success" if ok else "warning", 3500)
+                        if ok:
+                            self.save_state()
+                            try:
+                                self.refresh_character_tab()
+                            except Exception:
+                                pass
+                            close()
+                            self._render_letters_card()
+                    ttk.Button(row, text=label, style="Secondary.TButton", command=_pick).pack(side="left", padx=(0, SP_SM))
+        self._letter_widgets = {"letter": letter, "close": close}
+        ttk.Button(btn_row, text="Keep it", style="Primary.TButton", command=lambda: (close(), self._render_letters_card())).pack(side="right")
 
     def _build_rules_tab(self):
         frame = self.rules_tab
@@ -29358,7 +29787,8 @@ class BudgetApp(tk.Tk):
                      font=FONT_SMALL, wraplength=380, justify="left").pack(anchor="w", pady=(3, 0))
 
             slots_text = f"Owned: {stacks} / {max_stacks} max"
-            cost_text = f"Cost: ◆ {gem_cost} Gems"
+            _fp, _fd = self.game_engine.featured_perk()
+            cost_text = (f"Cost: ◆ {_fd} Gems — today's deal (was {gem_cost})" if _fp == perk_id else f"Cost: ◆ {gem_cost} Gems")
             tk.Label(info, text=f"{slots_text}   |   {cost_text}",
                      bg=UI_SURFACE, fg=UI_ACCENT, font=FONT_BODY_BOLD).pack(anchor="w", pady=(4, 0))
 
@@ -29912,6 +30342,8 @@ class BudgetApp(tk.Tk):
         self.refresh_collection()
         self.refresh_character_tab()
         self._open_pack_animation(result["cards"], result.get("set_completions", []))
+        if result.get("event_set"):
+            self.after(300, lambda n=result["event_set"]: self._celebrate(f"{n} complete!", "+8 Gems — a seasonal set, gone when the season ends", UI_GOLD))
         if result.get("set_completions"):
             names = ", ".join(s for s, _ in result["set_completions"])
             self.after(400, lambda n=names: self._celebrate("Set complete!", f"{n} — reward unlocked on your avatar", UI_AMETHYST))

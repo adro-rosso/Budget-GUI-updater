@@ -138,6 +138,13 @@ audit(sc, "cost-guide"); btn(sc, "Close")[0].invoke(); app.update()
 for k in ("bill", "fund", "goal"):
     app._show_quick_add(k); app.update(); sc = scrims(app)[-1]; audit(sc, f"quick-add:{k}"); btn(sc, "Cancel")[0].invoke(); app.update()
 
+# Phase C1: welcome back, letter, letters section
+app.state.game.mill_last_collected = (__import__("datetime").datetime.now() - __import__("datetime").timedelta(hours=9)).isoformat(timespec="minutes")
+app.state.game.pulse_days_total = 3
+app._show_welcome_back(30.0); app.update(); sc = scrims(app)[-1]; audit(sc, "welcome-back"); btn(sc, "Close")[0].invoke(); app.update()
+app._show_letter(); app.update(); sc = scrims(app)[-1]; audit(sc, "letter"); btn(sc, "Keep it")[0].invoke(); app.update()
+app._show_page("today"); app.update(); audit(app.today_tab, "page:today+event")
+
 # Homestead decor section
 app._show_page("homestead"); app.update(); app._expand_section("homestead.shop"); app.update(); audit(app.homestead_tab, "page:homestead+shop")
 
