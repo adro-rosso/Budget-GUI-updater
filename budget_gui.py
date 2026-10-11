@@ -166,6 +166,28 @@ FONT_DISPLAY_SM = ("Segoe UI Variable Display", 15, "bold")
 FONT_STAT_NUM   = ("Segoe UI Variable Display", 20, "bold")
 FONT_HERO_NUM   = ("Segoe UI Variable Display", 46, "bold")
 
+_FONT_NAMES = [n for n in list(globals()) if n.startswith("FONT_")]
+_FONT_BASE = {n: globals()[n] for n in _FONT_NAMES}
+_TREE_ROWHEIGHT_BASE = 34
+
+
+def apply_text_scale(scale: float) -> None:
+    """Scale every FONT_* constant (Settings → Text size). Must run before any
+    widget is built, because fonts are read at construction time."""
+    global TREE_ROWHEIGHT
+    try:
+        s = float(scale)
+    except (TypeError, ValueError):
+        s = 1.0
+    s = min(1.4, max(0.8, s))
+    for n, base in _FONT_BASE.items():
+        fam, size, *rest = base
+        globals()[n] = (fam, max(6, int(round(size * s))), *rest)
+    TREE_ROWHEIGHT = int(round(_TREE_ROWHEIGHT_BASE * s))
+
+
+TREE_ROWHEIGHT = _TREE_ROWHEIGHT_BASE
+
 # ── Progression System Constants ──────────────────────────────────────────────
 
 SEASON_TIERS = [
@@ -10923,6 +10945,7 @@ class BudgetApp(tk.Tk):
         self.updater = AppUpdater(self)
 
         self.state = self.load_state()
+        apply_text_scale(self.state.ui_prefs.get("text_scale", 1.0))
         self.engine = BudgetEngine(self.state)
         self.game_engine = BudgetGameEngine(self.state)
         self.importer = PDFTransactionImporter()
@@ -10965,6 +10988,7 @@ class BudgetApp(tk.Tk):
         self.game_engine.generate_daily_challenges()
         self.game_engine.ensure_season()
         self._startup_progression_migration()
+        self._render_sample_banner()
         self.refresh_all_views()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -11538,7 +11562,7 @@ class BudgetApp(tk.Tk):
 
         # ── Treeview — tighter, quieter rows ──────────────────────────────────
         style.configure("Treeview",
-                        rowheight=34,
+                        rowheight=TREE_ROWHEIGHT,
                         font=FONT_BODY,
                         fieldbackground=UI_SURFACE,
                         background=UI_SURFACE,
@@ -12482,6 +12506,11 @@ class BudgetApp(tk.Tk):
                                    font=FONT_CAPTION, cursor="hand2", anchor="w", wraplength=170, justify="left")
         self._focus_btn.grid(row=row_idx, column=0, sticky="ew", padx=SP_SM, pady=(SP_SM, 0))
         self._focus_btn.bind("<Button-1>", lambda _e: self._toggle_focus_mode())
+        self._sample_banner = tk.Label(nav, text="", bg=UI_WARNING_SOFT, fg=UI_GOLD, font=FONT_CAPTION_BOLD, cursor="hand2",
+                                       anchor="w", padx=SP_SM, pady=3, wraplength=170, justify="left")
+        self._sample_banner.grid(row=row_idx + 1, column=0, sticky="ew", padx=SP_SM, pady=(SP_XS, 0))
+        self._sample_banner.grid_remove()
+        self._sample_banner.bind("<Button-1>", lambda _e: self._settings_clear_sample())
 
         self._build_game_tab()
         self._build_collection_tab()
@@ -15334,17 +15363,18 @@ class BudgetApp(tk.Tk):
 
         # ── Month navigator ──────────────────────────────────────────────────
         self._review_month_offset = 0  # 0 = current month, -1 = last month, etc.
-        self._review_period_scope = "month"  # "month" | "3m" | "6m" | "ytd"
+        self._review_period_scope = "month"  # month | qtr | fy | ytd | custom
+        self._review_custom = None
         nav_bar = tk.Frame(frame, bg=UI_BG)
         nav_bar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(SP_XL, SP_SM))
         self._review_month_nav = nav_bar
-        ttk.Button(nav_bar, text="◀  Prev", command=self._review_prev_month).pack(side="left")
+        ttk.Button(nav_bar, text="◀  Prev", command=lambda: self._review_step(-1)).pack(side="left")
         self._review_month_label = tk.Label(nav_bar, text="", bg=UI_BG, fg=UI_TEXT,
                                              font=FONT_SUBHEADING)
         self._review_month_label.pack(side="left", padx=SP_XL, expand=True)
-        self._review_today_btn = ttk.Button(nav_bar, text="This Month", command=self._review_this_month)
+        self._review_today_btn = ttk.Button(nav_bar, text="Now", command=self._review_this_month)
         self._review_today_btn.pack(side="left", padx=(0, SP_SM))
-        ttk.Button(nav_bar, text="Next  ▶", command=self._review_next_month).pack(side="left")
+        ttk.Button(nav_bar, text="Next  ▶", command=lambda: self._review_step(1)).pack(side="left")
 
         # ── Period pill row (This Month / Last 3 / 6M / YTD) ─────────────────
         # Packed on the right side of the nav_bar so it's always visible.
@@ -15353,8 +15383,8 @@ class BudgetApp(tk.Tk):
         tk.Label(period_group, text="PERIOD", bg=UI_BG, fg=UI_MUTED,
                  font=FONT_CAPTION_BOLD).pack(side="left", padx=(0, SP_SM))
         self._review_period_buttons = {}
-        for key, label in [("month", "This Month"), ("3m", "Last 3"),
-                            ("6m", "6M"), ("ytd", "YTD")]:
+        for key, label in [("month", "Month"), ("qtr", "Quarter"), ("fy", "FY"),
+                            ("ytd", "YTD"), ("custom", "Custom…")]:
             pill_outer = tk.Frame(period_group, bg=UI_BORDER, padx=1, pady=1,
                                    cursor="hand2")
             pill_outer.pack(side="left", padx=(0, SP_XS))
@@ -16126,6 +16156,10 @@ class BudgetApp(tk.Tk):
         steps_host = tk.Frame(card, bg=UI_SURFACE)
         steps_host.pack(fill="x")
         self._today_get_started_steps_host = steps_host
+        _try = tk.Label(card, text="Just looking? Load sample data to poke around first →", bg=UI_SURFACE, fg=UI_ACCENT_BRIGHT,
+                        font=FONT_CAPTION_BOLD, cursor="hand2")
+        _try.pack(anchor="w", pady=(SP_SM, 0))
+        _try.bind("<Button-1>", lambda _e: self._settings_load_sample())
 
         # Close hint
         tk.Label(card,
@@ -17326,14 +17360,18 @@ class BudgetApp(tk.Tk):
             self.refresh_review_tab()
 
     def _review_this_month(self):
+        """'Now' — back to the current period of whatever scope is active."""
         self._review_month_offset = 0
-        self._review_period_scope = "month"
+        if self._review_period_scope == "custom":
+            self._review_period_scope = "month"
         self.refresh_review_tab()
 
     def _review_set_period(self, scope: str):
-        self._review_period_scope = scope if scope in {"month", "3m", "6m", "ytd"} else "month"
-        if self._review_period_scope == "month":
-            self._review_month_offset = 0
+        if scope == "custom":
+            self._show_review_custom_range()
+            return
+        self._review_period_scope = scope if scope in self._REVIEW_SCOPES else "month"
+        self._review_month_offset = 0
         self.refresh_review_tab()
 
     def _resolve_review_period(self) -> tuple:
@@ -17346,12 +17384,28 @@ class BudgetApp(tk.Tk):
             label = target.strftime("%B %Y")
             scope_word = "this month" if self._review_month_offset == 0 else label
             return start, end, label, scope_word
-        if scope == "3m":
-            start_dt = today - timedelta(days=90)
-            return start_dt, today, "Last 3 Months", "the last 3 months"
-        if scope == "6m":
-            start_dt = today - timedelta(days=180)
-            return start_dt, today, "Last 6 Months", "the last 6 months"
+        off = getattr(self, "_review_month_offset", 0)
+        if scope == "qtr":
+            q0 = (today.month - 1) // 3            # 0..3 for the current quarter
+            qi = q0 + off
+            y = today.year + (qi // 4)
+            qi = qi % 4
+            start_dt = date(y, qi * 3 + 1, 1)
+            end_full = (date(y + (1 if qi == 3 else 0), 1 if qi == 3 else qi * 3 + 4, 1) - timedelta(days=1))
+            end_dt = min(end_full, today) if off == 0 else end_full
+            label = f"Q{qi + 1} {y}  ({start_dt:%b}–{end_full:%b})" + ("  to date" if off == 0 else "")
+            return start_dt, end_dt, label, f"Q{qi + 1} {y}" + (" so far" if off == 0 else "")
+        if scope == "fy":
+            fy_y = today.year if today.month >= 7 else today.year - 1
+            fy_y += off
+            start_dt = date(fy_y, 7, 1)
+            end_full = date(fy_y + 1, 6, 30)
+            end_dt = min(end_full, today) if off == 0 else end_full
+            label = f"FY{fy_y}–{str(fy_y + 1)[2:]}  (Jul–Jun)" + ("  to date" if off == 0 else "")
+            return start_dt, end_dt, label, f"FY{fy_y}–{str(fy_y + 1)[2:]}" + (" so far" if off == 0 else "")
+        if scope == "custom" and getattr(self, "_review_custom", None):
+            a, b = self._review_custom
+            return a, b, f"{a:%d %b %Y} – {b:%d %b %Y}", "this period"
         # ytd
         start_dt = date(today.year, 1, 1)
         return start_dt, today, f"{today.year} YTD", f"{today.year} year-to-date"
@@ -19523,6 +19577,24 @@ class BudgetApp(tk.Tk):
         tk.Label(disp, text="Window size, position and the tab you were on are remembered automatically.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
         rem = section("REMINDERS & DAILY PULSE", 5)
         self._build_settings_reminders(rem)
+        txt = section("TEXT SIZE", 6)
+        row = tk.Frame(txt, bg=UI_SURFACE)
+        row.grid(row=1, column=0, sticky="w")
+        self._settings_text_btns = {}
+        for label, scale in self._TEXT_SCALES:
+            b = ttk.Button(row, text=label, style="Secondary.TButton", command=lambda s=scale: self._settings_set_text_scale(s))
+            b.pack(side="left", padx=(0, SP_SM))
+            self._settings_text_btns[scale] = b
+        tk.Label(txt, text="Applies when the app next opens (fonts are set when the window is built). Layout is checked at Default; Largest may crowd narrow panels on a small screen.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=760, justify="left").grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
+        self._refresh_settings_text_scale()
+        smp = section("SAMPLE DATA", 7)
+        row = tk.Frame(smp, bg=UI_SURFACE)
+        row.grid(row=1, column=0, sticky="w")
+        ttk.Button(row, text="Load sample data", style="Secondary.TButton", command=self._settings_load_sample).pack(side="left")
+        ttk.Button(row, text="Clear sample / restore mine", style="Ghost.TButton", command=self._settings_clear_sample).pack(side="left", padx=(SP_SM, 0))
+        tk.Label(smp, text="A fortnightly earner three months in: bills, set-asides, goals, 12 weeks of statements, some progress. Your own data is backed up first and restored when you clear it.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=760, justify="left").grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
         self._refresh_settings_tab()
 
     def _refresh_settings_tab(self):
@@ -21162,6 +21234,224 @@ class BudgetApp(tk.Tk):
             self.refresh_all_views()
         ttk.Button(btn_row, text="Done", style="Secondary.TButton", command=_done).pack(side="right")
         self._statement_setup_widgets = {"rhythm": rhythm, "bills": bills, "mix": mix}
+
+    # ── Analysis periods: month / calendar quarter / financial year / YTD / custom ──
+    _REVIEW_SCOPES = ("month", "qtr", "fy", "ytd", "custom")
+
+    def _review_step(self, delta: int):
+        scope = getattr(self, "_review_period_scope", "month")
+        if scope not in ("month", "qtr", "fy"):
+            return
+        new = self._review_month_offset + delta
+        if new > 0:
+            return
+        self._review_month_offset = new
+        self.refresh_review_tab()
+
+    def _show_review_custom_range(self):
+        scrim, content, btn_row, step_var, close = self._overlay_card("CUSTOM PERIOD", 560, 360)
+        today = date.today()
+        cur = getattr(self, "_review_custom", None) or (today - timedelta(days=29), today)
+        tk.Label(content, text="Any two dates. Chips fill the common ones.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w")
+        form = tk.Frame(content, bg=UI_SURFACE)
+        form.pack(fill="x", pady=(SP_SM, 0))
+        tk.Label(form, text="From", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD).grid(row=0, column=0, sticky="w", padx=(0, SP_SM))
+        fe = ttk.Entry(form, width=14); fe.insert(0, cur[0].isoformat()); fe.grid(row=0, column=1, sticky="w")
+        tk.Label(form, text="To", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD).grid(row=0, column=2, sticky="w", padx=(SP_LG, SP_SM))
+        te = ttk.Entry(form, width=14); te.insert(0, cur[1].isoformat()); te.grid(row=0, column=3, sticky="w")
+        chips = tk.Frame(content, bg=UI_SURFACE)
+        chips.pack(fill="x", pady=(SP_SM, 0))
+        cycle = max(7, self.engine.current_cycle_days())
+        fy_start = date(today.year if today.month >= 7 else today.year - 1, 7, 1)
+        presets = [("Last 30 days", today - timedelta(days=29), today),
+                   ("Last pay cycle", today - timedelta(days=cycle - 1), today),
+                   ("Last 90 days", today - timedelta(days=89), today),
+                   ("This FY", fy_start, today),
+                   ("Previous FY", fy_start.replace(year=fy_start.year - 1), fy_start - timedelta(days=1)),
+                   ("Calendar year", date(today.year, 1, 1), today),
+                   ("Last year", date(today.year - 1, 1, 1), date(today.year - 1, 12, 31))]
+
+        def _fill(a, b):
+            fe.delete(0, tk.END); fe.insert(0, a.isoformat()); te.delete(0, tk.END); te.insert(0, b.isoformat())
+        for i, (lab, a, b) in enumerate(presets):
+            c = tk.Label(chips, text=lab, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_CAPTION_BOLD, padx=SP_SM, pady=3, cursor="hand2",
+                         highlightthickness=1, highlightbackground=UI_BORDER)
+            c.grid(row=i // 4, column=i % 4, sticky="w", padx=(0, 4), pady=2)
+            c.bind("<Button-1>", lambda _e, a=a, b=b: _fill(a, b))
+        err = tk.StringVar(value="")
+        tk.Label(content, textvariable=err, bg=UI_SURFACE, fg=UI_RUBY, font=FONT_CAPTION).pack(anchor="w", pady=(SP_SM, 0))
+
+        def _apply():
+            a = self._parse_date_text(fe.get()) if hasattr(self, "_parse_date_text") else None
+            b = self._parse_date_text(te.get()) if hasattr(self, "_parse_date_text") else None
+            try:
+                a = a or date.fromisoformat(fe.get().strip()); b = b or date.fromisoformat(te.get().strip())
+            except ValueError:
+                err.set("Dates like 2026-07-01 (or pick a chip)."); return
+            if b < a:
+                a, b = b, a
+            self._review_custom = (a, b)
+            self._review_period_scope = "custom"
+            close()
+            self.refresh_review_tab()
+        ttk.Button(btn_row, text="Cancel", style="Ghost.TButton", command=close).pack(side="left")
+        ttk.Button(btn_row, text="Show  ✓", style="Primary.TButton", command=_apply).pack(side="right")
+        self._review_custom_widgets = {"from": fe, "to": te, "apply": _apply}
+
+    # ── Text size (applies at next launch; fonts are read when widgets are built) ──
+    _TEXT_SCALES = [("Compact", 0.9), ("Default", 1.0), ("Larger", 1.1), ("Largest", 1.2)]
+
+    def _settings_set_text_scale(self, scale: float):
+        self.state.ui_prefs["text_scale"] = float(scale)
+        self.save_state()
+        self._refresh_settings_text_scale()
+        self._show_toast("Text size saved — it applies when the app next opens.", "info", 6000,
+                         action_label="Restart now", action_cb=self._restart_app)
+
+    def _refresh_settings_text_scale(self):
+        cur = float(self.state.ui_prefs.get("text_scale", 1.0) or 1.0)
+        for scale, b in getattr(self, "_settings_text_btns", {}).items():
+            try:
+                b.configure(style="Accent.TButton" if abs(scale - cur) < 1e-6 else "Secondary.TButton")
+            except tk.TclError:
+                pass
+
+    def _restart_app(self):
+        self.save_state()
+        try:
+            self._remember_window_prefs()
+            self.save_state()
+        except Exception:
+            pass
+        cmd = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, str(Path(__file__).resolve())]
+        try:
+            subprocess.Popen(cmd, cwd=os.getcwd())
+        except OSError as e:
+            self._show_toast(f"Couldn't relaunch: {e}", "warning", 5000)
+            return
+        self.destroy()
+
+    # ── Sample data ──────────────────────────────────────────────────────
+    SAMPLE_BACKUP_NAME = "budget_data.before-sample.json"
+
+    def _build_sample_state(self) -> AppState:
+        import random
+        rnd = random.Random(7)
+        st = AppState()
+        today = date.today()
+        st.onboarding_complete = True; st.tutorial_complete = True
+        st.starting_position_set = True; st.starting_position_date = today.isoformat()
+        st.pay_frequency = "fortnightly"; st.income_baseline = 2400.0
+        st.bills += [Bill("Rent", 900.0, today + timedelta(days=4), "fortnightly", "essential", "bill", 450.0),
+                     Bill("Electricity", 210.0, today + timedelta(days=19), "quarterly", "essential", "bill", 120.0),
+                     Bill("Phone", 49.0, today + timedelta(days=11), "monthly", "important", "bill", 20.0),
+                     Bill("Netflix", 22.99, today + timedelta(days=7), "monthly", "optional", "bill", 22.99),
+                     Bill("Car insurance", 1180.0, today + timedelta(days=140), "yearly", "essential", "bill", 400.0)]
+        st.funds += [Fund("Holiday — Japan", 4000.0, today + timedelta(days=200), "important", 1250.0, "auto", 0.0, "fund"),
+                     Fund("Car service", 600.0, None, "important", 600.0, "buffer", 100.0, "fund"),
+                     Fund("Christmas", 800.0, date(today.year, 12, 10) if today.month < 12 else date(today.year + 1, 12, 10), "optional", 230.0, "auto", 0.0, "fund")]
+        st.goals += [Goal("Emergency fund", 6000.0, None, 1, 2350.0, "percent_surplus", 20.0),
+                     Goal("House deposit", 0.0, None, 5, 8900.0, "fixed", 150.0)]
+        st.transfer_accounts = {"spending": {"name": "Everyday"}, "bills": {"name": "Bills"}, "savings": {"name": "Saver"}, "invest": {"name": "Raiz"}}
+        st.account_balances = {"spending": 640.0, "bills": 1012.99, "savings": 13330.0, "invest": 1500.0}
+        st.last_safe_to_spend = 640.0; st.last_reserved_total = 1012.99
+        st.last_fund_total = 2080.0; st.last_goal_total = 11250.0; st.last_invest_total = 1500.0
+        # 12 weeks of pays and spending
+        pay_dates = [today - timedelta(days=2 + 14 * k) for k in range(6)]
+        for d in sorted(pay_dates):
+            st.incomes.append(IncomeEntry(2400.0, d, "Acme Pty Ltd"))
+        merchants = [("COLES 1234", "Groceries", 60, 140, 2.2), ("WOOLWORTHS 5678", "Groceries", 40, 110, 1.4), ("SHELL COLES EXPRESS", "Fuel", 55, 85, 0.9),
+                     ("GUZMAN Y GOMEZ", "Food", 14, 26, 1.1), ("THE COFFEE CLUB", "Food", 5, 9, 2.6), ("UBER EATS", "Food", 22, 48, 0.6),
+                     ("CHEMIST WAREHOUSE", "General", 12, 60, 0.4), ("KMART", "General", 15, 80, 0.4), ("BIG W", "General", 10, 70, 0.2),
+                     ("SPOTIFY", "Subscription", 12.99, 12.99, 0.23), ("NETFLIX.COM", "Subscription", 22.99, 22.99, 0.23), ("GYM 24/7", "Subscription", 16.5, 16.5, 0.5)]
+        fp = 0
+        for week in range(12):
+            wk_start = today - timedelta(days=7 * (12 - week))
+            for desc, cat, lo, hi, per_week in merchants:
+                n = int(per_week) + (1 if rnd.random() < per_week - int(per_week) else 0)
+                for _ in range(n):
+                    d = wk_start + timedelta(days=rnd.randint(0, 6))
+                    if d > today - timedelta(days=1):
+                        continue
+                    amt = round(rnd.uniform(lo, hi), 2)
+                    fp += 1
+                    st.transactions.append(TransactionRecord(d, desc, money_out=amt, source_file="sample-statement.csv",
+                                                             fingerprint=f"sample|{fp}", matched_type="discretionary", category=cat,
+                                                             confidence="manual", needs_review=False, user_verified=True))
+        for d in pay_dates:
+            fp += 1
+            st.transactions.append(TransactionRecord(d, "ACME PTY LTD PAYROLL", money_in=2400.0, source_file="sample-statement.csv",
+                                                     fingerprint=f"sample|{fp}", matched_type="income", category="Income", confidence="manual",
+                                                     needs_review=False, user_verified=True))
+            fp += 1
+            st.transactions.append(TransactionRecord(d + timedelta(days=1), "RENT REAL ESTATE", money_out=900.0, source_file="sample-statement.csv",
+                                                     fingerprint=f"sample|{fp}", matched_type="linked_bill", matched_target="Rent", category="Bill",
+                                                     confidence="manual", needs_review=False, user_verified=True))
+        st.transactions.sort(key=lambda t: t.tx_date)
+        st.last_import_date = (today - timedelta(days=3)).isoformat()
+        st.expense_target_order = ["Groceries", "Food", "Fuel", "General", "Subscription"]
+        st.expense_target_pct = [40.0, 20.0, 15.0, 15.0, 10.0]
+        st.last_target_submit = today - timedelta(days=20); st.target_is_locked = True
+        st.bank_links = [{"name": "CommBank", "url": "https://netbank.web.commbank.com.au/auth/logon", "every_days": 14, "last_opened": ""}]
+        g = st.game
+        g.total_score = 1180; g.level = BudgetGameEngine(st).level_from_score(1180); g.gems = 11
+        g.streak_pays = 5; g.best_streak = 5; g.total_pays_processed = 6; g.streak_history = [True] * 5 + [False]
+        g.pulse_streak = 9; g.pulse_best = 12; g.pulse_freezes = 1; g.pulse_last_date = (today - timedelta(days=1)).isoformat(); g.pulse_days_total = 23
+        g.no_spend_streak = 2; g.no_spend_best = 4; g.no_spend_last = (today - timedelta(days=1)).isoformat()
+        g.season_xp = 310; g.lifetime_gems_earned = 19; g.packs_opened = 4; g.cards_owned = ["c_pocket_change", "c_the_planner", "c_bill_watcher", "r_streak_keeper", "c_small_steps", "e_the_guardian", FOUNDER_CARD_ID]
+        g.day_one_done = True; g.achievements = ["First Pay Processed", "Streak Starter", "500 Score Club", "Target Mix Locked", "Pack Hunter"]
+        g.mill_last_collected = (datetime.now() - timedelta(hours=5)).isoformat(timespec="minutes")
+        g.pacts_won = 1; g.records = {"savings_rate": {"value": 0.41, "date": (today - timedelta(days=16)).isoformat()}, "pulse_run": {"value": 12, "date": (today - timedelta(days=5)).isoformat()}}
+        st.ui_prefs["sample_mode"] = True
+        st.ui_prefs["statement_setup.done"] = True
+        return st
+
+    def _settings_load_sample(self):
+        from tkinter import messagebox as _mb
+        has_data = bool(self.state.bills or self.state.funds or self.state.goals or self.state.incomes or self.state.transactions)
+        if has_data and not _mb.askyesno("Load sample data?", "Your current data will be saved to budget_data.before-sample.json and restored when you clear the sample.\n\nContinue?", parent=self):
+            return
+        if has_data:
+            try:
+                DATA_FILE.with_name(self.SAMPLE_BACKUP_NAME).write_text(json.dumps(self.state.to_dict(), indent=2), encoding="utf-8")
+            except OSError as e:
+                self._show_toast(f"Couldn't back up first: {e}", "warning", 5000); return
+        self._replace_state(self._build_sample_state())
+        self._startup_progression_migration()
+        self._render_sample_banner()
+        self._show_page("today")
+        self._show_toast("Sample data loaded — a fortnightly earner three months in. Clear it from Settings or the banner.", "success", 6000)
+
+    def _settings_clear_sample(self):
+        bak = DATA_FILE.with_name(self.SAMPLE_BACKUP_NAME)
+        if bak.exists():
+            try:
+                st = AppState.from_dict(json.loads(bak.read_text(encoding="utf-8")))
+            except Exception as e:
+                self._show_toast(f"Backup unreadable: {e}", "warning", 5000); return
+            self._replace_state(st)
+            try:
+                bak.unlink()
+            except OSError:
+                pass
+            self._show_toast("Your data is back.", "success", 3500)
+        else:
+            st = AppState()
+            st.first_launch_date = date.today().isoformat()
+            self._replace_state(st)
+            self._show_toast("Sample cleared — a fresh start. The setup wizard is under Setup → Accounts.", "info", 5000)
+        self._render_sample_banner()
+        self._show_page("today")
+
+    def _render_sample_banner(self):
+        lbl = getattr(self, "_sample_banner", None)
+        if lbl is None:
+            return
+        if self.state.ui_prefs.get("sample_mode"):
+            lbl.configure(text="▲ SAMPLE DATA — click to clear")
+            lbl.grid()
+        else:
+            lbl.grid_remove()
 
     def _build_rules_tab(self):
         frame = self.rules_tab

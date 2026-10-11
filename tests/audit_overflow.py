@@ -138,6 +138,11 @@ audit(sc, "cost-guide"); btn(sc, "Close")[0].invoke(); app.update()
 for k in ("bill", "fund", "goal"):
     app._show_quick_add(k); app.update(); sc = scrims(app)[-1]; audit(sc, f"quick-add:{k}"); btn(sc, "Cancel")[0].invoke(); app.update()
 
+# Custom period overlay (Analysis)
+app._show_page("review"); app.update(); app._show_review_custom_range(); app.update(); sc = scrims(app)[-1]; audit(sc, "review-custom"); btn(sc, "Cancel")[0].invoke(); app.update()
+for _k in ("qtr", "fy"):
+    app._review_set_period(_k); app.update(); audit(app.review_tab, "page:review:" + _k)
+
 # Set up from statement (history mode)
 from datetime import date as _d, timedelta as _td
 _t = _d.today()
