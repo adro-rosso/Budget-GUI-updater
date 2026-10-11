@@ -138,6 +138,9 @@ audit(sc, "cost-guide"); btn(sc, "Close")[0].invoke(); app.update()
 for k in ("bill", "fund", "goal"):
     app._show_quick_add(k); app.update(); sc = scrims(app)[-1]; audit(sc, f"quick-add:{k}"); btn(sc, "Cancel")[0].invoke(); app.update()
 
+# Homestead decor section
+app._show_page("homestead"); app.update(); app._expand_section("homestead.shop"); app.update(); audit(app.homestead_tab, "page:homestead+shop")
+
 # Tier-up card
 app._show_tier_up_card(2, ["comp_cat"]); app.update(); sc = scrims(app)[-1]; audit(sc, "tier-up"); btn(sc, "Later")[0].invoke(); app.update()
 

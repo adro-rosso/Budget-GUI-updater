@@ -3047,6 +3047,101 @@ for _eid in ("eyes_cyber_visor", "eyes_cool_shades"):
         AVATAR_ITEMS[_eid]["no_blink"] = True
 
 # ── Homestead scene renderer ────────────────────────────────────────────
+# ── Homestead phase 3: decor (Gold/Gem sink) + seasonal palettes ─────────────
+# Decor: (id, name, cost_type, cost, description, anchor_u, anchor_v)
+HOMESTEAD_DECOR = [
+    ("flowerbed", "Flower bed",   "gold", 60,  "A strip of marigolds by the path.",                 0.27, 0.80),
+    ("lantern",   "Lantern post", "gold", 90,  "Warm light by the gate — lit at night.",            0.56, 0.70),
+    ("scarecrow", "Scarecrow",    "gold", 120, "Keeps the crows off the plots. Mostly.",            0.70, 0.78),
+    ("beehive",   "Beehive",      "gems", 2,   "Bees for the orchard. Honey later.",                0.80, 0.70),
+    ("pond",      "Duck pond",    "gems", 3,   "A small pond with one unbothered duck.",            0.12, 0.90),
+    ("doghouse",  "Dog house",    "gold", 150, "Somewhere for the companion to nap.",               0.20, 0.72),
+    ("flagpole",  "Flagpole",     "gems", 4,   "Your colours over the Homestead.",                  0.60, 0.62),
+    ("swing",     "Tree swing",   "gold", 200, "Hangs from the biggest orchard tree.",              0.63, 0.66),
+    ("greenhouse","Greenhouse",   "gems", 6,   "Glass and warmth. Plots next to it look prouder.",  0.90, 0.86),
+    ("statue",    "Founder statue","gems", 8,  "A small stone you. Earned, not bought — well, bought with Gems you earned.", 0.47, 0.64),
+]
+HOMESTEAD_DECOR_BY_ID = {d[0]: d for d in HOMESTEAD_DECOR}
+
+# Palettes: sky (day), land (far, near, ground), foliage tint, extras.
+HOMESTEAD_PALETTES = {
+    "classic": {"name": "Classic", "sky": ("#6fb3ff", "#dff3ff"), "land": ("#6aa84f", "#4f8f3a", "#3f7a2e"), "season": None,
+                "blurb": "The Homestead as it was first drawn."},
+    "summer":  {"name": "Summer",  "sky": ("#3f8fe8", "#bfe6ff"), "land": ("#9fb45a", "#7f9a44", "#6a8538"), "season": "summer",
+                "blurb": "Deep blue sky, sun-bleached grass. Claim Season Legend in Dec–Feb."},
+    "autumn":  {"name": "Autumn",  "sky": ("#c98a4a", "#f6dcb2"), "land": ("#9a8a3e", "#7f6e2d", "#6a5a22"), "season": "autumn",
+                "blurb": "Amber sky, dry gold fields. Claim Season Legend in Mar–May."},
+    "winter":  {"name": "Winter",  "sky": ("#9fb7cc", "#e8f0f6"), "land": ("#dfe7ec", "#cfd9e0", "#bfcad3"), "season": "winter",
+                "blurb": "Snow on the ground, pale sky. Claim Season Legend in Jun–Aug."},
+    "spring":  {"name": "Spring",  "sky": ("#7cc0ff", "#eef8ff"), "land": ("#7fc55a", "#5fa843", "#4c8f36"), "season": "spring",
+                "blurb": "Fresh green and blossom. Claim Season Legend in Sep–Nov."},
+}
+
+
+def season_for_month(month: int) -> str:
+    """Australian seasons."""
+    return {12: "summer", 1: "summer", 2: "summer", 3: "autumn", 4: "autumn", 5: "autumn",
+            6: "winter", 7: "winter", 8: "winter"}.get(month, "spring")
+
+
+def _draw_homestead_decor(canvas, decor_ids, X, Y, m, ink, lw, frame, tod):
+    """Draw owned decor at fixed anchors. Small, readable shapes in the scene's style."""
+    for did in decor_ids:
+        d = HOMESTEAD_DECOR_BY_ID.get(did)
+        if not d:
+            continue
+        x, y = X(d[5]), Y(d[6])
+        if did == "flowerbed":
+            canvas.create_oval(x - 22 * m, y - 5 * m, x + 22 * m, y + 5 * m, fill="#6b4a2e", outline=ink, width=lw(1))
+            for i, col in enumerate(("#e9b949", "#e07a5f", "#f2cc8f", "#e9b949", "#e07a5f")):
+                fx = x - 16 * m + i * 8 * m
+                canvas.create_line(fx, y - 2 * m, fx, y - 9 * m, fill="#3f7a2e", width=lw(1))
+                canvas.create_oval(fx - 2.5 * m, y - 12 * m, fx + 2.5 * m, y - 7 * m, fill=col, outline="")
+        elif did == "lantern":
+            canvas.create_line(x, y, x, y - 30 * m, fill="#3a2a1a", width=lw(2))
+            canvas.create_rectangle(x - 4 * m, y - 36 * m, x + 4 * m, y - 28 * m, fill="#f6d36b" if tod != "day" else "#c9b27e", outline=ink, width=lw(1))
+            if tod != "day":
+                canvas.create_oval(x - 10 * m, y - 42 * m, x + 10 * m, y - 22 * m, fill="", outline="#f6d36b", width=lw(1))
+        elif did == "scarecrow":
+            canvas.create_line(x, y, x, y - 28 * m, fill="#6b4423", width=lw(2))
+            canvas.create_line(x - 10 * m, y - 20 * m, x + 10 * m, y - 20 * m, fill="#6b4423", width=lw(2))
+            canvas.create_rectangle(x - 5 * m, y - 24 * m, x + 5 * m, y - 12 * m, fill="#b23a48", outline=ink, width=lw(1))
+            canvas.create_oval(x - 4 * m, y - 33 * m, x + 4 * m, y - 25 * m, fill="#e9c98f", outline=ink, width=lw(1))
+            canvas.create_polygon(x - 7 * m, y - 31 * m, x + 7 * m, y - 31 * m, x, y - 36 * m, fill="#c9a24a", outline=ink, width=lw(1))
+        elif did == "beehive":
+            for i, r in enumerate((7, 6, 5)):
+                canvas.create_oval(x - r * m, y - (i * 5 + 2) * m - r * m * 0.8, x + r * m, y - (i * 5 + 2) * m + r * m * 0.8, fill="#e3b341", outline=ink, width=lw(1))
+            if frame:
+                for k in range(3):
+                    a = frame * 0.2 + k * 2.1
+                    canvas.create_oval(x + math.cos(a) * 12 * m - 1, y - 12 * m + math.sin(a) * 5 * m - 1, x + math.cos(a) * 12 * m + 1, y - 12 * m + math.sin(a) * 5 * m + 1, fill=ink, outline="")
+        elif did == "pond":
+            canvas.create_oval(x - 26 * m, y - 8 * m, x + 26 * m, y + 8 * m, fill="#5b9bd5", outline="#3b6f9e", width=lw(1))
+            canvas.create_oval(x + 6 * m, y - 5 * m, x + 12 * m, y - 1 * m, fill="#f6f0d8", outline=ink, width=lw(1))
+            canvas.create_oval(x + 11 * m, y - 8 * m, x + 15 * m, y - 4 * m, fill="#f6f0d8", outline=ink, width=lw(1))
+        elif did == "doghouse":
+            canvas.create_rectangle(x - 9 * m, y - 10 * m, x + 9 * m, y, fill="#b8743a", outline=ink, width=lw(1))
+            canvas.create_polygon(x - 11 * m, y - 10 * m, x + 11 * m, y - 10 * m, x, y - 18 * m, fill="#8a4b22", outline=ink, width=lw(1))
+            canvas.create_oval(x - 3 * m, y - 7 * m, x + 3 * m, y, fill=ink, outline="")
+        elif did == "flagpole":
+            canvas.create_line(x, y, x, y - 40 * m, fill="#d9d9d9", width=lw(1.5))
+            wave = math.sin(frame * 0.15) * 2 * m if frame else 0
+            canvas.create_polygon(x, y - 40 * m, x + 16 * m, y - 36 * m + wave, x, y - 30 * m, fill="#4f5fd6", outline=ink, width=lw(1))
+        elif did == "swing":
+            canvas.create_line(x - 4 * m, y - 24 * m, x - 4 * m, y, fill="#8a6a46", width=lw(1))
+            canvas.create_line(x + 4 * m, y - 24 * m, x + 4 * m, y, fill="#8a6a46", width=lw(1))
+            canvas.create_rectangle(x - 7 * m, y - 1 * m, x + 7 * m, y + 2 * m, fill="#c9a97a", outline=ink, width=lw(1))
+        elif did == "greenhouse":
+            canvas.create_rectangle(x - 18 * m, y - 14 * m, x + 18 * m, y, fill="#bfe6ff", outline="#6a8a9a", width=lw(1))
+            canvas.create_polygon(x - 20 * m, y - 14 * m, x + 20 * m, y - 14 * m, x, y - 24 * m, fill="#d8f0ff", outline="#6a8a9a", width=lw(1))
+            for k in range(1, 4):
+                canvas.create_line(x - 18 * m + k * 9 * m, y - 14 * m, x - 18 * m + k * 9 * m, y, fill="#6a8a9a", width=lw(1))
+        elif did == "statue":
+            canvas.create_rectangle(x - 7 * m, y - 4 * m, x + 7 * m, y, fill="#9a9a9a", outline=ink, width=lw(1))
+            canvas.create_rectangle(x - 4 * m, y - 18 * m, x + 4 * m, y - 4 * m, fill="#b5b5b5", outline=ink, width=lw(1))
+            canvas.create_oval(x - 3 * m, y - 24 * m, x + 3 * m, y - 18 * m, fill="#b5b5b5", outline=ink, width=lw(1))
+
+
 def draw_homestead(canvas: "tk.Canvas", snap: dict, w: int, h: int, frame: int = 0, mini: bool = False):
     """Paint the Homestead from a HomesteadEngine snapshot.
 
@@ -3069,7 +3164,8 @@ def draw_homestead(canvas: "tk.Canvas", snap: dict, w: int, h: int, frame: int =
     tod = snap.get("time_of_day", "day")
     weather = snap.get("weather", "clear")
     # ── Sky ──────────────────────────────────────────────────────────
-    sky = {"day": ("#6fb3ff", "#dff3ff"), "evening": ("#5b3b8c", "#f6a56a"), "night": ("#070b1f", "#1f2a55")}[tod]
+    pal = HOMESTEAD_PALETTES.get(snap.get("palette") or "classic", HOMESTEAD_PALETTES["classic"])
+    sky = {"day": pal["sky"], "evening": ("#5b3b8c", "#f6a56a"), "night": ("#070b1f", "#1f2a55")}[tod]
     steps = 10
     for i in range(steps):
         t0, t1 = i / steps, (i + 1) / steps
@@ -3098,8 +3194,10 @@ def draw_homestead(canvas: "tk.Canvas", snap: dict, w: int, h: int, frame: int =
                 canvas.create_oval(X(uu + du) - r, Y(v + dv) - r * 0.7, X(uu + du) + r, Y(v + dv) + r * 0.7, fill=col, outline="")
 
     # ── Land ─────────────────────────────────────────────────────────
-    far, near, ground = {"day": ("#6aa84f", "#4f8f3a", "#3f7a2e"), "evening": ("#5f8a44", "#43702f", "#355c26"),
-                         "night": ("#24402a", "#1b3321", "#14281a")}[tod]
+    _dl = pal["land"]
+    far, near, ground = {"day": _dl,
+                         "evening": tuple(_lerp_color(c_, "#3a2a1a", 0.35) for c_ in _dl),
+                         "night": tuple(_lerp_color(c_, "#0a1410", 0.7) for c_ in _dl)}[tod]
     canvas.create_oval(X(-0.2), Y(0.5), X(0.8), Y(0.95), fill=far, outline="")
     canvas.create_oval(X(0.45), Y(0.52), X(1.25), Y(1.0), fill=near, outline="")
     canvas.create_rectangle(0, Y(0.7), w, h, fill=ground, outline="")
@@ -3247,6 +3345,10 @@ def draw_homestead(canvas: "tk.Canvas", snap: dict, w: int, h: int, frame: int =
                 for dy in (8, 16):
                     canvas.create_line(fx, fy - dy * m, nx, fy - dy * m, fill="#b08a5a", width=lw(2.2))
                     canvas.create_line(fx, fy - dy * m, nx, fy - dy * m, fill=ink, width=lw(0.8))
+
+    # ── Decor (bought with Gold/Gems) ────────────────────────────────
+    if not mini and snap.get("decor"):
+        _draw_homestead_decor(canvas, snap["decor"], X, Y, m, ink, lw, frame, tod)
 
     # ── Mailbox (flagged follow-ups) ─────────────────────────────────
     mx, my = X(0.53), Y(0.9)
@@ -3483,6 +3585,23 @@ def monthly_equivalent(amount: float, frequency: str) -> float:
         "quarterly": amount / 3, "yearly": amount / 12,
     }.get(frequency, 0.0)
 
+
+AVATAR_ITEMS["background_homestead"] = {
+    "name": "Your Homestead", "slot": "background", "rarity": "legendary",
+    "cost_type": "free", "cost": 0, "unlock_req": {"type": "homestead", "value": 5},
+    "emoji": "🏡", "description": "The place you built, behind you. Awarded at Homestead Tier 5.",
+    "draw": [
+        ("rect_abs", (0, 0, 1, 0.2), {"fill": "#6fb3ff", "outline": ""}),
+        ("rect_abs", (0, 0.2, 1, 0.38), {"fill": "#9ccdff", "outline": ""}),
+        ("rect_abs", (0, 0.38, 1, 0.55), {"fill": "#dff3ff", "outline": ""}),
+        ("rect_abs", (0, 0.55, 1, 0.72), {"fill": "#6aa84f", "outline": ""}),
+        ("rect_abs", (0, 0.72, 1, 0.86), {"fill": "#4f8f3a", "outline": ""}),
+        ("rect_abs", (0, 0.86, 1, 1.0), {"fill": "#3f7a2e", "outline": ""}),
+        ("rect_abs", (0.06, 0.46, 0.2, 0.6), {"fill": "#c9b27e", "outline": "#1d2a1a"}),
+        ("rect_abs", (0.1, 0.52, 0.13, 0.6), {"fill": "#6b4e2e", "outline": ""}),
+        ("rect_abs", (0.84, 0.3, 0.87, 0.58), {"fill": "#c9a97a", "outline": "#1d2a1a"}),
+    ],
+}
 
 AVATAR_ITEMS_BY_SLOT: Dict[str, list] = {}
 for _aid, _aitem in AVATAR_ITEMS.items():
@@ -4788,6 +4907,10 @@ class GameStats:
     pacts_lost: int = 0
     no_spend_dates: List[str] = field(default_factory=list)
     nospend_challenge: dict = field(default_factory=dict)
+    # Homestead phase 3
+    homestead_decor: List[str] = field(default_factory=list)
+    homestead_palettes: List[str] = field(default_factory=list)
+    homestead_palette: str = "classic"
 
     def to_dict(self):
         return asdict(self)
@@ -4872,6 +4995,9 @@ class GameStats:
             pacts_lost=int(data.get("pacts_lost", 0)),
             no_spend_dates=list(data.get("no_spend_dates", [])),
             nospend_challenge=dict(data.get("nospend_challenge", {}) or {}),
+            homestead_decor=list(data.get("homestead_decor", [])),
+            homestead_palettes=list(data.get("homestead_palettes", [])),
+            homestead_palette=str(data.get("homestead_palette", "classic") or "classic"),
         )
 
 
@@ -5468,7 +5594,12 @@ class BudgetGameEngine:
         elif reward_type == "gems":
             g.gems += reward_amount
             g.lifetime_gems_earned += reward_amount
-        return {"tier_name": tier_name, "reward_type": reward_type, "reward_amount": reward_amount}
+        out = {"tier_name": tier_name, "reward_type": reward_type, "reward_amount": reward_amount}
+        if tier_idx == len(SEASON_TIERS) - 1:
+            pid = self.unlock_season_palette()
+            if pid:
+                out["palette"] = pid
+        return out
 
     def generate_daily_challenges(self):
         """3 challenges a day, every one doable today. When a pay is expected
@@ -6344,6 +6475,45 @@ class BudgetGameEngine:
         f.challenge_ticks = int(getattr(f, "challenge_ticks", 0)) + 1
         return f, diff
 
+    # ── Homestead decor + palettes ───────────────────────────────────────
+    def buy_decor(self, decor_id: str) -> tuple:
+        g = self.state.game
+        d = HOMESTEAD_DECOR_BY_ID.get(decor_id)
+        if not d:
+            return False, "Unknown decor."
+        if decor_id in g.homestead_decor:
+            return False, "Already on the Homestead."
+        _, name, ct, cost, *_r = d
+        if ct == "gold":
+            if g.total_score < cost:
+                return False, f"Need {cost} Gold (have {g.total_score})."
+            g.total_score -= cost
+            g.level = self.level_from_score(g.total_score)
+        else:
+            if g.gems < cost:
+                return False, f"Need {cost} Gems (have {g.gems})."
+            g.gems -= cost
+        g.homestead_decor.append(decor_id)
+        return True, f"{name} placed."
+
+    def set_palette(self, pid: str) -> tuple:
+        g = self.state.game
+        if pid != "classic" and pid not in g.homestead_palettes:
+            return False, "That palette isn't unlocked yet."
+        if pid not in HOMESTEAD_PALETTES:
+            return False, "Unknown palette."
+        g.homestead_palette = pid
+        return True, f"{HOMESTEAD_PALETTES[pid]['name']} palette on."
+
+    def unlock_season_palette(self) -> Optional[str]:
+        """Called when the top season tier is claimed: unlock this season's palette."""
+        g = self.state.game
+        pid = season_for_month(date.today().month)
+        if pid in g.homestead_palettes:
+            return None
+        g.homestead_palettes.append(pid)
+        return pid
+
     def check_homestead_tiers(self, tier: int) -> list:
         """Record the Homestead tier and award any companion not yet claimed.
         Returns the list of newly awarded item ids."""
@@ -6358,6 +6528,9 @@ class BudgetGameEngine:
             if iid and iid not in g.character_items_owned:
                 g.character_items_owned.append(iid)
                 awarded.append(iid)
+            if n == 5 and "background_homestead" not in g.character_items_owned:
+                g.character_items_owned.append("background_homestead")
+                awarded.append("background_homestead")
         return awarded
 
     def buy_avatar_item(self, item_id: str) -> tuple:
@@ -7302,6 +7475,7 @@ class HomesteadEngine:
             "lit_windows": not overdue, "plots": plots, "trees": trees, "fence": fence,
             "path_stones": path_stones, "mailbox_flag": mailbox_flag, "windmill_spin": windmill_spin,
             "weeds": weeds, "checks": checks, "tier": tier, "streak": streak, "level": lvl, "mill_ready": mill_ready,
+            "palette": g.homestead_palette or "classic", "decor": list(g.homestead_decor),
         }
 
 # -----------------------------
@@ -17960,7 +18134,10 @@ class BudgetApp(tk.Tk):
 
         left = self._card_frame(body, padx=SP_LG, pady=SP_LG)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, SP_MD))
-        tk.Label(left, text="WHAT'S GROWING", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+        _lh = tk.Frame(left, bg=UI_SURFACE)
+        _lh.pack(fill="x")
+        tk.Label(_lh, text="WHAT'S GROWING", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(side="left")
+        ttk.Button(_lh, text="Share as image ↗", style="Ghost.TButton", command=self._share_homestead_png).pack(side="right")
         self._homestead_harvest_host = tk.Frame(left, bg=UI_SURFACE)
         self._homestead_harvest_host.pack(fill="x", pady=(SP_SM, 0))
         self._homestead_status_host = tk.Frame(left, bg=UI_SURFACE)
@@ -17977,7 +18154,14 @@ class BudgetApp(tk.Tk):
         self._homestead_how_summary = tk.StringVar(value="How each part of the scene is driven")
         how_wrap, how = self._collapsible_section(frame, "How it grows", "homestead.how", default_open=False,
                                                   summary_var=self._homestead_how_summary)
-        how_wrap.grid(row=3, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_XL))
+        how_wrap.grid(row=3, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
+        self._homestead_shop_summary = tk.StringVar(value="Decor and seasonal palettes — a place to spend Gold and Gems")
+        shop_wrap, shop = self._collapsible_section(frame, "Decor & palettes", "homestead.shop", default_open=False,
+                                                    summary_var=self._homestead_shop_summary)
+        shop_wrap.grid(row=4, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_XL))
+        shop.columnconfigure(0, weight=1)
+        self._homestead_shop_host = tk.Frame(shop, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
+        self._homestead_shop_host.grid(row=0, column=0, sticky="ew")
         rows = [
             ("Sky & weather", "Clear at a 3-pay streak, cloudy at 1–2, overcast at 0. Day, evening and night follow your clock."),
             ("House", "Grows with your Level: tent → cabin (3) → cottage (6) → farmhouse (10) → manor (15). Windows light up at night only when no bill is overdue."),
@@ -18013,6 +18197,10 @@ class BudgetApp(tk.Tk):
             self.today_homestead_var.set(f"Tier {snap['tier']} of 5")
         self._draw_homestead_canvas()
         self._render_homestead_harvest()
+        self._render_homestead_shop()
+        if hasattr(self, "_homestead_shop_summary"):
+            _g = self.state.game
+            self._homestead_shop_summary.set(f"{len(_g.homestead_decor)} of {len(HOMESTEAD_DECOR)} decor placed · palette {HOMESTEAD_PALETTES.get(_g.homestead_palette or 'classic', HOMESTEAD_PALETTES['classic'])['name']}")
 
         host = self._homestead_status_host
         for w_ in host.winfo_children():
@@ -21658,6 +21846,116 @@ class BudgetApp(tk.Tk):
         if snap.get("mill_ready"):
             q.append((44, "Grain sack's full by the windmill — Gold waiting on the Homestead. Collect it.", "happy"))
         return q
+
+    # ── Homestead phase 3 UI: decor shop, palettes, share as image ───────
+    def _render_homestead_shop(self):
+        host = getattr(self, "_homestead_shop_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        g = self.state.game
+        eng = self.game_engine
+        # Palettes
+        prow = tk.Frame(host, bg=UI_SURFACE)
+        prow.pack(fill="x", pady=(0, SP_SM))
+        tk.Label(prow, text="PALETTE", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(side="left", padx=(0, SP_SM))
+        cur = g.homestead_palette or "classic"
+        for pid, pal in HOMESTEAD_PALETTES.items():
+            owned = pid == "classic" or pid in g.homestead_palettes
+            on = pid == cur
+            lbl = tk.Label(prow, text=pal["name"] + ("" if owned else " 🔒"), bg=UI_GOLD if on else UI_SURFACE2,
+                           fg=UI_HERO if on else (UI_TEXT if owned else UI_MUTED), font=FONT_CAPTION_BOLD, padx=SP_SM, pady=3,
+                           cursor="hand2" if owned else "", highlightthickness=1, highlightbackground=UI_GOLD if on else UI_BORDER)
+            lbl.pack(side="left", padx=(0, 4))
+            if owned:
+                lbl.bind("<Button-1>", lambda _e, p=pid: self._set_palette_ui(p))
+            else:
+                lbl.bind("<Button-1>", lambda _e, p=pal: self._show_toast(p["blurb"], "info", 4500))
+        tk.Label(host, text="Seasonal palettes unlock when you claim the top Season Pass tier during that season (Australian seasons).",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=700, justify="left").pack(anchor="w", pady=(0, SP_SM))
+        # Decor grid
+        grid = tk.Frame(host, bg=UI_SURFACE)
+        grid.pack(fill="x")
+        for c in range(5):
+            grid.columnconfigure(c, weight=1, uniform="decor")
+        for i, (did, name, ct, cost, desc, _u, _v) in enumerate(HOMESTEAD_DECOR):
+            owned = did in g.homestead_decor
+            card = tk.Frame(grid, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_EMERALD if owned else UI_BORDER, padx=SP_SM, pady=SP_SM)
+            card.grid(row=i // 5, column=i % 5, sticky="nsew", padx=(0, SP_XS), pady=(0, SP_XS))
+            tk.Label(card, text=name, bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD, anchor="w").pack(anchor="w")
+            tk.Label(card, text=desc, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=120, justify="left").pack(anchor="w")
+            if owned:
+                tk.Label(card, text="placed ✓", bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(2, 0))
+            else:
+                price = f"{cost} Gold" if ct == "gold" else f"{cost} Gem{'s' if cost != 1 else ''}"
+                can = (g.total_score >= cost) if ct == "gold" else (g.gems >= cost)
+                ttk.Button(card, text=price, style="Gold.TButton" if ct == "gold" else "Gem.TButton",
+                           command=lambda d=did: self._buy_decor_ui(d), state="normal" if can else "disabled").pack(anchor="w", pady=(2, 0))
+
+    def _buy_decor_ui(self, did: str):
+        ok, msg = self.game_engine.buy_decor(did)
+        self._show_toast(msg, "success" if ok else "warning", 3500)
+        if ok:
+            self.save_state()
+            self.refresh_game_text()
+            self.refresh_homestead_tab()
+            self._log_engagement("decor")
+            d = HOMESTEAD_DECOR_BY_ID[did]
+            c = getattr(self, "_homestead_canvas", None)
+            if c is not None:
+                try:
+                    self._sparkle_burst(c, d[5] * c.winfo_width(), d[6] * c.winfo_height(), 14, 12)
+                except tk.TclError:
+                    pass
+
+    def _set_palette_ui(self, pid: str):
+        ok, msg = self.game_engine.set_palette(pid)
+        self._show_toast(msg, "success" if ok else "warning", 3000)
+        if ok:
+            self.save_state()
+            self.refresh_homestead_tab()
+            try:
+                self._draw_today_homestead()
+            except Exception:
+                pass
+
+    def _share_homestead_png(self):
+        c = getattr(self, "_homestead_canvas", None)
+        if c is None:
+            return
+        try:
+            from PIL import ImageGrab
+        except Exception:
+            self._show_toast("Image export needs Pillow (pip install pillow).", "warning", 5000)
+            return
+        try:
+            self.update_idletasks()
+            x, y = c.winfo_rootx(), c.winfo_rooty()
+            w, h = c.winfo_width(), c.winfo_height()
+            img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+        except Exception as e:
+            self._show_toast(f"Couldn't capture the scene: {e}", "warning", 5000)
+            return
+        try:
+            if sum(img.convert("L").resize((32, 32)).getdata()) / 1024.0 < 2:
+                self._show_toast("The capture came back black — Windows won't paint windows while the session is locked. Try again with the desktop visible.", "warning", 6000)
+                return
+        except Exception:
+            pass
+        path = filedialog.asksaveasfilename(title="Save Homestead image", defaultextension=".png",
+                                            initialfile=f"homestead-{date.today().isoformat()}.png",
+                                            filetypes=[("PNG image", "*.png")])
+        if not path:
+            return
+        try:
+            img.save(path)
+        except Exception as e:
+            self._show_toast(f"Couldn't save: {e}", "warning", 5000)
+            return
+        self._log_engagement("share_homestead")
+        self._show_toast(f"Saved {Path(path).name}.", "success", 5000, action_label="Open folder",
+                         action_cb=lambda p=path: os.startfile(str(Path(p).parent)))
 
     def _build_rules_tab(self):
         frame = self.rules_tab
@@ -28971,6 +29269,9 @@ class BudgetApp(tk.Tk):
             ramt = result["reward_amount"]
             reward_str = f"+{ramt} Gold" if rtype == "gold" else f"+{ramt} Gem{'s' if ramt > 1 else ''}"
             self._show_toast(f"Tier claimed: {result['tier_name']}  ·  {reward_str}", "success", 4000)
+            if result.get("palette"):
+                pal = HOMESTEAD_PALETTES.get(result["palette"], {}).get("name", result["palette"])
+                self.after(600, lambda: self._celebrate(f"{pal} palette unlocked", "Season Legend — switch it on under Homestead → Decor & palettes", UI_AMETHYST))
             self.save_state()
             self.refresh_game_text()
 
