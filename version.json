@@ -1,10 +1,15 @@
 {
-  "version": "1.0.8",
+  "version": "1.0.9",
   "date": "2026-10-11",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.8/BudgetPlanner.exe",
-  "sha256": "22b482f36ab67fa01c7eedccce2eb0d5f04f10e5ecf4ae9a2fd30d74491efff5",
-  "notes": "Daily Pulse and vault chests, Windows reminders, Homestead harvest/decor/palettes, pacts, savings challenges, bank links with download watcher, history mode for first statements, monthly events and seasonal card sets, Gerald's letters, weekly race, share cards, Analysis quarter/FY/custom periods, text size, sample data, visual polish",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.9/BudgetPlanner.exe",
+  "sha256": "3d6ef11e6fd8803b1a4c39b85c2b44eec1b39f7de0e9223c9049ba0978714640",
+  "notes": "Calmer Today: the Pulse collapses to a strip once done, pacts and the monthly event fold into one section, a single quick-action row with a More menu, systems reveal themselves as you go (Settings can show everything), fewer stacked toasts and celebrations",
   "history": [
+    {
+      "version": "1.0.9",
+      "date": "2026-10-11",
+      "notes": "Calmer Today: the Pulse collapses to a strip once done, pacts and the monthly event fold into one section, a single quick-action row with a More menu, systems reveal themselves as you go (Settings can show everything), fewer stacked toasts and celebrations"
+    },
     {
       "version": "1.0.8",
       "date": "2026-10-11",
