@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.20"
+APP_VERSION = "1.0.21"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -13824,8 +13824,6 @@ class BudgetApp(tk.Tk):
         header_row.columnconfigure(0, weight=1)
         tk.Label(header_row, textvariable=self.season_label_var,
                  font=FONT_BODY_BOLD, fg=UI_TEXT, bg=UI_BG).grid(row=0, column=0, sticky="w")
-        tk.Label(header_row, text="Earn XP by logging pays, playing mini-game, and completing challenges.",
-                 font=FONT_CAPTION, fg=UI_MUTED, bg=UI_BG).grid(row=1, column=0, sticky="w", pady=(2, 0))
         self.season_progress_bar = ttk.Progressbar(sp_frame, style="Season.Horizontal.TProgressbar",
                                                     mode="determinate", maximum=100)
         self.season_progress_bar.grid(row=2, column=0, columnspan=len(SEASON_TIERS),
@@ -16064,9 +16062,6 @@ class BudgetApp(tk.Tk):
         _more["menu"] = _more_menu
         _more.pack(side="left", padx=(SP_SM, 0))
         self._today_more_menu = _more_menu
-        tk.Label(quick_inner, textvariable=self.today_workflow_summary_var, bg=UI_SURFACE,
-                 fg=UI_MUTED, font=FONT_CAPTION, justify="left", wraplength=760).pack(
-                 anchor="w", pady=(SP_SM, 0))
 
         # ── Row 1.5: Gerald commentator (collapsible) ────────────────────────
         self.today_gerald_summary_var = tk.StringVar(value="")
@@ -16728,9 +16723,6 @@ class BudgetApp(tk.Tk):
                              lambda _e: canvas.configure(cursor=""))
 
         # Footer hint
-        canvas.create_text(w - 6, h - 6, anchor="se",
-                           text="Tip: click a row to see transactions",
-                           fill=UI_MUTED, font=FONT_MICRO)
 
     def _draw_personality_bar(self, canvas: tk.Canvas, value: int, color: str):
         canvas.delete("all")
@@ -18275,12 +18267,8 @@ class BudgetApp(tk.Tk):
             self.today_velocity_var.set("Bring in a statement to get started.")
 
         top_action = actions[0]
-        if top_action["priority"] >= 85:
-            self.today_actions_summary_var.set("High-priority action needs attention now.")
-        elif top_action["priority"] >= 60:
-            self.today_actions_summary_var.set("System is stable, but there is a clear next move.")
-        else:
-            self.today_actions_summary_var.set("No critical issues — maintain rhythm.")
+        # This line sits under 'Pending reviews': only say something when rows are waiting.
+        self.today_actions_summary_var.set("Sort them on Statements." if pending_review else "")
 
         # ── Distribution metrics strip ───────────────────────────────────────
         self.dash_bills_var.set(f"${self.state.last_reserved_total:,.2f}")
@@ -18734,13 +18722,10 @@ class BudgetApp(tk.Tk):
                  font=FONT_HEADING).grid(row=0, column=0, sticky="w", pady=(SP_SM, SP_XS))
         intro = tk.Frame(form, bg=UI_SURFACE)
         intro.grid(row=1, column=0, sticky="ew", pady=(0, SP_LG))
-        tk.Label(intro, text="Enter your pay to get your distribution plan.\nThe app shows you how to split it across accounts.",
-                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL,
-                 justify="left").pack(anchor="w")
         # "Same as last time" one-click pay (rendered by _render_quick_pay)
         self._quick_pay_host = tk.Frame(intro, bg=UI_SURFACE)
         # Fields
-        tk.Label(form, text="Amount ($)", bg=UI_SURFACE, fg=UI_MUTED,
+        tk.Label(form, text="Amount", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_SMALL_BOLD).grid(row=2, column=0, sticky="w", pady=(0, 2))
         self.pay_amount_entry = ttk.Entry(form, width=24)
         self.pay_amount_entry.grid(row=3, column=0, sticky="ew", pady=(0, SP_MD))
@@ -18751,7 +18736,7 @@ class BudgetApp(tk.Tk):
         self.pay_source_entry.grid(row=5, column=0, sticky="ew", pady=(0, SP_MD))
         date_hdr = tk.Frame(form, bg=UI_SURFACE)
         date_hdr.grid(row=6, column=0, sticky="w", pady=(0, 2))
-        tk.Label(date_hdr, text="Date Received", bg=UI_SURFACE, fg=UI_MUTED,
+        tk.Label(date_hdr, text="Date", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_SMALL_BOLD).pack(side="left")
         self._info_icon(date_hdr,
                         "Accepts ISO (2026-05-01), DD/MM/YYYY, or natural language "
@@ -18762,7 +18747,7 @@ class BudgetApp(tk.Tk):
         self.pay_date_entry.grid(row=7, column=0, sticky="ew", pady=(0, 2))
         self._date_chips(form, self.pay_date_entry, bg=UI_SURFACE, wrap=3).grid(row=7, column=1, sticky="w", padx=(SP_SM, 0), pady=(0, 2))
         tk.Frame(form, bg=UI_BORDER, height=1).grid(row=8, column=0, sticky="ew", pady=(SP_XS, SP_LG))
-        tk.Label(form, text="Pay Frequency", bg=UI_SURFACE, fg=UI_MUTED,
+        tk.Label(form, text="Frequency", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_SMALL_BOLD).grid(row=9, column=0, sticky="w", pady=(0, 2))
         self.pay_freq_combo = ttk.Combobox(form, values=["weekly", "fortnightly", "monthly"],
                                             state="readonly", width=22)
@@ -18800,7 +18785,7 @@ class BudgetApp(tk.Tk):
         history.rowconfigure(0, weight=1)
         history.columnconfigure(0, weight=1)
         self.income_tree = ttk.Treeview(history, columns=("date", "source", "amount"), show="headings")
-        for c, t, w in [("date", "Date Received", 210), ("source", "Source", 160), ("amount", "Amount", 100)]:
+        for c, t, w in [("date", "Date", 210), ("source", "Source", 160), ("amount", "Amount", 100)]:
             self.income_tree.heading(c, text=t)
             self.income_tree.column(c, width=w, minwidth=80)
         self.income_tree.grid(row=0, column=0, sticky="nsew")
@@ -18829,24 +18814,19 @@ class BudgetApp(tk.Tk):
         controls.pack(fill="both", expand=True)
         controls.columnconfigure(0, weight=1)
 
-        tk.Label(controls, text="Transactions", bg=UI_SURFACE, fg=UI_TEXT,
+        tk.Label(controls, text="Statements", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_HEADING).grid(row=0, column=0, sticky="w", pady=(0, SP_XS))
-        tk.Label(controls, text="Import, review, and verify\nyour bank transactions.",
-                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, justify="left").grid(
-                 row=1, column=0, sticky="w", pady=(0, SP_MD))
 
         # Import actions
         tk.Frame(controls, bg=UI_BORDER, height=1).grid(row=2, column=0, sticky="ew", pady=(0, SP_SM))
-        tk.Label(controls, text="IMPORT", bg=UI_SURFACE, fg=UI_MUTED,
-                 font=FONT_BODY_BOLD).grid(row=3, column=0, sticky="w", pady=(0, SP_XS))
-        ttk.Button(controls, text="Import Statement (PDF / CSV / OFX)", style="Primary.TButton",
+        ttk.Button(controls, text="Import statement", style="Primary.TButton",
                    command=self.import_pdf_transactions).grid(row=4, column=0, sticky="ew", pady=(0, SP_XS))
         self.tx_sort_btn_var = tk.StringVar(value="Sort Unrecognised")
         ttk.Button(controls, textvariable=self.tx_sort_btn_var, style="Secondary.TButton",
                    command=self.open_review_queue).grid(row=5, column=0, sticky="ew", pady=(0, SP_XS))
-        ttk.Button(controls, text="Commit Reviewed", style="Secondary.TButton",
+        ttk.Button(controls, text="Commit", style="Secondary.TButton",
                    command=self.commit_imported_transactions).grid(row=6, column=0, sticky="ew", pady=(0, SP_XS))
-        ttk.Button(controls, text="Clear Import", style="Ghost.TButton",
+        ttk.Button(controls, text="Clear", style="Ghost.TButton",
                    command=self.clear_current_import).grid(row=7, column=0, sticky="ew")
         self._bank_links_host = tk.Frame(controls, bg=UI_SURFACE)
         self._bank_links_host.grid(row=8, column=0, sticky="ew", pady=(SP_SM, 0))
@@ -18911,7 +18891,7 @@ class BudgetApp(tk.Tk):
         preview_outer.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(0, SP_XL), pady=(SP_XL, SP_SM))
         preview_outer.rowconfigure(1, weight=1)
         preview_outer.columnconfigure(0, weight=1)
-        tk.Label(preview_outer, text="Current Import Preview", bg=UI_SURFACE, fg=UI_TEXT,
+        tk.Label(preview_outer, text="Preview", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING, padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
         preview_inner = tk.Frame(preview_outer, bg=UI_SURFACE)
         preview_inner.grid(row=1, column=0, sticky="nsew", padx=SP_MD, pady=(0, SP_MD))
@@ -18938,9 +18918,9 @@ class BudgetApp(tk.Tk):
         self.transaction_tree.configure(selectmode="extended")
         self._attach_tree_empty_state(
             self.transaction_tree, preview_inner, "📄",
-            "No import in progress",
-            "Select a bank PDF above to auto-classify transactions, verify the matches, then commit.",
-            cta_label="Import PDF",
+            "No statement loaded",
+            "Import one and it lands here, sorted.",
+            cta_label="Import",
             cta_cb=lambda: self.import_pdf_transactions())
 
         # Workflow Insights + expense pie live together in one collapsible.
@@ -19066,8 +19046,7 @@ class BudgetApp(tk.Tk):
         hero.configure(padx=SP_XL, pady=SP_LG)
         hero.columnconfigure(0, weight=1)
         tk.Label(hero, text="The Homestead", bg=UI_HERO, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_MD).grid(row=0, column=0, sticky="w")
-        tk.Label(hero, text="A living picture of your plan. Nothing here is a game stat — every plot, tree and fence post "
-                            "is a real fund, goal or bill. Tend the money and the place thrives.",
+        tk.Label(hero, text="Every plot, tree and fence post is a real fund, goal or bill.",
                  bg=UI_HERO, fg=UI_MUTED, font=FONT_SMALL, wraplength=760, justify="left").grid(row=1, column=0, sticky="w", pady=(2, 0))
         self._homestead_tier_var = tk.StringVar(value="TIER 0 / 5")
         tier_badge = tk.Frame(hero, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER_LT, padx=SP_MD, pady=SP_XS)
@@ -19101,8 +19080,6 @@ class BudgetApp(tk.Tk):
         right = self._card_frame(body, padx=SP_LG, pady=SP_LG)
         right.grid(row=0, column=1, sticky="nsew")
         tk.Label(right, text="TIERS & COMPANIONS", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
-        tk.Label(right, text="Each tier you hold awards a companion for your avatar's shoulder.",
-                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=300, justify="left").pack(anchor="w", pady=(2, SP_SM))
         self._homestead_tier_host = tk.Frame(right, bg=UI_SURFACE)
         self._homestead_tier_host.pack(fill="x")
 
@@ -19459,7 +19436,6 @@ class BudgetApp(tk.Tk):
         head = tk.Frame(host, bg=UI_SURFACE2)
         head.pack(fill="x")
         tk.Label(head, text="NEXT UP", bg=UI_SURFACE2, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD).pack(side="left")
-        tk.Label(head, text="closest rewards first", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="right")
         for msg, color in [r for r in (self._streak_risk(), self._pulse_risk()) if r]:
             banner = tk.Frame(host, bg=UI_SURFACE, highlightthickness=1, highlightbackground=color, padx=SP_SM, pady=SP_XS)
             banner.pack(fill="x", pady=(SP_XS, SP_XS))
@@ -20179,7 +20155,7 @@ class BudgetApp(tk.Tk):
         txt = tk.Frame(hdr, bg=UI_BG)
         txt.grid(row=0, column=0, sticky="w")
         tk.Label(txt, text="Your plan", bg=UI_BG, fg=UI_TEXT, font=FONT_HEADING).pack(anchor="w")
-        tk.Label(txt, text="Everything you pay and save for, in one list. Click an amount or a date to change it.",
+        tk.Label(txt, text="Click an amount or a date to change it.",
                  bg=UI_BG, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w")
         btns = tk.Frame(hdr, bg=UI_BG)
         btns.grid(row=0, column=1, sticky="e")
@@ -20189,7 +20165,6 @@ class BudgetApp(tk.Tk):
         ttk.Button(btns, text="Cost guide", style="Ghost.TButton", command=lambda: self._show_cost_guide()).pack(side="left", padx=(SP_SM, 0))
         bulk = tk.Frame(hdr, bg=UI_BG)
         bulk.grid(row=1, column=0, columnspan=2, sticky="w", pady=(SP_SM, 0))
-        tk.Label(bulk, text="Bulk:", bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(side="left", padx=(0, SP_SM))
         ttk.Button(bulk, text="Pay all due this week", style="Ghost.TButton", command=self._plan_pay_due_this_week).pack(side="left")
         ttk.Button(bulk, text="Add $ to several savings…", style="Ghost.TButton", command=self._show_bulk_contribute).pack(side="left", padx=(SP_SM, 0))
         ttk.Button(bulk, text="Savings challenges…", style="Ghost.TButton", command=self._show_savings_challenges).pack(side="left", padx=(SP_SM, 0))
@@ -20300,7 +20275,6 @@ class BudgetApp(tk.Tk):
         amt_lbl = tk.Label(amt_cell, text=amt_text, bg=UI_SURFACE, fg=UI_GOLD if amt_text == "amount?" else UI_TEXT,
                            font=FONT_BODY_BOLD, anchor="e", cursor="xterm")
         amt_lbl.pack(fill="x", pady=(SP_SM, 0))
-        tk.Label(amt_cell, text="click to edit", bg=UI_SURFACE, fg=UI_BORDER_LT, font=FONT_MICRO, anchor="e").pack(fill="x")
         amt_lbl.bind("<Button-1>", lambda _e, c=amt_cell, v=amt_val: self._inline_edit(c, f"{v:.2f}", _save_amount, "money"))
 
         when_cell = tk.Frame(row, bg=UI_SURFACE, width=200, padx=SP_SM)
@@ -20314,7 +20288,6 @@ class BudgetApp(tk.Tk):
                 self._show_toast(f"{obj.name} now due {val:%d %b}.", "success", 2000)
             dl = tk.Label(when_cell, text=f"{obj.due_date:%d %b %Y}", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD, anchor="w", cursor="xterm")
             dl.pack(fill="x", pady=(SP_SM, 0))
-            tk.Label(when_cell, text="next due · click to edit", bg=UI_SURFACE, fg=UI_BORDER_LT, font=FONT_MICRO, anchor="w").pack(fill="x")
             dl.bind("<Button-1>", lambda _e, c=when_cell, o=obj: self._inline_edit(c, o.due_date.isoformat(), _save_due, "date"))
         else:
             if kind == "fund" and obj.contribution_mode == "ongoing" or getattr(obj, "target_amount", 0) <= 0:
@@ -20822,7 +20795,6 @@ class BudgetApp(tk.Tk):
         hero_canvas.grid(row=0, column=0, sticky="ew", padx=SP_XL, pady=(SP_XL, SP_MD))
         hero.configure(padx=SP_XL, pady=SP_LG)
         tk.Label(hero, text="Settings", bg=UI_HERO, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_MD).pack(anchor="w")
-        tk.Label(hero, text="Backups, exports, where your data lives, display and shortcuts.", bg=UI_HERO, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w")
 
         def section(title, row):
             card = self._card_frame(frame, padx=SP_LG, pady=SP_LG)
@@ -20840,7 +20812,7 @@ class BudgetApp(tk.Tk):
         ttk.Button(row, text="Restore from backup…", style="Secondary.TButton", command=self._settings_restore).pack(side="left", padx=(SP_SM, 0))
         ttk.Button(row, text="Move data file…", style="Secondary.TButton", command=self._settings_move_data).pack(side="left", padx=(SP_SM, 0))
         ttk.Button(row, text="Open folder", style="Ghost.TButton", command=self._settings_open_folder).pack(side="left", padx=(SP_SM, 0))
-        tk.Label(data, text="A .bak copy is kept automatically beside the data file every time you save.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).grid(row=3, column=0, sticky="w", pady=(SP_XS, 0))
+        tk.Label(data, text="A .bak copy sits beside the data file after every save.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).grid(row=3, column=0, sticky="w", pady=(SP_XS, 0))
 
         exp = section("EXPORT", 2)
         row = tk.Frame(exp, bg=UI_SURFACE)
@@ -20848,7 +20820,6 @@ class BudgetApp(tk.Tk):
         ttk.Button(row, text="Transactions → CSV…", style="Secondary.TButton", command=lambda: self._settings_export("transactions")).pack(side="left")
         ttk.Button(row, text="Plan (bills, funds, goals) → CSV…", style="Secondary.TButton", command=lambda: self._settings_export("plan")).pack(side="left", padx=(SP_SM, 0))
         ttk.Button(row, text="Your year card ↗", style="Secondary.TButton", command=lambda: self._show_share_card(date.today().year, None)).pack(side="left", padx=(SP_SM, 0))
-        tk.Label(exp, text="Opens in Excel or Google Sheets.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).grid(row=2, column=0, sticky="w", pady=(SP_XS, 0))
 
         imp = section("IMPORTS", 3)
         self._settings_undo_btn = ttk.Button(imp, text="Undo last import", style="Secondary.TButton", command=self._undo_last_commit)
@@ -24694,8 +24665,6 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             if split["savings"] > 0:
                 ttk.Button(srow, text=f"Put ${split['savings']:,.0f} aside", style="Secondary.TButton",
                            command=lambda a=split["savings"]: self._put_aside(a)).pack(side="right")
-            tk.Label(card, text="Click an amount to copy it for your bank app. Bills from the ones you've confirmed; the rest from your typical week.",
-                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_MICRO, wraplength=700, justify="left").pack(anchor="w")
         else:
             pic = eng.savings_picture()
             if pic["could_save"] is not None and pic["could_save"] > 0:
@@ -25002,13 +24971,13 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         form = self._card_frame(form_wrap, padx=SP_XL, pady=SP_XL)
         form.pack(fill="both", expand=True)
         form.columnconfigure(0, weight=1)
-        tk.Label(form, text="Add / Edit Bill", bg=UI_SURFACE, fg=UI_TEXT,
+        tk.Label(form, text="Bill", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_HEADING).grid(row=0, column=0, sticky="w", pady=(0, SP_LG))
         for r, lbl, attr, kw in [
-            (1, "Bill Name",          "bill_name",     {}),
-            (3, "Amount ($)",         "bill_amount",   {}),
+            (1, "Name",          "bill_name",     {}),
+            (3, "Amount",             "bill_amount",   {}),
             (5, "Due Date",           "bill_due",      {}),
-            (7, "Amount Already Saved","bill_saved",    {}),
+            (7, "Already saved","bill_saved",    {}),
         ]:
             tk.Label(form, text=lbl, bg=UI_SURFACE, fg=UI_MUTED,
                      font=FONT_SMALL_BOLD).grid(row=r, column=0, sticky="w", pady=(SP_SM, 1))
@@ -25067,10 +25036,8 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         bills_header = tk.Frame(tbl_wrap, bg=UI_BG)
         bills_header.grid(row=0, column=0, sticky="ew", pady=(0, SP_SM))
         bills_header.columnconfigure(0, weight=1)
-        tk.Label(bills_header, text="Your Bills", bg=UI_BG, fg=UI_TEXT,
+        tk.Label(bills_header, text="Bills", bg=UI_BG, fg=UI_TEXT,
                  font=FONT_HEADING).grid(row=0, column=0, sticky="w")
-        tk.Label(bills_header, text="Tip: right-click any row for quick actions",
-                 bg=UI_BG, fg=UI_MUTED, font=FONT_MICRO).grid(row=0, column=1, sticky="e")
         box = self._card_frame(tbl_wrap, padx=0, pady=0)
         box.grid(row=1, column=0, sticky="nsew")
         box.rowconfigure(0, weight=1)
@@ -25108,12 +25075,9 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         form = self._card_frame(form_wrap, padx=SP_XL, pady=SP_XL)
         form.pack(fill="both", expand=True)
         form.columnconfigure(0, weight=1)
-        tk.Label(form, text="Add / Edit Sinking Fund", bg=UI_SURFACE, fg=UI_TEXT,
+        tk.Label(form, text="Set-aside", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_HEADING).grid(row=0, column=0, sticky="w", pady=(0, 4))
-        tk.Label(form, text="A sinking fund is money you set aside\nto spend on something later.",
-                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, justify="left").grid(
-                 row=1, column=0, sticky="w", pady=(0, 10))
-        tk.Label(form, text="Fund Name", bg=UI_SURFACE, fg=UI_MUTED,
+        tk.Label(form, text="Name", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_SMALL_BOLD).grid(row=2, column=0, sticky="w", pady=(6, 1))
         self.fund_name = ttk.Entry(form, width=24)
         self.fund_name.grid(row=3, column=0, sticky="ew", pady=(0, 2))
@@ -25132,14 +25096,14 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                                       state="readonly", width=22)
         self.fund_mode.set(self._FUND_MODE_LABELS[0][1])
         self.fund_mode.grid(row=5, column=0, sticky="ew", pady=(0, 2))
-        self._fund_target_label = tk.Label(form, text="Target Amount ($)", bg=UI_SURFACE, fg=UI_MUTED,
+        self._fund_target_label = tk.Label(form, text="Target", bg=UI_SURFACE, fg=UI_MUTED,
                                            font=FONT_SMALL_BOLD)
         self._fund_target_label.grid(row=6, column=0, sticky="w", pady=(6, 1))
         ttk.Button(form, text="Cost guide", style="Ghost.TButton",
                    command=lambda: self._show_cost_guide("fund")).grid(row=7, column=1, sticky="w", padx=(SP_SM, 0), pady=(0, 2))
         self.fund_target = ttk.Entry(form, width=24)
         self.fund_target.grid(row=7, column=0, sticky="ew", pady=(0, 2))
-        self._fund_per_pay_label = tk.Label(form, text="Per-pay Amount ($)", bg=UI_SURFACE, fg=UI_MUTED,
+        self._fund_per_pay_label = tk.Label(form, text="Per pay", bg=UI_SURFACE, fg=UI_MUTED,
                                             font=FONT_SMALL_BOLD)
         self._fund_per_pay_label.grid(row=8, column=0, sticky="w", pady=(6, 1))
         self.fund_per_pay = ttk.Entry(form, width=24)
@@ -25149,7 +25113,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         self._fund_date_label.grid(row=10, column=0, sticky="w", pady=(6, 1))
         self.fund_date = ttk.Entry(form, width=24)
         self.fund_date.grid(row=11, column=0, sticky="ew", pady=(0, 2))
-        tk.Label(form, text="Amount Already Saved", bg=UI_SURFACE, fg=UI_MUTED,
+        tk.Label(form, text="Already saved", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_SMALL_BOLD).grid(row=12, column=0, sticky="w", pady=(6, 1))
         self.fund_saved = ttk.Entry(form, width=24)
         self.fund_saved.grid(row=13, column=0, sticky="ew", pady=(0, 2))
@@ -25225,7 +25189,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         form = self._card_frame(form_wrap, padx=SP_XL, pady=SP_XL)
         form.pack(fill="both", expand=True)
         form.columnconfigure(0, weight=1)
-        tk.Label(form, text="Add / Edit Goal", bg=UI_SURFACE, fg=UI_TEXT,
+        tk.Label(form, text="Goal", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_HEADING).grid(row=0, column=0, sticky="w", pady=(0, 4))
         tk.Label(form, text="Goals are long-term savings targets\nfunded from each pay's surplus.",
                  bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, justify="left").grid(
@@ -25234,7 +25198,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             (2, "Goal Name",             "goal_name"),
             (4, "Target ($) — blank = no end", "goal_target"),
             (6, "Fixed Amount or %",     "goal_value"),
-            (8, "Amount Already Saved",  "goal_saved"),
+            (8, "Already saved",  "goal_saved"),
         ]:
             tk.Label(form, text=lbl, bg=UI_SURFACE, fg=UI_MUTED,
                      font=FONT_SMALL_BOLD).grid(row=r, column=0, sticky="w", pady=(6, 1))
@@ -25509,11 +25473,6 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                  font=FONT_CAPTION_BOLD).grid(row=0, column=1, sticky="sw")
         tk.Label(header, text="Your setup assistant",
                  bg=UI_BG, fg=UI_TEXT, font=FONT_DISPLAY_MD).grid(row=1, column=1, sticky="nw")
-        tk.Label(header,
-                 text='Natural phrasing works. Try "add bill Netflix $15 monthly due 25th" '
-                      'or "I got paid $2500 today".',
-                 bg=UI_BG, fg=UI_MUTED, font=FONT_SMALL,
-                 wraplength=640, justify="left").grid(row=2, column=1, sticky="nw", pady=(SP_XS, 0))
 
         # ── Row 1: Transcript (scrollable) ────────────────────────────────
         transcript_wrap = tk.Frame(frame, bg=UI_SURFACE,
@@ -26448,8 +26407,6 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         store_hdr.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         tk.Label(store_hdr, text="PACK STORE", bg=UI_BG, fg=UI_TEXT,
                  font=FONT_BODY_BOLD).pack(side="left")
-        tk.Label(store_hdr, text="Open packs to collect cards and complete sets.",
-                 bg=UI_BG, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left", padx=(10, 0))
 
         packs_row = tk.Frame(body, bg=UI_BG)
         packs_row.grid(row=2, column=0, sticky="ew", pady=(6, 0))
@@ -26478,7 +26435,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 f"{pct}% {rarity.title()}" for rarity, pct in rw.items() if pct > 0)
             odds_f = tk.Frame(pcard, bg=UI_SURFACE)
             odds_f.pack(anchor="w", pady=(6, 8))
-            tk.Label(odds_f, text=f"{ncard} cards per pack", bg=UI_SURFACE,
+            tk.Label(odds_f, text="odds", bg=UI_SURFACE,
                      fg=UI_MUTED, font=FONT_MICRO).pack(side="left")
             self._info_icon(odds_f, odds_text, bg=UI_SURFACE).pack(
                 side="left", padx=(SP_XS, 0))
@@ -26520,8 +26477,6 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             btn.bind("<Button-1>", lambda e, v=val: self._set_coll_filter(v))
 
         # Recycle hint
-        tk.Label(body, text="Duplicates can be recycled for Gems. Click any card with ×2+ copies.",
-                 bg=UI_BG, fg=UI_MUTED, font=FONT_MICRO).grid(row=5, column=0, sticky="w", pady=(4, 6))
 
         # Collection grid
         self._coll_grid_frame = tk.Frame(body, bg=UI_BG)

@@ -1,10 +1,15 @@
 {
-  "version": "1.0.20",
+  "version": "1.0.21",
   "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.20/BudgetPlanner.exe",
-  "sha256": "5dc9ad65c7e27438746325275c87e5a6447a678c112c89ec034ff9e26f3b8bcc",
-  "notes": "Follow-ups: confirming a suggested bill no longer completes the 'add money to a fund' challenge; suggested bills get clean names (Netflix, not Netflix Com); people tracking first no longer see a Setup warning badge or a 'Setup 0/7' count \u2014 the health line tracks statement, sorting, pays and learning instead; and when a pay lands with nothing in the plan to absorb it, a toast offers to put the learned savings amount aside in one click.",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.21/BudgetPlanner.exe",
+  "sha256": "e834b124d9de68cf49b816d7a775fc0d1d71601a5a0da4a9cb3fe3e980f91866",
+  "notes": "Less to read: page subtitles, tips and hints are gone where the screen already says it, labels are single words (Name, Amount, Date, Already saved), the Statements page is Import statement / Sort / Commit / Clear with a plain 'Preview', and the Plan rows lost their 'click to edit' captions. Nothing was removed.",
   "history": [
+    {
+      "version": "1.0.21",
+      "date": "2026-10-13",
+      "notes": "Less to read: page subtitles, tips and hints are gone where the screen already says it, labels are single words (Name, Amount, Date, Already saved), the Statements page is Import statement / Sort / Commit / Clear with a plain 'Preview', and the Plan rows lost their 'click to edit' captions. Nothing was removed."
+    },
     {
       "version": "1.0.20",
       "date": "2026-10-13",
