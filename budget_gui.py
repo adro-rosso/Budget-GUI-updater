@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.14"
+APP_VERSION = "1.0.15"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -3662,6 +3662,100 @@ COST_GUIDE = [
 ]
 COST_GUIDE_BY_ID = {e["id"]: e for e in COST_GUIDE}
 
+# Bill interview — Gerald asks about the usual regular payments one at a time.
+# `guide` points at a COST_GUIDE entry for the typical amount + note; `options`
+# makes a multi-pick question (one bill per picked option, each with its own
+# typical price). `keywords` are what the charge looks like on a statement.
+BILL_INTERVIEW = [
+    {"id": "rent", "group": "Home", "q": "Do you pay rent or a mortgage?", "name": "Rent / Mortgage",
+     "frequency": "fortnightly", "priority": "essential", "category": "Housing", "typical": 0,
+     "keywords": ["rent", "mortgage", "home loan", "real estate", "realestate", "ray white", "lj hooker", "harcourts", "property"],
+     "note": "Your lease or loan statement has the exact figure. Weekly rent × 2 if it's taken fortnightly."},
+    {"id": "electricity", "group": "Home", "q": "Do you get an electricity bill?", "name": "Electricity", "guide": "electricity",
+     "keywords": ["origin", "agl", "energy", "electric", "alinta", "ergon", "red energy", "powershop", "energyaustralia"]},
+    {"id": "gas", "group": "Home", "q": "Do you pay for gas (bottled or piped)?", "name": "Gas", "guide": "gas",
+     "keywords": ["gas", "elgas", "kleenheat", "supagas"]},
+    {"id": "water", "group": "Home", "q": "Do you get a water bill?", "name": "Water", "guide": "water",
+     "keywords": ["water", "urban utilities", "unitywater", "seqwater"]},
+    {"id": "rates", "group": "Home", "q": "Do you own your home and pay council rates?", "name": "Council rates", "guide": "rates",
+     "keywords": ["council", "rates", "bcc"]},
+    {"id": "body_corp", "group": "Home", "q": "Do you pay body corporate or strata levies?", "name": "Body corporate", "guide": "body_corp",
+     "keywords": ["body corp", "strata", "levies", "levy"]},
+    {"id": "internet", "group": "Home", "q": "Do you pay for home internet?", "name": "Internet", "guide": "internet",
+     "keywords": ["telstra", "optus", "tpg", "aussie broadband", "iinet", "nbn", "superloop", "internet", "exetel", "tangerine"]},
+    {"id": "mobile", "group": "Home", "q": "Do you pay for a mobile phone plan?", "name": "Mobile phone", "guide": "mobile",
+     "keywords": ["telstra", "optus", "vodafone", "boost", "amaysim", "belong", "felix", "mobile", "kogan mobile"]},
+    {"id": "car_insurance", "group": "Getting around", "q": "Do you have car insurance?", "name": "Car insurance", "guide": "car_insurance",
+     "keywords": ["car insurance", "racq", "nrma", "allianz", "budget direct", "youi", "aami", "suncorp", "bingle", "insurance"]},
+    {"id": "rego", "group": "Getting around", "q": "Do you pay car registration?", "name": "Car rego", "guide": "rego",
+     "keywords": ["rego", "registration", "tmr", "transport and main roads", "qld transport"]},
+    {"id": "roadside", "group": "Getting around", "q": "Do you pay for roadside assistance?", "name": "Roadside assistance", "guide": "roadside",
+     "keywords": ["roadside", "racq", "nrma"]},
+    {"id": "car_loan", "group": "Getting around", "q": "Do you have a car loan, personal loan or buy-now-pay-later repayments?", "name": "Loan repayment",
+     "frequency": "fortnightly", "priority": "essential", "category": "Debt", "typical": 0,
+     "keywords": ["loan", "afterpay", "zip pay", "zippay", "latitude", "humm", "klarna", "repayment", "finance", "plenti", "pepper"],
+     "note": "Use the repayment amount from your loan statement or the app."},
+    {"id": "health", "group": "Insurance", "q": "Do you have health insurance?", "name": "Health insurance", "guide": "health",
+     "keywords": ["medibank", "bupa", "hcf", "nib", "ahm", "hbf", "frank health", "health insurance", "health fund"]},
+    {"id": "home_ins", "group": "Insurance", "q": "Do you have home or contents insurance?", "name": "Home / contents insurance", "guide": "contents",
+     "keywords": ["contents", "home insurance", "house insurance", "allianz", "suncorp", "racq", "budget direct", "youi"]},
+    {"id": "life_ins", "group": "Insurance", "q": "Do you pay for life or income protection insurance (outside super)?", "name": "Life / income insurance",
+     "frequency": "monthly", "priority": "important", "category": "Insurance", "typical": 0,
+     "keywords": ["life insurance", "income protection", "tal", "zurich", "aia", "mlc", "noble oak"],
+     "note": "Only if it's paid from your bank account, not from your super."},
+    {"id": "pet_ins", "group": "Insurance", "q": "Do you have pet insurance?", "name": "Pet insurance",
+     "frequency": "monthly", "priority": "optional", "category": "Insurance", "typical": 45, "low": 25, "high": 90,
+     "keywords": ["pet insurance", "petsure", "bow wow", "petplan", "knose", "rspca pet"],
+     "note": "Accident & illness cover ≈ $25–$90 a month depending on the animal and age."},
+    {"id": "streaming", "group": "Subscriptions", "q": "Do you have any streaming services?", "name": "Streaming",
+     "frequency": "monthly", "priority": "optional", "category": "Subscription",
+     "options": [("Netflix", 20.0, ["netflix"]), ("Stan", 17.0, ["stan"]), ("Disney+", 16.0, ["disney"]),
+                 ("Binge", 19.0, ["binge"]), ("Kayo", 30.0, ["kayo"]), ("Prime Video", 10.0, ["amazon prime", "prime video", "amzn prime"]),
+                 ("Apple TV+", 13.0, ["apple tv", "apple.com/bill"]), ("YouTube Premium", 17.0, ["youtube", "google youtube"]), ("Paramount+", 10.0, ["paramount"])],
+     "note": "Typical monthly prices for the standard tier — check the app if you're on a different plan."},
+    {"id": "music", "group": "Subscriptions", "q": "Do you pay for music streaming?", "name": "Music",
+     "frequency": "monthly", "priority": "optional", "category": "Subscription",
+     "options": [("Spotify", 14.0, ["spotify"]), ("Apple Music", 13.0, ["apple music", "apple.com/bill"]), ("YouTube Music", 13.0, ["youtube music"])],
+     "note": "Individual plans; student ≈ $7, family ≈ $25."},
+    {"id": "gym", "group": "Subscriptions", "q": "Do you pay for a gym or fitness membership?", "name": "Gym", "guide": "gym",
+     "keywords": ["gym", "fitness", "anytime", "f45", "snap", "goodlife", "jetts", "plus fitness", "crunch", "yoga", "pilates", "climb", "debitsuccess", "ezidebit"]},
+    {"id": "software", "group": "Subscriptions", "q": "Do you pay for cloud storage or software subscriptions?", "name": "Software",
+     "frequency": "monthly", "priority": "optional", "category": "Subscription",
+     "options": [("iCloud+", 5.0, ["icloud", "apple.com/bill"]), ("Google One", 3.0, ["google one", "google storage"]), ("Microsoft 365", 11.0, ["microsoft", "msbill"]),
+                 ("Adobe", 30.0, ["adobe"]), ("Dropbox", 19.0, ["dropbox"]), ("ChatGPT / AI tools", 30.0, ["openai", "chatgpt", "anthropic", "claude"])],
+     "note": "Small ones add up — each becomes its own bill so you can see them."},
+    {"id": "gaming", "group": "Subscriptions", "q": "Do you pay for a gaming subscription?", "name": "Gaming",
+     "frequency": "monthly", "priority": "optional", "category": "Subscription",
+     "options": [("Xbox Game Pass", 17.0, ["xbox", "microsoft"]), ("PlayStation Plus", 14.0, ["playstation", "sony"]), ("Nintendo Online", 6.0, ["nintendo"])],
+     "note": "Monthly tier prices; annual plans are cheaper per month."},
+    {"id": "news", "group": "Subscriptions", "q": "Do you pay for news, magazines or an audiobook service?", "name": "News / reading",
+     "frequency": "monthly", "priority": "optional", "category": "Subscription",
+     "options": [("Audible", 17.0, ["audible"]), ("Kindle Unlimited", 14.0, ["kindle"]), ("News subscription", 25.0, ["news corp", "nine", "courier mail", "the age", "smh", "abc", "guardian"])],
+     "note": "Most news sites have a cheap first year — check what it rolls to."},
+    {"id": "childcare", "group": "Family & other", "q": "Do you pay childcare or school fees?", "name": "Childcare / school",
+     "frequency": "fortnightly", "priority": "essential", "category": "Family", "typical": 0,
+     "keywords": ["childcare", "child care", "kindy", "kindergarten", "daycare", "school", "college", "goodstart", "c&k", "oshc"],
+     "note": "After the subsidy — your provider's statement shows the gap fee."},
+    {"id": "donations", "group": "Family & other", "q": "Do you make regular donations or pay union / professional fees?", "name": "Donations / fees",
+     "frequency": "monthly", "priority": "optional", "category": "Other", "typical": 0,
+     "keywords": ["donation", "charity", "union", "membership", "red cross", "world vision", "rspca", "unicef", "salvos", "msf"],
+     "note": "Only the regular ones — one-off gifts are just spending."},
+]
+
+
+def interview_item_defaults(item: dict) -> dict:
+    """Fill a BILL_INTERVIEW entry's frequency/priority/category/typical/note from its cost-guide entry."""
+    g = COST_GUIDE_BY_ID.get(item.get("guide", ""), {})
+    return {
+        "frequency": item.get("frequency", g.get("frequency", "monthly")),
+        "priority": item.get("priority", g.get("priority", "important")),
+        "category": item.get("category", g.get("category", "Bill")),
+        "typical": float(item.get("typical", g.get("typical", 0)) or 0),
+        "low": item.get("low", g.get("low")), "high": item.get("high", g.get("high")),
+        "note": item.get("note", g.get("note", "")),
+        "keywords": list(item.get("keywords", []) or g.get("keywords", [])),
+    }
+
 
 def _guide_lookup(lower: str) -> list:
     """Cost-guide entries whose keywords appear in *lower* (longest keyword first)."""
@@ -4867,6 +4961,11 @@ class Bill:
     priority: str = "essential"
     category: str = "Bill"
     current_saved: float = 0.0
+    # Amount not known yet: "" (known) / "statement" (fill it from the next statement) / "revisit" (remind me)
+    amount_pending: str = ""
+    amount_pending_since: str = ""
+    # Words that identify this bill on a statement (from the bill interview; used by the matcher)
+    keywords: List[str] = field(default_factory=list)
 
     def to_dict(self):
         d = asdict(self)
@@ -4883,6 +4982,9 @@ class Bill:
             data.get("priority", "essential"),
             data.get("category", "Bill"),
             float(data.get("current_saved", 0.0)),
+            str(data.get("amount_pending", "") or ""),
+            str(data.get("amount_pending_since", "") or ""),
+            [str(k) for k in (data.get("keywords") or [])],
         )
 
 
@@ -7630,6 +7732,18 @@ class TransactionMatcher:
         desc_l = desc.lower()
         return any(p in desc_l for p in parts)
 
+    @staticmethod
+    def _keyword_match(desc: str, keywords) -> bool:
+        """Any bill keyword appears in the description as a whole word/phrase."""
+        desc_l = " " + re.sub(r"[^a-z0-9+&/.]+", " ", desc.lower()) + " "
+        for k in keywords or []:
+            k = str(k).lower().strip()
+            if len(k) >= 3 and (" " + k + " ") in desc_l:
+                return True
+            if len(k) >= 5 and k in desc_l:
+                return True
+        return False
+
     def merchant_key(self, tx: TransactionRecord) -> str:
         return merchant_group_key(tx.description)
 
@@ -7730,7 +7844,8 @@ class TransactionMatcher:
             return tx
 
         for bill in self.state.bills:
-            if self._name_match(tx.description, bill.name) or (abs(tx.money_out - bill.amount) <= 2.0 and abs((tx.tx_date - bill.due_date).days) <= 45):
+            if self._name_match(tx.description, bill.name) or self._keyword_match(tx.description, getattr(bill, "keywords", [])) \
+                    or (bill.amount > 0 and abs(tx.money_out - bill.amount) <= 2.0 and abs((tx.tx_date - bill.due_date).days) <= 45):
                 tx.matched_type = "linked_bill"
                 tx.matched_target = bill.name
                 tx.category = bill.category
@@ -8450,6 +8565,7 @@ class GeraldAssistant:
         if intent == "mute_alerts":   return self._handle_mute_alerts(True)
         if intent == "unmute_alerts": return self._handle_mute_alerts(False)
         if intent == "setup_wizard":  return self._handle_setup_wizard()
+        if intent == "bill_interview": return self._handle_bill_interview()
         if intent == "alias_add":     return self._handle_alias_add(text)
         if intent == "alias_list":    return self._handle_alias_list()
         if intent == "alias_remove":  return self._handle_alias_remove(text)
@@ -8562,6 +8678,11 @@ class GeraldAssistant:
             return "mute_alerts"
         if re.search(r"\b(alerts?\s+on|unmute|start (?:alert|nagging)|speak up)\b", lower):
             return "unmute_alerts"
+        # Bill interview — "find my bills", "ask me what I pay for", "what bills do I have"
+        if re.search(r"\b(find|discover|work out|figure out|go through|identify|hunt)\s+(?:all\s+)?(?:my|the|our)?\s*(?:regular\s+|monthly\s+)?(?:bills?|subscriptions?|payments)\b", lower) or \
+                re.search(r"\bask me (?:about|what)\b.*\b(bills?|pay for|subscriptions?)\b", lower) or \
+                re.search(r"\b(what|which) bills (?:do|should|might) i\b", lower) or re.search(r"\bbill (?:interview|questions|quiz)\b", lower):
+            return "bill_interview"
         # Setup wizard — scripted onboarding
         if re.search(r"\b(help me (?:set up|setup|get started)|walk me through (?:setup|set up|this)|setup wizard|guided setup|onboard me|start over|reset wizard|begin setup|set me up)\b", lower):
             return "setup_wizard"
@@ -11165,6 +11286,14 @@ class GeraldAssistant:
         except Exception:
             pass
         return ("Now we're talking. Pick the promise and the stake — keep it and I pay double.", "wink")
+
+    def _handle_bill_interview(self):
+        try:
+            self.app.after(150, self.app._show_bill_interview)
+            return ("Let's find them. I'll ask about the usual suspects — rent, power, phone, insurance, streaming, gym — "
+                    "and you just say yes or no. Don't know an amount? Say so and I'll pick it up from your next statement.", "wink")
+        except Exception:
+            return ("Setup → Plan → 'Find my bills' walks through the usual regular payments one question at a time.", "normal")
 
     def _handle_invest_help(self):
         try:
@@ -15525,6 +15654,7 @@ class BudgetApp(tk.Tk):
         self._confirm_income_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._flagged_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._reimb_host = tk.Frame(quick_inner, bg=UI_SURFACE)
+        self._pending_bills_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._month_report_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._today_extras_summary = tk.StringVar(value="")
         _ex_wrap, _ex = self._collapsible_section(quick_inner, "Pacts & this month", "today.extras", default_open=False,
@@ -15550,6 +15680,7 @@ class BudgetApp(tk.Tk):
         _more_menu.add_command(label="Savings challenges…", command=self._show_savings_challenges)
         _more_menu.add_separator()
         _more_menu.add_command(label="Set up from my statement", command=self._show_statement_setup)
+        _more_menu.add_command(label="Find my bills — Gerald asks", command=lambda: self._show_bill_interview())
         _more_menu.add_command(label="Keyboard shortcuts  (Ctrl + /)", command=self._show_shortcuts)
         _more["menu"] = _more_menu
         _more.pack(side="left", padx=(SP_SM, 0))
@@ -17666,6 +17797,8 @@ class BudgetApp(tk.Tk):
         self._render_flagged_followups()
         if hasattr(self, "_reimb_host"):
             self._render_reimbursements()
+        if hasattr(self, "_pending_bills_host"):
+            self._render_pending_bills()
         if hasattr(self, "_pact_host"):
             self._settle_pacts_ui()
             self._render_pact_card()
@@ -19553,6 +19686,14 @@ class BudgetApp(tk.Tk):
                 cands.append({"priority": 97, "title": f"Confirm your pay of ${tx_.money_in:,.0f}",
                               "detail": f"Found on your statement dated {tx_.tx_date:%d %b}. One click logs it and runs the split.",
                               "cta": "Looks right", "run": lambda f=fp: self._confirm_income_log(f)})
+        for b_ in self._pending_amount_bills():
+            age_ = self._pending_age_days(b_)
+            if age_ >= (2 if b_.amount_pending == "revisit" else 7):
+                cands.append({"priority": 75, "title": f"Set the amount for {b_.name}",
+                              "detail": (f"You said you'd come back to it {age_} days ago." if b_.amount_pending == "revisit"
+                                         else f"No statement has shown a {b_.name} charge in {age_} days — type it in if you know it."),
+                              "cta": "Set amount", "run": lambda b=b_: self._ask_bill_amount(b)})
+                break
         due_stmt = self._statement_due()
         if due_stmt and not unsorted:
             l_ = due_stmt['link']
@@ -19624,6 +19765,7 @@ class BudgetApp(tk.Tk):
         btns.grid(row=0, column=1, sticky="e")
         ttk.Button(btns, text="+ Add bill", style="Primary.TButton", command=lambda: self._show_quick_add("bill")).pack(side="left")
         ttk.Button(btns, text="+ Add savings", style="Accent.TButton", command=lambda: self._show_quick_add("fund")).pack(side="left", padx=(SP_SM, 0))
+        ttk.Button(btns, text="Find my bills", style="Ghost.TButton", command=lambda: self._show_bill_interview()).pack(side="left", padx=(SP_SM, 0))
         ttk.Button(btns, text="Cost guide", style="Ghost.TButton", command=lambda: self._show_cost_guide()).pack(side="left", padx=(SP_SM, 0))
         bulk = tk.Frame(hdr, bg=UI_BG)
         bulk.grid(row=1, column=0, columnspan=2, sticky="w", pady=(SP_SM, 0))
@@ -19687,7 +19829,11 @@ class BudgetApp(tk.Tk):
         if kind == "fund" and getattr(obj, "challenge", ""):
             self._plan_challenge_strip(body, obj)
         today = date.today()
-        if kind == "bill":
+        if kind == "bill" and getattr(obj, "amount_pending", ""):
+            sub = f"{obj.frequency} · amount not set yet · " + (
+                "the next statement charge fills it in" if obj.amount_pending == "statement" else "click the amount to set it") \
+                + f" · {self._priority_word(obj.priority)}"
+        elif kind == "bill":
             days = (obj.due_date - today).days
             when = "overdue" if days < 0 else ("due today" if days == 0 else f"in {days} day{'s' if days != 1 else ''}")
             sub = f"{obj.frequency} · {when} · ${self.engine.bill_recommended_allocation(obj):,.0f} per pay · {self._priority_word(obj.priority)}"
@@ -19704,7 +19850,7 @@ class BudgetApp(tk.Tk):
         amt_cell.grid(row=0, column=2, sticky="ns")
         amt_cell.pack_propagate(False)
         if kind == "bill":
-            amt_text, amt_val = f"${obj.amount:,.2f}", obj.amount
+            amt_text, amt_val = (("amount?", 0.0) if getattr(obj, "amount_pending", "") else (f"${obj.amount:,.2f}", obj.amount))
         elif kind == "fund":
             amt_val = obj.target_amount if obj.contribution_mode in ("auto", "buffer") else obj.fixed_amount
             amt_text = (f"${obj.target_amount:,.0f}" if obj.contribution_mode in ("auto", "buffer") else f"${obj.fixed_amount:,.0f}/pay")
@@ -19715,6 +19861,9 @@ class BudgetApp(tk.Tk):
         def _save_amount(val, kind=kind, obj=obj):
             if kind == "bill":
                 obj.amount = val
+                if val > 0:
+                    obj.amount_pending = ""
+                    obj.amount_pending_since = ""
             elif kind == "fund":
                 if obj.contribution_mode in ("auto", "buffer"):
                     obj.target_amount = val
@@ -19725,7 +19874,8 @@ class BudgetApp(tk.Tk):
             self.save_state()
             self.refresh_all_views()
             self._show_toast(f"{obj.name} updated.", "success", 2000)
-        amt_lbl = tk.Label(amt_cell, text=amt_text, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD, anchor="e", cursor="xterm")
+        amt_lbl = tk.Label(amt_cell, text=amt_text, bg=UI_SURFACE, fg=UI_GOLD if amt_text == "amount?" else UI_TEXT,
+                           font=FONT_BODY_BOLD, anchor="e", cursor="xterm")
         amt_lbl.pack(fill="x", pady=(SP_SM, 0))
         tk.Label(amt_cell, text="click to edit", bg=UI_SURFACE, fg=UI_BORDER_LT, font=FONT_MICRO, anchor="e").pack(fill="x")
         amt_lbl.bind("<Button-1>", lambda _e, c=amt_cell, v=amt_val: self._inline_edit(c, f"{v:.2f}", _save_amount, "money"))
@@ -20074,6 +20224,30 @@ class BudgetApp(tk.Tk):
         n = (name or "").strip().lower()
         return any(i != exclude_idx and o.name.strip().lower() == n for i, o in enumerate(coll))
 
+    def _fill_pending_amounts_from_batch(self, batch: List[TransactionRecord]) -> list:
+        """A committed charge linked to a bill that has no amount yet sets that
+        amount (latest charge wins). Returns (bill, prev_amount, prev_pending, prev_since) undo records."""
+        done = []
+        latest: Dict[int, TransactionRecord] = {}
+        for tx in batch:
+            if tx.direction() != "out" or tx.matched_type != "linked_bill" or not tx.matched_target or tx.money_out <= 0:
+                continue
+            bill = next((b for b in self.state.bills if b.name.lower() == tx.matched_target.lower()), None)
+            if bill is None or not getattr(bill, "amount_pending", ""):
+                continue
+            cur = latest.get(id(bill))
+            if cur is None or tx.tx_date > cur.tx_date:
+                latest[id(bill)] = tx
+        for bill in self.state.bills:
+            tx = latest.get(id(bill))
+            if tx is None:
+                continue
+            done.append((bill, bill.amount, bill.amount_pending, bill.amount_pending_since))
+            bill.amount = round(float(tx.money_out), 2)
+            bill.amount_pending = ""
+            bill.amount_pending_since = ""
+        return done
+
     def _auto_pay_bills_from_batch(self, batch: List[TransactionRecord]) -> list:
         """A committed transaction linked to a bill, dated near that bill's due
         date, is the bill being paid — roll it forward. Returns undo records."""
@@ -20112,6 +20286,8 @@ class BudgetApp(tk.Tk):
                 self.state.pending_income_confirmations.remove(fp)
         for bill, prev_due, prev_saved in batch["bills_paid"]:
             bill.due_date, bill.current_saved = prev_due, prev_saved
+        for bill, prev_amt, prev_pending, prev_since in batch.get("amounts_filled", []):
+            bill.amount, bill.amount_pending, bill.amount_pending_since = prev_amt, prev_pending, prev_since
         # Put the rows back in the preview so they can be re-sorted or re-committed
         self.latest_import = list(batch["txs"]) + [t for t in self.latest_import if id(t) not in ids]
         self._last_commit = None
@@ -23350,6 +23526,359 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         tk.Label(host, text="When the money shows up on a statement, right-click that incoming row → 'This is a reimbursement for…' to link it (full or partial).",
                  bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=700, justify="left").pack(anchor="w")
 
+
+    # ── Bill interview (Gerald asks what you pay for) ────────────────────────
+    def _pending_amount_bills(self) -> List[Bill]:
+        return [b for b in self.state.bills if getattr(b, "amount_pending", "")]
+
+    @staticmethod
+    def _pending_age_days(bill: Bill) -> int:
+        try:
+            return (date.today() - date.fromisoformat(bill.amount_pending_since)).days if bill.amount_pending_since else 0
+        except ValueError:
+            return 0
+
+    def _set_bill_amount(self, bill: Bill, amount: float, source: str = "manual", quiet: bool = False):
+        """Give a bill its amount (clears the pending flag)."""
+        bill.amount = round(float(amount), 2)
+        bill.amount_pending = ""
+        bill.amount_pending_since = ""
+        self.save_state()
+        self.refresh_all_views()
+        if not quiet:
+            self._show_toast(f"{bill.name}: ${bill.amount:,.2f} {bill.frequency}." + (" Now in your plan." if source == "manual" else ""), "success", 3500)
+
+    def _ask_bill_amount(self, bill: Bill):
+        amt = simpledialog.askfloat(f"{bill.name}", f"How much is {bill.name}, each time ({bill.frequency})?", parent=self, minvalue=0.01)
+        if amt is None:
+            return
+        self._set_bill_amount(bill, amt)
+
+    def _pending_bill_for_desc(self, desc: str) -> Optional[Bill]:
+        """The first bill still waiting on an amount whose keywords (or name) appear in a statement description."""
+        if not desc:
+            return None
+        for b in self._pending_amount_bills():
+            if self.matcher._keyword_match(desc, getattr(b, "keywords", [])) or self.matcher._name_match(desc, b.name):
+                return b
+        return None
+
+    def _pending_bill_for_group(self, g: dict, txs: List[TransactionRecord]) -> Optional[Bill]:
+        if g.get("suggested_type") == "linked_bill" and g.get("suggested_target"):
+            b = next((x for x in self.state.bills if x.name.lower() == str(g["suggested_target"]).lower()), None)
+            if b is not None and getattr(b, "amount_pending", ""):
+                return b
+        for t in txs[:3]:
+            b = self._pending_bill_for_desc(t.description)
+            if b is not None:
+                return b
+        return self._pending_bill_for_desc(g.get("sample", ""))
+
+    def _render_pending_bills(self):
+        host = getattr(self, "_pending_bills_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        pend = self._pending_amount_bills()
+        if not pend:
+            host.pack_forget()
+            return
+        host.pack(fill="x", pady=(SP_SM, 0))
+        tk.Label(host, text=f"BILLS WITHOUT AN AMOUNT · {len(pend)}", bg=UI_SURFACE, fg=UI_GOLD, font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_SM, SP_XS))
+        for b in pend[:6]:
+            row = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_SM, pady=SP_XS)
+            row.pack(fill="x", pady=(0, SP_XS))
+            age = self._pending_age_days(b)
+            how = ("waiting for a statement charge" if b.amount_pending == "statement" else "you said you'd come back to it")
+            txt = f"{b.name} · {b.frequency} · {how}" + (f" · {age} day{'s' if age != 1 else ''} ago" if age else "")
+            tk.Label(row, text=txt, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, anchor="w", wraplength=520, justify="left").pack(side="left", fill="x", expand=True)
+
+            def _remove(b=b):
+                if b in self.state.bills:
+                    self.state.bills.remove(b)
+                self.save_state(); self.refresh_all_views()
+                self._show_toast(f"{b.name} removed.", "info", 2500)
+            ttk.Button(row, text="Remove", style="Ghost.TButton", command=_remove).pack(side="right")
+            ttk.Button(row, text="Set amount…", style="Secondary.TButton", command=lambda b=b: self._ask_bill_amount(b)).pack(side="right", padx=(0, SP_SM))
+        if len(pend) > 6:
+            tk.Label(host, text=f"+ {len(pend) - 6} more under Setup → Plan", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+
+    def _show_bill_interview(self, on_done=None):
+        """One question per card: 'Do you pay for a gym?' Yes → enter the amount, say it'll
+        show on a statement (filled in from the first matching charge), or flag it to revisit."""
+        existing = getattr(self, "_bill_interview_scrim", None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            return
+        items = list(BILL_INTERVIEW)
+        scrim, content, btn_row, step_var, close = self._overlay_card("GERALD WANTS TO KNOW", 820, 640)
+        self._bill_interview_scrim = scrim
+        wrap_w = 820 - 2 * SP_XL - 20
+        today = date.today()
+        st = {"idx": 0, "open": False, "added": [], "skipped": 0, "mode_vars": {}}
+        self._bill_interview = st
+
+        def _close():
+            st["closed"] = True
+            try:
+                self.unbind("<Key>", st.get("key_id"))
+            except Exception:
+                pass
+            close()
+            self._bill_interview_scrim = None
+            self._bill_interview = None
+            try:
+                self.refresh_all_views()
+            except Exception:
+                pass
+            if on_done:
+                on_done()
+
+        def _clear():
+            for w in content.winfo_children():
+                w.destroy()
+            for w in btn_row.winfo_children():
+                w.destroy()
+
+        def _have(name: str) -> bool:
+            return self._name_exists("bill", name)
+
+        def _add_bill(name, amount, freq, due, pri, cat, keywords, mode):
+            if _have(name):
+                return None
+            b = Bill(name, round(float(amount or 0.0), 2) if not mode else 0.0, due, freq, pri, cat, 0.0,
+                     mode, today.isoformat() if mode else "", list(keywords))
+            self.state.bills.append(b)
+            st["added"].append((name, mode, b.amount))
+            return b
+
+        def _finish_add():
+            self.save_state()
+            try:
+                self.refresh_bills()
+            except Exception:
+                pass
+
+        def _render():
+            _clear()
+            i = st["idx"]
+            if i >= len(items):
+                _render_done(); return
+            item = items[i]
+            d = interview_item_defaults(item)
+            step_var.set(f"{i + 1} of {len(items)} · {item.get('group', '')}")
+            # Gerald + question
+            row = tk.Frame(content, bg=UI_SURFACE)
+            row.pack(fill="x", pady=(0, SP_SM))
+            c = tk.Canvas(row, width=56, height=72, bg=UI_SURFACE, highlightthickness=0)
+            c.pack(side="left", padx=(0, SP_MD))
+            try:
+                _draw_gerald(c, w=56, h=72, expression="thinking" if not st["open"] else "happy")
+            except Exception:
+                pass
+            qbox = tk.Frame(row, bg=UI_SURFACE)
+            qbox.pack(side="left", fill="x", expand=True)
+            tk.Label(qbox, text=item.get("group", "").upper(), bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD, anchor="w").pack(anchor="w")
+            tk.Label(qbox, text=item["q"], bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_MD, wraplength=wrap_w - 90, justify="left", anchor="w").pack(anchor="w")
+            already = [o[0] for o in item.get("options", []) if _have(o[0])] if item.get("options") else ([item["name"]] if _have(item["name"]) else [])
+            if already:
+                tk.Label(qbox, text="Already in your plan: " + ", ".join(already), bg=UI_SURFACE, fg=UI_EMERALD, font=FONT_CAPTION, anchor="w").pack(anchor="w")
+            if not st["open"]:
+                yn = tk.Frame(content, bg=UI_SURFACE)
+                yn.pack(fill="x", pady=(SP_MD, 0))
+                yes_b = ttk.Button(yn, text="Yes  (Enter)", style="Primary.TButton", command=_yes)
+                yes_b.pack(side="left")
+                ttk.Button(yn, text="No", style="Secondary.TButton", command=_no).pack(side="left", padx=(SP_SM, 0))
+                tk.Label(content, text="Say yes and you can type the amount, let a statement fill it in, or flag it to come back to.",
+                         bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_MD, 0))
+                if st["added"]:
+                    tk.Label(content, text=f"Added so far: {len(st['added'])} — " + ", ".join(n for n, _, _ in st["added"][-5:]),
+                             bg=UI_SURFACE, fg=UI_EMERALD, font=FONT_CAPTION, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_SM, 0))
+                _nav(yes=True)
+                yes_b.focus_set()
+                return
+            # Detail panel after Yes
+            st["mode_vars"] = {}
+            freq_v = tk.StringVar(value=d["frequency"])
+            due_v = tk.StringVar(value=(today + timedelta(days=14)).isoformat())
+            pri_v = tk.StringVar(value=d["priority"])
+            form = tk.Frame(content, bg=UI_SURFACE)
+            form.pack(fill="x", pady=(SP_SM, 0))
+            amount_vars = {}
+            if item.get("options"):
+                tk.Label(form, text="Tick the ones you have — the price is a typical one, change it if you know yours:",
+                         bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(0, SP_XS))
+                grid = tk.Frame(form, bg=UI_SURFACE)
+                grid.pack(fill="x")
+                for c_ in range(3):
+                    grid.columnconfigure(c_, weight=1, uniform="opt")
+                for n, (label, typical, kws) in enumerate(item["options"]):
+                    on = tk.BooleanVar(value=False)
+                    av = tk.StringVar(value=f"{typical:.2f}")
+                    st["mode_vars"][label] = on
+                    amount_vars[label] = (av, kws)
+                    cell = tk.Frame(grid, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER)
+                    cell.grid(row=n // 3, column=n % 3, sticky="ew", padx=(0, SP_SM) if n % 3 != 2 else 0, pady=(0, SP_XS))
+                    have = _have(label)
+                    cb = tk.Checkbutton(cell, text=(label + (" ✓" if have else ""))[:13], variable=on, bg=UI_SURFACE2, fg=UI_TEXT, selectcolor=UI_SURFACE3,
+                                        activebackground=UI_SURFACE2, activeforeground=UI_TEXT_BRIGHT, font=FONT_BODY, anchor="w", width=11,
+                                        state="disabled" if have else "normal", cursor="hand2")
+                    cb.pack(side="left", padx=(SP_XS, 0), pady=SP_XS)
+                    ttk.Entry(cell, textvariable=av, width=6, font=FONT_BODY, justify="right").pack(side="right", padx=(0, SP_XS))
+                    tk.Label(cell, text="$", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_BODY).pack(side="right")
+            else:
+                amt_v = tk.StringVar(value=(f"{d['typical']:.2f}" if d["typical"] else ""))
+                amount_vars[item["name"]] = (amt_v, d["keywords"])
+                line = tk.Frame(form, bg=UI_SURFACE)
+                line.pack(fill="x")
+                tk.Label(line, text=f"{item['name']} — amount each time  $", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(side="left")
+                amt_e = ttk.Entry(line, textvariable=amt_v, width=10, font=FONT_SUBHEADING, justify="right")
+                amt_e.pack(side="left", padx=(SP_XS, 0))
+                if d["typical"]:
+                    tk.Label(line, text=f"typical ${d['typical']:,.0f}" + (f" (${d['low']:,.0f}–${d['high']:,.0f})" if d.get("low") and d.get("high") else ""),
+                             bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left", padx=(SP_SM, 0))
+                amt_e.focus_set()
+                amt_e.bind("<Return>", lambda _e: _commit(""))
+            if d.get("note"):
+                tk.Label(form, text=d["note"], bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+            meta = tk.Frame(form, bg=UI_SURFACE)
+            meta.pack(fill="x", pady=(SP_SM, 0))
+            tk.Label(meta, text="Every", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left")
+            ttk.Combobox(meta, textvariable=freq_v, values=["weekly", "fortnightly", "monthly", "quarterly", "yearly"], state="readonly", width=11).pack(side="left", padx=(SP_XS, SP_MD))
+            tk.Label(meta, text="Next due", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left")
+            due_e = ttk.Entry(meta, textvariable=due_v, width=12, font=FONT_BODY)
+            due_e.pack(side="left", padx=(SP_XS, SP_MD))
+            tk.Label(meta, text="Priority", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left")
+            ttk.Combobox(meta, textvariable=pri_v, values=["essential", "important", "optional"], state="readonly", width=10).pack(side="left", padx=(SP_XS, 0))
+            self._date_chips(form, due_v, bg=UI_SURFACE).pack(anchor="w", pady=(SP_XS, 0))
+            err_v = tk.StringVar()
+            tk.Label(form, textvariable=err_v, bg=UI_SURFACE, fg=UI_RUBY, font=FONT_CAPTION, wraplength=wrap_w, justify="left").pack(anchor="w")
+
+            def _targets():
+                """[(name, amount_var, keywords)] the user is adding on this card."""
+                if item.get("options"):
+                    return [(lbl, amount_vars[lbl][0], amount_vars[lbl][1]) for lbl in amount_vars if st["mode_vars"][lbl].get()]
+                return [(item["name"], amount_vars[item["name"]][0], amount_vars[item["name"]][1])]
+
+            def _commit(mode: str):
+                targets = _targets()
+                if not targets:
+                    err_v.set("Tick at least one, or say No."); return
+                due = self._parse_smart_date(due_v.get().strip()) if due_v.get().strip() else None
+                if due is None:
+                    err_v.set("Next due needs a date like 15/11/2026, or use a chip."); return
+                added = []
+                for name, av, kws in targets:
+                    amt = self._parse_money_field(av.get()) if not mode else 0.0
+                    if not mode and (amt is None or amt <= 0):
+                        err_v.set(f"{name}: type the amount, or choose 'It'll be on my statement' / 'Not sure — remind me'."); return
+                    b = _add_bill(name, amt, freq_v.get(), due, pri_v.get(), d["category"], kws, mode)
+                    if b is not None:
+                        added.append(b)
+                _finish_add()
+                if added:
+                    names = ", ".join(b.name for b in added)
+                    if mode == "statement":
+                        self._show_toast(f"{names}: I'll fill the amount in from the first matching charge on a statement.", "info", 4000)
+                    elif mode == "revisit":
+                        self._show_toast(f"{names}: flagged to come back to — it stays on Today until you set the amount.", "info", 4000)
+                    else:
+                        self._show_toast(f"Added {names}.", "success", 2500)
+                st["open"] = False
+                st["idx"] += 1
+                _render()
+
+            st["commit_fn"] = _commit
+            acts = tk.Frame(content, bg=UI_SURFACE)
+            acts.pack(fill="x", pady=(SP_MD, 0))
+            many = bool(item.get("options"))
+            ttk.Button(acts, text=("Add ticked with these amounts  ✓" if many else "Add with this amount  ✓"), style="Primary.TButton",
+                       command=lambda: _commit("")).pack(side="left")
+            ttk.Button(acts, text="It'll be on my statement", style="Secondary.TButton", command=lambda: _commit("statement")).pack(side="left", padx=(SP_SM, 0))
+            ttk.Button(acts, text="Not sure — remind me", style="Secondary.TButton", command=lambda: _commit("revisit")).pack(side="left", padx=(SP_SM, 0))
+            tk.Label(content, text="'On my statement' adds it without an amount and the first matching charge fills it in. "
+                                   "'Remind me' keeps it on Today until you set it.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_SM, 0))
+            _nav(yes=False)
+
+        def _yes():
+            st["open"] = True
+            _render()
+
+        def _no():
+            st["open"] = False
+            st["skipped"] += 1
+            st["idx"] += 1
+            _render()
+
+        def _back():
+            if st["open"]:
+                st["open"] = False
+            elif st["idx"] > 0:
+                st["idx"] -= 1
+            _render()
+
+        def _nav(yes: bool):
+            ttk.Button(btn_row, text="Finish later", style="Ghost.TButton", command=_close).pack(side="left")
+            if st["idx"] > 0 or st["open"]:
+                ttk.Button(btn_row, text="←  Back", style="Secondary.TButton", command=_back).pack(side="left", padx=(SP_SM, 0))
+            ttk.Button(btn_row, text="Skip the rest  →", style="Secondary.TButton", command=lambda: (st.update(idx=len(items), open=False), _render())).pack(side="right")
+
+        def _render_done():
+            step_var.set("Done")
+            row = tk.Frame(content, bg=UI_SURFACE)
+            row.pack(fill="x", pady=(0, SP_SM))
+            c = tk.Canvas(row, width=56, height=72, bg=UI_SURFACE, highlightthickness=0)
+            c.pack(side="left", padx=(0, SP_MD))
+            try:
+                _draw_gerald(c, w=56, h=72, expression="proud" if st["added"] else "normal")
+            except Exception:
+                pass
+            n = len(st["added"])
+            known = [a for a in st["added"] if not a[1]]
+            stmt = [a for a in st["added"] if a[1] == "statement"]
+            later = [a for a in st["added"] if a[1] == "revisit"]
+            head = (f"That's {n} bill{'s' if n != 1 else ''} found." if n else "Nothing new — your plan already had the usual ones, or you don't pay for them.")
+            tk.Label(row, text=head, bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_MD, wraplength=wrap_w - 90, justify="left").pack(side="left", anchor="w")
+            if known:
+                tk.Label(content, text="With an amount: " + ", ".join(f"{nm} ${amt:,.2f}" for nm, _, amt in known),
+                         bg=UI_SURFACE, fg=UI_EMERALD, font=FONT_BODY, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+            if stmt:
+                tk.Label(content, text="From your next statement: " + ", ".join(nm for nm, _, _ in stmt) + " — import one and the matching charge sets the amount.",
+                         bg=UI_SURFACE, fg=UI_SAPPHIRE, font=FONT_BODY, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+            if later:
+                tk.Label(content, text="To come back to: " + ", ".join(nm for nm, _, _ in later) + " — they sit on Today until you set an amount.",
+                         bg=UI_SURFACE, fg=UI_GOLD, font=FONT_BODY, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+            tk.Label(content, text="Everything is editable under Setup → Plan: click an amount or a date to change it.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_MD, 0))
+            ttk.Button(btn_row, text="Done  ✓", style="Primary.TButton", command=_close).pack(side="right")
+            ttk.Button(btn_row, text="←  Back", style="Secondary.TButton", command=lambda: (st.update(idx=len(items) - 1, open=False), _render())).pack(side="left")
+
+        def _key(e):
+            if st.get("closed") or not scrim.winfo_exists():
+                return
+            try:
+                if not str(e.widget).startswith(str(scrim)):
+                    return
+            except Exception:
+                return
+            if st["idx"] >= len(items):
+                if e.keysym == "Return":
+                    _close(); return "break"
+                return
+            if e.keysym == "Escape":
+                _close(); return "break"
+            if e.keysym == "Return" and not st["open"]:
+                _yes(); return "break"
+            if e.keysym.lower() == "n" and not st["open"] and not isinstance(e.widget, (tk.Entry, ttk.Entry)):
+                _no(); return "break"
+        st["key_id"] = self.bind("<Key>", _key, add="+")
+        st["render"] = _render
+        st["yes"] = _yes
+        st["no"] = _no
+        _render()
+
     def _build_rules_tab(self):
         frame = self.rules_tab
         frame.columnconfigure(0, weight=0)
@@ -24750,6 +25279,8 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                        self.open_review_queue()))),
             ("Set Up Money Plan (wizard)", "action",
              (lambda: self._show_setup_wizard())),
+            ("Find my bills (Gerald asks what you pay for)", "action",
+             (lambda: self._show_bill_interview())),
             ("Add a bill / set-aside / goal", "action",
              (lambda: self._show_quick_add("bill"))),
             ("Toggle Focus Mode (hide the game)", "action",
@@ -27316,8 +27847,8 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         def _render_bills():
             _gerald("Bills first — the non-negotiables. Add everything that comes out regularly and "
                     "I'll work out what each pay needs to put aside.", "normal")
-            _head("What do you have to pay?", "Tap a suggestion or type your own. Amount is per occurrence, "
-                  "'next due' is the next date it's taken.")
+            _head("What do you have to pay?", "Tap a suggestion, type your own, or let me ask you about the usual ones. "
+                  "Amount is per occurrence, 'next due' is the next date it's taken.")
             pf = wz["prefill"]
             name_v = tk.StringVar(value=pf.get("bill_name", ""))
             amt_v = tk.StringVar(value=pf.get("bill_amount", ""))
@@ -27369,6 +27900,8 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             # Buttons on their own line so the row never runs off the card
             btns = tk.Frame(form, bg=UI_SURFACE)
             btns.grid(row=1, column=0, columnspan=6, sticky="e", pady=(SP_XS, 0))
+            ttk.Button(btns, text="Ask me what I pay for", style="Secondary.TButton",
+                       command=lambda: self._show_bill_interview(on_done=_render)).pack(side="left", padx=(0, SP_SM))
             ttk.Button(btns, text="Not sure? Cost guide", style="Ghost.TButton",
                        command=lambda: self._show_cost_guide("bill", on_pick=_guide_pick)).pack(side="left", padx=(0, SP_SM))
             ttk.Button(btns, text="Add bill", style="Accent.TButton", command=_add).pack(side="left")
@@ -27387,7 +27920,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                     except Exception:
                         pass
                     _render()
-                rows.append((UI_RUBY, b.name, f"${b.amount:,.2f} {b.frequency} · due {b.due_date:%d %b} · {b.priority}",
+                rows.append((UI_RUBY, b.name, (f"${b.amount:,.2f}" if not getattr(b, "amount_pending", "") else "amount?") + f" {b.frequency} · due {b.due_date:%d %b} · {b.priority}",
                              f"${self.engine.bill_recommended_allocation(b):,.0f}/pay", _rm))
             _item_list(content, rows, 170)
             tk.Label(content, text=f"Bills need about ${_per_pay_bills():,.2f} per pay right now.",
@@ -28500,11 +29033,13 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         self.state.transactions.extend(batch)
         if new_pending:
             self.state.pending_income_confirmations.extend(new_pending)
+        # A bill still waiting on an amount takes it from the linked charge that just landed.
+        amounts_filled = self._fill_pending_amounts_from_batch(batch)
         # Bills whose linked transaction just landed are paid — roll them forward.
         bills_paid = self._auto_pay_bills_from_batch(batch)
         self.game_engine.mark_real_action()
         self._last_commit = {"txs": batch, "pending_added": list(new_pending), "bills_paid": bills_paid,
-                             "incomes_added": hist_pays, "when": datetime.now()}
+                             "incomes_added": hist_pays, "amounts_filled": amounts_filled, "when": datetime.now()}
         self._log_engagement("commit")
         self.after(1500, lambda b=batch: self._offer_reimbursement_match(b))
         n_hist = sum(1 for t_ in batch if self._is_historical(t_))
@@ -28517,6 +29052,8 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         msg = f"Committed {count} transactions."
         if bills_paid:
             msg += f" Marked paid: {', '.join(b.name for b, _, _ in bills_paid[:3])}{' …' if len(bills_paid) > 3 else ''}."
+        if amounts_filled:
+            msg += " Amount set from the statement: " + ", ".join(f"{b.name} ${b.amount:,.2f}" for b, _, _, _ in amounts_filled[:3]) + "."
         if new_pending:
             msg += f" {len(new_pending)} pay to confirm below."
         if hist_pays:
@@ -28965,7 +29502,23 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                       font=FONT_CAPTION_BOLD, padx=SP_SM, pady=2, cursor="hand2", takefocus=0,
                       command=_toggle_reimb).pack(side="right", padx=(0, SP_SM))
 
-            if confident:
+            pend_bill = self._pending_bill_for_group(g, group_txs)
+            if pend_bill is not None:
+                latest = max(group_txs, key=lambda t_: t_.tx_date) if group_txs else None
+                use_amt = round(float(latest.money_out), 2) if latest is not None else round(float(g["total"]), 2)
+                pb = tk.Frame(content, bg=UI_WARNING_SOFT, padx=SP_MD, pady=SP_SM,
+                              highlightthickness=1, highlightbackground=UI_GOLD)
+                pb.pack(fill="x", pady=(0, SP_MD))
+                tk.Label(pb, text=f"Looks like your {pend_bill.name} bill — its amount isn't set yet.",
+                         bg=UI_WARNING_SOFT, fg=UI_TEXT_BRIGHT, font=FONT_BODY_BOLD, wraplength=430, justify="left").pack(side="left")
+
+                def _fill_pending(b=pend_bill, a=use_amt):
+                    self._set_bill_amount(b, a, source="statement", quiet=True)
+                    _choose("linked_bill", b.name, b.category)
+                    self._show_toast(f"{b.name}: amount set to ${a:,.2f} from your statement and linked.", "success", 4000)
+                ttk.Button(pb, text=f"Use ${use_amt:,.2f} and link  ✓", style="Primary.TButton",
+                           command=_fill_pending).pack(side="right")
+            if confident and pend_bill is None:
                 banner = tk.Frame(content, bg=UI_INFO_SOFT, padx=SP_MD, pady=SP_SM,
                                   highlightthickness=1, highlightbackground=UI_SAPPHIRE)
                 banner.pack(fill="x", pady=(0, SP_MD))
@@ -30406,7 +30959,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         for idx, bill in sorted(enumerate(self.state.bills), key=lambda x: x[1].due_date):
             days = (bill.due_date - date.today()).days
             tag = "overdue" if days < 0 else "urgent" if days <= self.engine.current_cycle_days() else "good"
-            self.bill_tree.insert("", tk.END, iid=str(idx), text=self._label_with_icon(bill.name), values=(f"${bill.amount:,.2f}", self._format_date_with_relative(bill.due_date), self._priority_pill(bill.priority), self._frequency_pill(bill.frequency), f"${bill.current_saved:,.0f} {self._progress_bar(bill.current_saved, bill.amount)}", f"${self.engine.bill_recommended_allocation(bill):,.2f}"), tags=(tag,))
+            self.bill_tree.insert("", tk.END, iid=str(idx), text=self._label_with_icon(bill.name), values=(("amount?" if getattr(bill, "amount_pending", "") else f"${bill.amount:,.2f}"), self._format_date_with_relative(bill.due_date), self._priority_pill(bill.priority), self._frequency_pill(bill.frequency), f"${bill.current_saved:,.0f} {self._progress_bar(bill.current_saved, bill.amount)}", f"${self.engine.bill_recommended_allocation(bill):,.2f}"), tags=(tag,))
         self._restripe_tree(self.bill_tree)
         self._toggle_tree_empty_state(self.bill_tree)
 
@@ -31663,6 +32216,21 @@ def _reminder_messages(state: "AppState", now: datetime) -> List[tuple]:
             else:
                 when = "today" if days == 0 else "tomorrow" if days == 1 else b.due_date.strftime("%A")
                 out.append((f"bill:{b.name}", f"{b.name} due {when}", f"${b.amount:,.0f}. ${short:,.0f} still to set aside."))
+    if now.hour >= 9:
+        _stale = []
+        for b in state.bills:
+            if not getattr(b, "amount_pending", ""):
+                continue
+            try:
+                _age = (today - date.fromisoformat(b.amount_pending_since)).days if b.amount_pending_since else 99
+            except ValueError:
+                _age = 99
+            if _age >= 3:
+                _stale.append(b)
+        if _stale:
+            _names = ", ".join(b.name for b in _stale[:3]) + (" …" if len(_stale) > 3 else "")
+            out.append(("bill_amount", f"{len(_stale)} bill{'s' if len(_stale) != 1 else ''} still need{'' if len(_stale) != 1 else 's'} an amount",
+                        f"{_names}. Set it on Today, or import a statement and the charge fills it in."))
     if now.hour >= 8:
         try:
             _ge = BudgetGameEngine(state)

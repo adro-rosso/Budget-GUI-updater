@@ -1,10 +1,15 @@
 {
-  "version": "1.0.14",
+  "version": "1.0.15",
   "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.14/BudgetPlanner.exe",
-  "sha256": "e68a0ecd204df82445e49c3809802d30d91f036ff6803fc96bb1e9920da916fd",
-  "notes": "Money plan wizard: 'Your money right now' asks for the balance of each of your four accounts (Everyday, Bills, Savings, Investment) instead of one total. 'Suggest a split' uses those balances, and the transfer step now shows what each account has today and the exact moves to make.",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.15/BudgetPlanner.exe",
+  "sha256": "373759a61f99c3b0f37f7d4255740e7a26467f293b5312465de8f96b2a20576b",
+  "notes": "Gerald now asks what you pay for: a bill interview (rent, power, phone, insurance, streaming, gym and more) one question at a time. Say yes and either type the amount, let your next statement fill it in, or flag it to come back to \u2014 pending bills show on Today, the Plan and the sort cards until they have an amount.",
   "history": [
+    {
+      "version": "1.0.15",
+      "date": "2026-10-13",
+      "notes": "Gerald now asks what you pay for: a bill interview (rent, power, phone, insurance, streaming, gym and more) one question at a time. Say yes and either type the amount, let your next statement fill it in, or flag it to come back to \u2014 pending bills show on Today, the Plan and the sort cards until they have an amount."
+    },
     {
       "version": "1.0.14",
       "date": "2026-10-13",
