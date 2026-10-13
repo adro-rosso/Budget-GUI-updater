@@ -4734,18 +4734,37 @@ def previous_calendar_month_window(today: date) -> tuple[date, date]:
     return first_prev, last_prev
 
 
+def tx_category_amounts(tx: "TransactionRecord") -> list:
+    """[(category, amount)] for an outgoing transaction — its splits, or one line."""
+    splits = getattr(tx, "splits", None) or []
+    if splits:
+        out = [((s.get("category") or tx.category or "").strip() or "Uncategorized", float(s.get("amount", 0.0))) for s in splits]
+        out = [(c, a) for c, a in out if a > 0]
+        if out:
+            return out
+    return [((tx.category or "").strip() or "Uncategorized", float(tx.money_out))]
+
+
+def tx_category_label(tx: "TransactionRecord", width: int = 24) -> str:
+    """Tree cell text: 'Groceries ⁄ General' for a split, else the category."""
+    splits = getattr(tx, "splits", None) or []
+    if len(splits) > 1:
+        return " ⁄ ".join((s.get("category") or "?") for s in splits)[:width]
+    return (tx.category or "")[:width]
+
+
 def outgoing_category_totals(
     transactions: List[TransactionRecord], start: date, end: date
 ) -> Dict[str, float]:
-    """Sum money_out by category between ``start`` and ``end`` (inclusive)."""
+    """Sum money_out by category between ``start`` and ``end`` (inclusive); splits count per line."""
     out: Dict[str, float] = {}
     for tx in transactions:
         if tx.direction() != "out" or tx.matched_type == "ignore":
             continue
         if tx.tx_date < start or tx.tx_date > end:
             continue
-        cat = (tx.category or "").strip() or "Uncategorized"
-        out[cat] = out.get(cat, 0.0) + tx.money_out
+        for cat, amt in tx_category_amounts(tx):
+            out[cat] = out.get(cat, 0.0) + amt
     return out
 
 
@@ -5164,6 +5183,9 @@ class TransactionRecord:
     user_verified: bool = False
     notes: str = ""
     flagged: bool = False   # user flagged for follow-up (e.g. forgotten subscription)
+    # One receipt, several categories: [{'category', 'amount'}] summing to money_out.
+    # `category` stays the largest share so single-category code keeps working.
+    splits: List[Dict] = field(default_factory=list)
 
     def amount(self) -> float:
         return self.money_in if self.money_in > 0 else self.money_out
@@ -5194,6 +5216,7 @@ class TransactionRecord:
             bool(data.get("user_verified", False)),
             data.get("notes", ""),
             bool(data.get("flagged", False)),
+            [dict(s) for s in (data.get("splits") or [])],
         )
 
 
@@ -6376,8 +6399,8 @@ class BudgetGameEngine:
     def _pact_spent_in_cap(self, pact: dict) -> float:
         cat = str(pact["params"].get("cat", "")).lower()
         start = date.fromisoformat(pact["start"]); end = date.fromisoformat(pact["deadline"])
-        return sum(t.money_out for t in self.state.transactions
-                   if t.money_out > 0 and (t.category or "").lower() == cat and start <= t.tx_date <= end)
+        return sum(a for t in self.state.transactions if t.money_out > 0 and start <= t.tx_date <= end
+                   for c, a in tx_category_amounts(t) if c.lower() == cat)
 
     def pact_progress(self, today: Optional[date] = None) -> Optional[dict]:
         """{'text','pct','done','failed','days_left'} for the active pact."""
@@ -22880,6 +22903,192 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             pass
         var.set(" · ".join(bits))
 
+    # ── Split a transaction across categories ────────────────────────────
+    def _split_category_choices(self) -> list:
+        cats = [c for c in self.state.expense_categories if c not in ("Income", "Transfer", "Ignore")]
+        return cats or ["General"]
+
+    def _show_split_editor(self, txs: List[TransactionRecord], on_done=None, title: str = "SPLIT ACROSS CATEGORIES"):
+        """One block per transaction: category + amount lines that must add up to the
+        transaction. A blank last amount takes the remainder."""
+        txs = [t for t in txs if t.direction() == "out" and t.money_out > 0]
+        if not txs:
+            self._show_toast("Only outgoing transactions can be split.", "info")
+            return
+        scrim, content, btn_row, step_var, close = self._overlay_card(title, 680, min(640, 260 + 150 * len(txs)))
+        step_var.set(f"{len(txs)} transaction{'s' if len(txs) != 1 else ''}")
+        tk.Label(content, text="One receipt, several categories. Lines must add up to the amount — leave the last amount blank and it takes what's left.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, wraplength=620, justify="left").pack(anchor="w")
+        area, bind_wheel = self._overlay_scroll_area(content, min(430, 150 * len(txs) + 40))
+        choices = self._split_category_choices()
+        editor = {"txs": txs, "rows": {}, "hosts": {}, "remaining": {}}
+
+        def _lines_for(tx):
+            if getattr(tx, "splits", None):
+                return [(s.get("category", ""), f"{float(s.get('amount', 0)):.2f}") for s in tx.splits]
+            return [(tx.category or choices[0], f"{tx.money_out:.2f}"), ("", "")]
+
+        def _recalc(i):
+            tx = txs[i]
+            used = 0.0
+            for cat_v, amt_v in editor["rows"][i]:
+                v = self._parse_money_field(amt_v.get()) if amt_v.get().strip() else None
+                if v:
+                    used += v
+            rem = round(tx.money_out - used, 2)
+            editor["remaining"][i].set(("remaining ${:,.2f}".format(rem)) if abs(rem) >= 0.005 else "adds up ✓")
+
+        def _render_tx(i):
+            host = editor["hosts"][i]
+            for w_ in host.winfo_children():
+                w_.destroy()
+            tx = txs[i]
+            tk.Label(host, text=f"{extract_merchant_name(tx.description)[:34]}  ·  {tx.tx_date:%d %b}  ·  ${tx.money_out:,.2f}",
+                     bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD).pack(anchor="w")
+            rows = editor["rows"].setdefault(i, [])
+            if not rows:
+                for cat, amt in _lines_for(tx):
+                    rows.append((tk.StringVar(value=cat), tk.StringVar(value=amt)))
+            for j, (cat_v, amt_v) in enumerate(rows):
+                line = tk.Frame(host, bg=UI_SURFACE2)
+                line.pack(fill="x", pady=(2, 0))
+                cb = ttk.Combobox(line, textvariable=cat_v, values=choices, width=18)
+                cb.pack(side="left")
+                tk.Label(line, text="$", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL_BOLD).pack(side="left", padx=(SP_SM, 2))
+                e = ttk.Entry(line, textvariable=amt_v, width=9)
+                e.pack(side="left")
+                amt_v.trace_add("write", lambda *_a, i=i: _recalc(i))
+                if len(rows) > 1:
+                    x = tk.Label(line, text="✕", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL_BOLD, cursor="hand2", padx=6)
+                    x.pack(side="left")
+                    x.bind("<Button-1>", lambda _e, i=i, j=j: (rows.pop(j), _render_tx(i)))
+            foot = tk.Frame(host, bg=UI_SURFACE2)
+            foot.pack(fill="x", pady=(2, 0))
+            add = tk.Label(foot, text="+ another category", bg=UI_SURFACE2, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD, cursor="hand2")
+            add.pack(side="left")
+            add.bind("<Button-1>", lambda _e, i=i: (rows.append((tk.StringVar(value=""), tk.StringVar(value=""))), _render_tx(i)))
+            editor["remaining"].setdefault(i, tk.StringVar(value=""))
+            tk.Label(foot, textvariable=editor["remaining"][i], bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="right")
+            _recalc(i)
+
+        for i, tx in enumerate(txs):
+            box = tk.Frame(area, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_MD, pady=SP_SM)
+            box.pack(fill="x", pady=(0, SP_SM))
+            editor["hosts"][i] = box
+            _render_tx(i)
+        bind_wheel(area)
+        err = tk.StringVar(value="")
+        tk.Label(content, textvariable=err, bg=UI_SURFACE, fg=UI_RUBY, font=FONT_CAPTION, wraplength=620, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+
+        def _apply():
+            results = []
+            for i, tx in enumerate(txs):
+                lines = []
+                blank_idx = None
+                for j, (cat_v, amt_v) in enumerate(editor["rows"][i]):
+                    cat = cat_v.get().strip()
+                    raw = amt_v.get().strip()
+                    if not cat and not raw:
+                        continue
+                    if not cat:
+                        err.set(f"Line {j + 1} of {extract_merchant_name(tx.description)[:20]} needs a category."); return
+                    if not raw:
+                        if blank_idx is not None:
+                            err.set("Only one amount can be left blank per transaction."); return
+                        blank_idx = len(lines); lines.append([cat, None]); continue
+                    amt = self._parse_money_field(raw)
+                    if amt is None or amt < 0:
+                        err.set(f"'{raw}' isn't an amount."); return
+                    lines.append([cat, round(amt, 2)])
+                if not lines:
+                    err.set("Each transaction needs at least one line."); return
+                known = sum(a for _c, a in lines if a is not None)
+                if blank_idx is not None:
+                    rem = round(tx.money_out - known, 2)
+                    if rem < 0:
+                        err.set(f"{extract_merchant_name(tx.description)[:20]}: lines exceed ${tx.money_out:,.2f}."); return
+                    lines[blank_idx][1] = rem
+                total = round(sum(a for _c, a in lines), 2)
+                if abs(total - tx.money_out) > 0.011:
+                    err.set(f"{extract_merchant_name(tx.description)[:20]}: lines add to ${total:,.2f}, not ${tx.money_out:,.2f}."); return
+                lines = [(c, a) for c, a in lines if a > 0]
+                results.append((tx, lines))
+            for tx, lines in results:
+                cats = [self.register_expense_category(c) for c, _a in lines]
+                merged: Dict[str, float] = {}
+                for c, (_c0, a) in zip(cats, lines):
+                    merged[c] = round(merged.get(c, 0.0) + a, 2)
+                if len(merged) == 1:
+                    tx.splits = []
+                    tx.category = next(iter(merged))
+                else:
+                    tx.splits = [{"category": c, "amount": a} for c, a in merged.items()]
+                    tx.category = max(merged.items(), key=lambda kv: kv[1])[0]
+                if tx.matched_type in ("unmatched", "") or tx.matched_type == "ignore":
+                    tx.matched_type = "discretionary"
+                    tx.matched_target = ""
+                tx.confidence = "manual"
+                tx.needs_review = False
+                tx.user_verified = True
+            close()
+            self.save_state()
+            try:
+                self.refresh_transactions_tab()
+                self.refresh_today_tab()
+            except Exception:
+                pass
+            n_split = sum(1 for _t, l in results if len(l) > 1)
+            self._show_toast(f"Split {n_split} transaction{'s' if n_split != 1 else ''} across categories." if n_split else "Category set.", "success", 3500)
+            self._log_engagement("split")
+            if on_done:
+                on_done()
+
+        editor["apply"] = _apply
+        self._split_editor = editor
+        ttk.Button(btn_row, text="Cancel", style="Ghost.TButton", command=close).pack(side="left")
+        ttk.Button(btn_row, text="Apply split  ✓", style="Primary.TButton", command=_apply).pack(side="right")
+
+    def _bind_tx_tree_menus(self):
+        """Right-click on a preview or committed row: split it across categories."""
+        for tree, source in ((getattr(self, "transaction_tree", None), "preview"), (getattr(self, "tx_history_tree", None), "history")):
+            if tree is None or getattr(tree, "_split_menu_bound", False):
+                continue
+
+            def _open(event, tree=tree, source=source):
+                iid = tree.identify_row(event.y)
+                if not iid:
+                    return
+                tree.selection_set(iid)
+                try:
+                    idx = int(iid)
+                except ValueError:
+                    return
+                coll = self.latest_import if source == "preview" else self.state.transactions
+                if idx >= len(coll):
+                    return
+                tx = coll[idx]
+                menu = tk.Menu(self, tearoff=0, bg=UI_SURFACE2, fg=UI_TEXT, activebackground=UI_SURFACE3, activeforeground=UI_TEXT_BRIGHT, bd=0)
+                if tx.direction() == "out":
+                    menu.add_command(label="Split across categories…", command=lambda t=tx: self._show_split_editor([t]))
+                    if getattr(tx, "splits", None):
+                        menu.add_command(label="Remove split (single category)", command=lambda t=tx: self._unsplit_tx(t))
+                menu.add_command(label="Flag for follow-up" if not tx.flagged else "Unflag", command=lambda t=tx: self._set_transactions_flag([t], not t.flagged, extract_merchant_name(t.description)))
+                try:
+                    menu.tk_popup(event.x_root, event.y_root)
+                finally:
+                    menu.grab_release()
+            tree.bind("<Button-3>", _open)
+            tree._split_menu_bound = True
+
+    def _unsplit_tx(self, tx: TransactionRecord):
+        tx.splits = []
+        self.save_state()
+        try:
+            self.refresh_transactions_tab()
+        except Exception:
+            pass
+        self._show_toast(f"Back to a single category: {tx.category}.", "info", 3000)
+
     def _build_rules_tab(self):
         frame = self.rules_tab
         frame.columnconfigure(0, weight=0)
@@ -28486,6 +28695,9 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 _render()
             ttk.Button(more2, text="Make it a recurring bill", style="Accent.TButton",
                        command=_toggle_bill_form).pack(side="left", padx=(SP_MD, 0))
+            ttk.Button(more2, text="Split…", style="Secondary.TButton",
+                       command=lambda txs_=group_txs: self._show_split_editor(
+                           txs_, on_done=lambda: (st.__setitem__("touched", True), _go(1)))).pack(side="left", padx=(SP_SM, 0))
             if st.get("bill_form") == g["key"]:
                 guess = self._infer_recurring_bill(g, group_txs)
                 bf = tk.Frame(content, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_RUBY, padx=SP_MD, pady=SP_SM)
@@ -29509,8 +29721,8 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 continue
             if tx.matched_type == "ignore":
                 continue
-            cat = (tx.category or "").strip() or "Uncategorized"
-            totals[cat] = totals.get(cat, 0.0) + tx.money_out
+            for cat, amt in tx_category_amounts(tx):
+                totals[cat] = totals.get(cat, 0.0) + amt
         if not totals:
             canvas.create_text(w // 2, h // 2, text="No committed outgoing transactions yet.", font=FONT_SUBHEADING, fill=UI_MUTED)
             return
@@ -29601,6 +29813,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
     def refresh_transactions_tab(self):
         if hasattr(self, "_bank_links_host"):
             self._render_bank_buttons()
+        self._bind_tx_tree_menus()
         self._update_nav_badges()
         self.refresh_category_combo()
         for row in self.transaction_tree.get_children(): self.transaction_tree.delete(row)
@@ -29616,7 +29829,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 tx.direction(),
                 tx.matched_type,
                 tx.matched_target,
-                (tx.category or "")[:24],
+                tx_category_label(tx),
                 status,
             ), tags=(tag,))
         self._restripe_tree(self.transaction_tree)
@@ -29643,7 +29856,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 f"${tx.amount():,.2f}",
                 tx.matched_type,
                 tx.matched_target,
-                (tx.category or "")[:24],
+                tx_category_label(tx),
                 tx.source_file,
             ))
             shown += 1
@@ -29693,8 +29906,8 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         cat_totals = {}
         for t in self.state.transactions:
             if t.direction() == "out":
-                cat = t.category or "Uncategorized"
-                cat_totals[cat] = cat_totals.get(cat, 0.0) + t.amount()
+                for cat, amt in tx_category_amounts(t):
+                    cat_totals[cat] = cat_totals.get(cat, 0.0) + amt
         if cat_totals:
             top_cat, top_amt = max(cat_totals.items(), key=lambda kv: kv[1])
             self.tx_insights_summary_var.set(f"Top category: {top_cat} ${top_amt:,.0f}")

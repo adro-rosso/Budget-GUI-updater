@@ -33,6 +33,7 @@ budget_gui.py
 | `AdvancedMatchRule` | Transaction matching rule (exact/contains/amount_contains) |
 | `TransactionRecord` | Bank transaction with matched_type, category, user_verified, `flagged` (user flagged for follow-up) |
 | `MerchantMemoryEntry` | Cached classification per normalized description |
+| *(split)* | `TransactionRecord.splits` = `[{category, amount}]` summing to `money_out` (one receipt, several categories); `category` stays the largest share. `tx_category_amounts(tx)` returns the per-line list (or one line) and is what `outgoing_category_totals`, the Transactions pie, the top-category summary and `_pact_spent_in_cap` aggregate over; `tx_category_label(tx)` renders 'Groceries ⁄ General' in the trees. UI: `_show_split_editor(txs, on_done)` overlay (blank last amount = remainder; wrong totals refused; one line un-splits; duplicate categories merge), reached from the sort card's **Split…** button (advances the queue) and the right-click menu on both transaction trees (`_bind_tx_tree_menus`, also Flag/Unflag). Splits are per receipt and never become merchant rules. |
 | `AppState` | Root aggregate — contains all the above + expense categories, target mix, transfer_accounts, `account_balances` + `starting_position_set` (starting-position wizard), etc. |
 
 ### GameStats Fields (expanded)
