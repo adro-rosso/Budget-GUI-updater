@@ -194,6 +194,10 @@ tmp2 = tempfile.mkdtemp(prefix="budget_dayone_"); os.chdir(tmp2)
 bg.DATA_FILE = Path("budget_data.json")
 app2 = bg.BudgetApp(); app2.focus_force(); app2.update(); time.sleep(0.4); app2.update()
 assert not app2.state.game.day_one_done
+# first run is the two-card onboarding now; take its link to the full plan so the wizard's Finish drives day one
+ob = app2._track_onboarding_scrim; assert ob is not None
+[w for w in all_w(ob) if isinstance(w, (bg.ttk.Button, tk.Button)) and str(w.cget("text")).startswith("Next")][0].invoke(); app2.update()
+[w for w in all_w(ob) if isinstance(w, tk.Label) and str(w.cget("text")).startswith("Set up a full money plan")][0].event_generate("<Button-1>"); app2.update()
 sc = app2._setup_wizard_scrim; assert sc is not None
 # jump through the wizard with 'Finish later' is not a finish; drive the real finish: add one bill then go to the last step
 ents = [w for w in all_w(sc) if isinstance(w, bg.ttk.Entry) and not isinstance(w, bg.ttk.Combobox)]

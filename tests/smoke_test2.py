@@ -41,7 +41,7 @@ app._show_page("today"); app.update()
 ov = app._today_get_started_overlay
 assert ov.winfo_ismapped(), "welcome overlay should show for fresh state"
 host = app._today_get_started_steps_host
-assert any("Set up your money plan" in t for t in texts(host)), texts(host)
+assert any("Bring in a statement" in t for t in texts(host)), texts(host)
 
 # 2. Adding a bill through the Setup form must tick the checklist immediately
 app._show_page("bills"); app.update()
@@ -52,11 +52,7 @@ app.bill_frequency.set("monthly"); app.bill_priority.set("essential")
 app.add_bill(); app.update()
 assert len(app.state.bills) == 1
 app._show_page("today"); app.update()
-marks = [str(r.winfo_children()[0].cget("text")) for r in host.winfo_children()]
-print("checklist marks:", marks)
-assert marks[3] == "✅", "bill step should be ticked"   # two day-one steps sit above it now
-assert marks[2] == "○", "starting position step still open"
-assert ov.winfo_ismapped(), "overlay stays until starting position is set"
+assert not ov.winfo_ismapped(), "any data (a bill here) hides the checklist — nothing is mandatory now"
 
 # 3. Setup wizard (bill already exists) — skip through to "money now", place 800 on Rent
 app._show_setup_wizard(); app.update()

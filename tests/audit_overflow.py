@@ -117,6 +117,10 @@ btn(rq, "Start sorting  →")[0].invoke(); app.update(); audit(rq, "sort:card")
 btn(rq, "Make it a recurring bill")[0].invoke(); app.update(); audit(rq, "sort:card+billform")
 btn(rq, "Finish later")[0].invoke(); app.update()
 
+# Track-first onboarding (both cards)
+app._show_track_first_onboarding(); app.update(); _tsc = app._track_onboarding_scrim
+audit(_tsc, "track-onboard-1"); btn(_tsc, "Next  →")[0].invoke(); app.update(); audit(_tsc, "track-onboard-2")
+_tsc.destroy(); app._track_onboarding_scrim = None; app._track_onboarding = None; app.update()
 # Bill interview: a yes/no card, an opened single card, an opened multi-pick card, the done screen
 app._show_bill_interview(); app.update(); _iv = app._bill_interview; _sc = app._bill_interview_scrim
 audit(_sc, "interview-q")

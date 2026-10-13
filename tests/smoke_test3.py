@@ -70,8 +70,15 @@ app = bg.BudgetApp()
 app.state.tutorial_complete = True   # don't launch the tutorial after finishing
 app.update()
 time.sleep(0.4); app.update()        # let the 250ms first-run timer fire
+# first run is the two-card 'track first' onboarding now; take its link to the full plan
+ob = app._track_onboarding_scrim
+assert ob is not None and ob.winfo_exists(), "track-first onboarding should open on first run"
+assert getattr(app, "_setup_wizard_scrim", None) is None
+find(ob, bg.ttk.Button, "Next  →")[0].invoke(); app.update()
+[w for w in find(ob, tk.Label, "Set up a full money plan instead →")][0].event_generate("<Button-1>"); app.update()
 wz = app._setup_wizard_scrim
-assert wz is not None and wz.winfo_exists(), "wizard should open on first run"
+assert wz is not None and wz.winfo_exists(), "the link should open the full wizard"
+assert app.state.setup_mode == "plan"
 assert any("Step 1 of 7" in t for t in [app._setup_wizard_scrim.winfo_children()[0].winfo_children()[0].winfo_children()[0].winfo_children()[1].cget("text")]) or True
 
 # Step 0: rhythm
