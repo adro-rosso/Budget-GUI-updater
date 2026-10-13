@@ -1,10 +1,15 @@
 {
-  "version": "1.0.19",
+  "version": "1.0.20",
   "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.19/BudgetPlanner.exe",
-  "sha256": "9c3163a0266b43052cfff8b174ffc89b37e28f31c41f7534f064dced51cdb064",
-  "notes": "The app now learns how to split your pay: Today shows 'hold $X for bills \u00b7 keep $Y for a normal fortnight \u00b7 $Z to savings' from what you actually do (click to copy), how this week compares with your typical week and which category is running hot, and what's truly free after a normal rest of cycle. Analysis can set your target mix from your typical shares. Gerald answers 'what's my typical week' and 'is this a big week'. A reminder lands at six and ten weeks of data.",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.20/BudgetPlanner.exe",
+  "sha256": "5dc9ad65c7e27438746325275c87e5a6447a678c112c89ec034ff9e26f3b8bcc",
+  "notes": "Follow-ups: confirming a suggested bill no longer completes the 'add money to a fund' challenge; suggested bills get clean names (Netflix, not Netflix Com); people tracking first no longer see a Setup warning badge or a 'Setup 0/7' count \u2014 the health line tracks statement, sorting, pays and learning instead; and when a pay lands with nothing in the plan to absorb it, a toast offers to put the learned savings amount aside in one click.",
   "history": [
+    {
+      "version": "1.0.20",
+      "date": "2026-10-13",
+      "notes": "Follow-ups: confirming a suggested bill no longer completes the 'add money to a fund' challenge; suggested bills get clean names (Netflix, not Netflix Com); people tracking first no longer see a Setup warning badge or a 'Setup 0/7' count \u2014 the health line tracks statement, sorting, pays and learning instead; and when a pay lands with nothing in the plan to absorb it, a toast offers to put the learned savings amount aside in one click."
+    },
     {
       "version": "1.0.19",
       "date": "2026-10-13",

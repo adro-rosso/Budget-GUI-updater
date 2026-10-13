@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.19"
+APP_VERSION = "1.0.20"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -4925,6 +4925,12 @@ def extract_merchant_name(desc: str) -> str:
     return " ".join(parts[:3]).title()
 
 
+def clean_merchant_label(name: str) -> str:
+    """'Netflix Com' → 'Netflix', 'Optus Mobile Pty' → 'Optus Mobile': drop domain and company suffixes."""
+    parts = [p for p in (name or "").split() if p.lower() not in ("com", "au", "net", "org", "www", "pty", "ltd", "inc", "aus", "co", "llc")]
+    return " ".join(parts) or (name or "")
+
+
 def merchant_group_key(desc: str) -> str:
     merchant = extract_merchant_name(desc).lower()
     merchant = re.sub(r"\b(australia|pty|ltd|store|stores|market|markets|service|services|payment|payments)\b", " ", merchant)
@@ -7893,7 +7899,7 @@ class InsightEngine:
         for key, txs in groups.items():
             if not key or key == "unknown merchant" or key in dismissed or len(txs) < 2:
                 continue
-            name = extract_merchant_name(txs[0].description)
+            name = clean_merchant_label(extract_merchant_name(txs[0].description))
             if name.lower() in existing or key.lower() in existing_keys:
                 continue
             amts = sorted(round(t.money_out, 2) for t in txs)
@@ -13173,9 +13179,9 @@ class BudgetApp(tk.Tk):
                 counts["score"] = claimable
         except Exception:
             pass
-        # Setup: nothing configured yet
+        # Setup: nothing configured yet (not a nag for someone tracking first)
         try:
-            if not self.state.bills and not self.state.funds and not self.state.goals:
+            if not self.state.bills and not self.state.funds and not self.state.goals and self.state.setup_mode != "track":
                 counts["setup"] = "!"
         except Exception:
             pass
@@ -16265,6 +16271,19 @@ class BudgetApp(tk.Tk):
     def _setup_completeness_steps(self):
         """Return list of (label, done) tuples for the checklist."""
         s = self.state
+        if s.setup_mode == "track" and not s.starting_position_set:
+            try:
+                unsorted = self._unsorted_outgoing_count()
+            except Exception:
+                unsorted = 0
+            return [
+                (f"Pay frequency · {s.pay_frequency or 'not set'}", bool(s.pay_frequency)),
+                ("First statement in", bool(s.transactions)),
+                ("Statement sorted", bool(s.transactions) and unsorted == 0),
+                ("First pay logged", len(s.incomes) > 0),
+                ("A regular bill confirmed", len(s.bills) > 0),
+                ("Three weeks of data", InsightEngine(s).weeks_of_data() >= 3),
+            ]
         steps = [
             ("Starting position set", bool(s.starting_position_set)),
             (f"Pay frequency · {s.pay_frequency or 'not set'}",
@@ -18194,7 +18213,8 @@ class BudgetApp(tk.Tk):
         done = sum(1 for _, d in steps if d)
         risk_count = len(self._at_risk_items())
         risk_part = f"{risk_count} at risk" if risk_count else "nothing at risk"
-        self.today_health_summary_var.set(f"Setup {done}/{len(steps)} · {risk_part}")
+        _word = "Tracking" if (self.state.setup_mode == "track" and not self.state.starting_position_set) else "Setup"
+        self.today_health_summary_var.set(f"{_word} {done}/{len(steps)} · {risk_part}")
         snapshot = self._next_actions_snapshot()
         if hasattr(self, "_do_now_host"):
             self._render_do_now(snapshot["actions"])
@@ -24430,6 +24450,24 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         st["finish"] = _finish
         _render()
 
+    def _offer_learned_split(self, amount: float):
+        """After a pay with no set-asides in the plan: 'keep $Y for a normal fortnight, $Z free to put aside'."""
+        try:
+            alloc = self.last_allocation or {}
+            if float(alloc.get("fund_total", 0.0)) + float(alloc.get("goal_total", 0.0)) > 0:
+                return
+            split = InsightEngine(self.state).learned_split(amount)
+        except Exception:
+            return
+        if not split or split["savings"] <= 0:
+            return
+        cyc = {"weekly": "week", "fortnightly": "fortnight", "monthly": "month"}.get(self.state.pay_frequency, "pay")
+        self._show_toast(f"From what you actually do: keep ${split['everyday']:,.0f} for a normal {cyc}" +
+                         (f", hold ${split['bills']:,.0f} for bills" if split["bills"] > 0 else "") +
+                         f" — ${split['savings']:,.0f} of this pay is free to put aside.",
+                         "info", duration=12000, action_label=f"Put ${split['savings']:,.0f} aside",
+                         action_cb=lambda a=split["savings"]: self._put_aside(a))
+
     def _use_suggested_mix(self):
         """Seed the target mix from the typical week's shares (undoable)."""
         mix = InsightEngine(self.state).suggested_mix()
@@ -24529,10 +24567,6 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             self._show_toast(f"{name} is not a bill again.", "info", 2500)
         self._show_toast(f"{name}: ${bill.amount:,.2f} {bill.frequency}, next {bill.due_date:%d %b}. {len(relabelled)} past charge{'s' if len(relabelled) != 1 else ''} linked.",
                          "success", duration=7000, action_label="Undo", action_cb=_undo)
-        try:
-            self._fire_trigger("contribute")
-        except Exception:
-            pass
 
     def _dismiss_recurring(self, c: dict):
         if c["key"] not in self.state.recurring_dismissed:
@@ -29617,6 +29651,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         self.refresh_game_text()
         self._show_pay_day_ritual(amount, pay_date, pay_source,
                                    self.last_allocation, self.last_game_result, card)
+        self.after(1800, lambda a=amount: self._offer_learned_split(a))
         g = self.state.game
         if self.last_game_result.get("level_up"):
             self.after(500, lambda: self._celebrate(f"Level {g.level}!", f"{self.rank_name_for_level(g.level, g.prestige_level)} — keep the rhythm", UI_EMERALD))
