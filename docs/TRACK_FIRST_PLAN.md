@@ -66,16 +66,25 @@ fallback to in − out; the learned line in the allocation editor; Analysis "Typ
 weeks" (`_render_typical_week`); a Do-this-now candidate for unconfirmed regular bills; Plan
 empty-state copy; tests (`smoke_test29`).
 
-## Phase 2 (next)
+## Phase 2 (built)
 
-- Transfer plan from learned data: Bills account = confirmed bills per cycle, Everyday = typical
-  cycle spend + a small buffer, Savings = the rest — shown on the wizard's last step and as a
-  one-click "move $X" list after each pay.
-- Suggested target mix from the baselines (Analysis → "use my typical shares"), replacing the
-  hand-set percentages for people who never set them.
-- "This week vs typical" strip on Today (`InsightEngine.week_so_far`) with the category that is
-  running hot.
-- Learning milestones as reminders ("6 weeks in — your typical week is ready") and Gerald
-  intents ("what's my typical week", "is this a big week").
-- Groceries & co. as soft envelopes: a learned weekly amount per category that Safe to Spend
-  reserves for the rest of the cycle, so the number means "free *after* a normal week".
+- **Learned per-pay split** (`InsightEngine.learned_split(pay)`): bills per cycle from the confirmed
+  bills, a normal cycle of spending plus 10% to keep in Everyday, the rest to savings (or how
+  short a pay falls). Shown on Today's flow panel as three click-to-copy chips with **Put $X
+  aside**, and on the wizard's transfer step as a "From your statements" box.
+- **Suggested target mix** (`suggested_mix`): the typical week's shares, applied with "Use my
+  typical shares" on Analysis (unlocked, undoable).
+- **This week vs typical** (`week_so_far`): Monday-to-today spend against the typical week —
+  on track / ahead of pace / past a typical week — naming the category running hot.
+- **Soft envelopes** (`reserve_for_days`): Safe to Spend's subtitle shows what a normal rest of
+  cycle costs and what is truly free after it; Daily Pace falls back to the typical day when
+  there is no plan.
+- **Learning milestones**: a reminder on the Monday of week 6 ("your typical week is ready")
+  and week 10 ("the picture is solid"). Gerald answers "what's my typical week", "how much do I
+  usually spend on groceries", "is this a big week", "how's my week".
+
+## Later
+
+- Envelopes as the actual Safe to Spend number (opt-in), not only the subtitle.
+- Per-category "running hot" nudges as reminders during the week.
+- A learned weekly amount per category offered as a soft cap in the pact maker.
