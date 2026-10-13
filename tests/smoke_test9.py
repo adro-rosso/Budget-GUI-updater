@@ -112,7 +112,7 @@ btn(app._plan_host, "Paid ✓")[0].invoke(); app.update()
 assert app.state.bills[0].due_date > due0
 # Delete with undo
 n = len(app.state.funds)
-btn(app._plan_host, "✕", tk.Button)[1].invoke(); app.update()   # second ✕ = Car service (bills first)
+app._plan_menus[("fund", 0)].invoke("Remove"); app.update()   # the row menu: Car service is the first fund
 assert len(app.state.funds) == n - 1
 app._toast_stack[-1] if app._toast_stack else None
 # undo via the toast action: find the toast's action label
