@@ -1,10 +1,15 @@
 {
-  "version": "1.0.17",
+  "version": "1.0.18",
   "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.17/BudgetPlanner.exe",
-  "sha256": "88e1b574ede44b9e7c2dc866fb592383c223722e3f57aa16008ba7c6e00bc49c",
-  "notes": "Three small frictions fixed: every date field now takes '27/10', '15 Nov', '28th' and the like (not only full dates), including the Analysis custom range; the Plan header shows an Undo link for two minutes after you remove a row; and the Bills table's Priority and Frequency are one readable 'fortnightly \u00b7 essential' column.",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.18/BudgetPlanner.exe",
+  "sha256": "20fc3a9a583fc1af096772f4b032693e1df7fd7fdf0c102d957ffe064ec5beab",
+  "notes": "A new beginning: no plan needed. First run is two cards (how you're paid, bring in a statement). Today shows where your money goes \u2014 income to bills, categories and what's left \u2014 learns your typical week from your statements, spots regular charges and asks 'is this a bill?' with one click, and tells you how much of each pay is free to put aside. Analysis gains 'Typical week & big weeks'. The full money plan, set-asides and goals are still there, now optional.",
   "history": [
+    {
+      "version": "1.0.18",
+      "date": "2026-10-13",
+      "notes": "A new beginning: no plan needed. First run is two cards (how you're paid, bring in a statement). Today shows where your money goes \u2014 income to bills, categories and what's left \u2014 learns your typical week from your statements, spots regular charges and asks 'is this a bill?' with one click, and tells you how much of each pay is free to put aside. Analysis gains 'Typical week & big weeks'. The full money plan, set-asides and goals are still there, now optional."
+    },
     {
       "version": "1.0.17",
       "date": "2026-10-13",

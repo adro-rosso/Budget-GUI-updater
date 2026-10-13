@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.17"
+APP_VERSION = "1.0.18"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -5437,6 +5437,10 @@ class AppState:
     # are history — kept for Analysis, never allocated. No position and no pays = no cutoff.
     starting_position_date: str = ""
     first_launch_date: str = ""
+    # Which first run the user took: "" (older profiles) / "track" (statement first) / "plan" (full wizard)
+    setup_mode: str = ""
+    # Merchant keys the user said are NOT regular bills (never suggested again)
+    recurring_dismissed: List[str] = field(default_factory=list)
     # Collapsible-section open/closed state, keyed "<tab>.<section>".
     # True = open. Missing key => the section's call-site default.
     # NOTE: must stay the LAST field — from_dict passes args positionally.
@@ -5482,6 +5486,8 @@ class AppState:
             "last_import_date": self.last_import_date,
             "starting_position_date": self.starting_position_date,
             "first_launch_date": self.first_launch_date,
+            "setup_mode": self.setup_mode,
+            "recurring_dismissed": list(self.recurring_dismissed),
             "ui_prefs": dict(self.ui_prefs),
         }
 
@@ -5559,6 +5565,8 @@ class AppState:
             str(data.get("last_import_date", "") or ""),
             str(data.get("starting_position_date", "") or ""),
             str(data.get("first_launch_date", "") or ""),
+            str(data.get("setup_mode", "") or ""),
+            [str(k) for k in (data.get("recurring_dismissed") or [])],
             dict(data.get("ui_prefs", {}) or {}),
         )
 
@@ -7699,6 +7707,275 @@ class PDFTransactionImporter:
         qa.insert(0, f"Rows detected: {len(candidates)}")
         qa.insert(1, f"Transactions parsed: {len(out)}")
         return out, qa
+
+
+
+class InsightEngine:
+    """Learns the shape of your money from committed transactions — no plan required.
+    Stateless: everything is derived from AppState on each call; `today` is injectable.
+    See docs/TRACK_FIRST_PLAN.md."""
+
+    SKIP_TYPES = ("ignore", "transfer")
+    BILL_TYPES = ("linked_bill", "linked_fund")
+    CYCLE_WEEKS = {"weekly": 1.0, "fortnightly": 2.0, "monthly": 4.345}
+
+    def __init__(self, state: "AppState"):
+        self.state = state
+
+    # ── data shape ───────────────────────────────────────────────────────
+    @staticmethod
+    def week_start(d: date) -> date:
+        return d - timedelta(days=d.weekday())
+
+    @staticmethod
+    def _freq_from_gap(gap: int) -> Optional[str]:
+        if 5 <= gap <= 9:
+            return "weekly"
+        if 12 <= gap <= 17:
+            return "fortnightly"
+        if 26 <= gap <= 35:
+            return "monthly"
+        if 80 <= gap <= 100:
+            return "quarterly"
+        if 350 <= gap <= 380:
+            return "yearly"
+        return None
+
+    @staticmethod
+    def _quartiles(vals):
+        s = sorted(vals)
+        n = len(s)
+        if not n:
+            return 0.0, 0.0, 0.0
+
+        def q(p):
+            k = (n - 1) * p
+            f = int(k)
+            c = min(f + 1, n - 1)
+            return s[f] + (s[c] - s[f]) * (k - f)
+        return q(0.25), q(0.5), q(0.75)
+
+    def _spend_rows(self):
+        """(date, category, amount, is_bill) for every outgoing row that counts as money going out."""
+        for tx in self.state.transactions:
+            if tx.direction() != "out" or tx.matched_type in self.SKIP_TYPES or tx.money_out <= 0:
+                continue
+            is_bill = tx.matched_type in self.BILL_TYPES or (tx.category or "").strip().lower() in ("bill", "fund")
+            for cat, amt in tx_category_amounts(tx):
+                yield tx.tx_date, (cat or "General"), float(amt), is_bill
+
+    def weeks_of_data(self, today: Optional[date] = None) -> int:
+        """Complete weeks between the first outgoing row and this week."""
+        today = today or date.today()
+        dates = [t.tx_date for t in self.state.transactions
+                 if t.direction() == "out" and t.matched_type not in self.SKIP_TYPES and t.money_out > 0]
+        if not dates:
+            return 0
+        return max(0, (self.week_start(today) - self.week_start(min(dates))).days // 7)
+
+    def data_level(self, today: Optional[date] = None) -> dict:
+        w = self.weeks_of_data(today)
+        if w < 2:
+            level, need = "none", 2
+        elif w < 6:
+            level, need = "early", 6
+        elif w < 10:
+            level, need = "forming", 10
+        else:
+            level, need = "solid", w
+        return {"weeks": w, "level": level, "weeks_to_next": max(0, need - w)}
+
+    def learning_line(self, today: Optional[date] = None) -> str:
+        d = self.data_level(today)
+        w = d["weeks"]
+        if d["level"] == "none":
+            return "Bring in a statement or two and I'll start learning your typical week."
+        if d["level"] == "early":
+            return f"{w} week{'s' if w != 1 else ''} of data — I'll know your typical week after 6."
+        if d["level"] == "forming":
+            return f"{w} weeks of data — getting a feel for your normal. Solid after 10."
+        return f"{w} weeks of data — I know your typical week well."
+
+    def weekly_series(self, weeks: int = 12, today: Optional[date] = None, bills: bool = False) -> Dict[date, Dict[str, float]]:
+        """{week_start: {category: amount}} for the last `weeks` complete weeks.
+        Spending only by default; bills=True gives the bill rows instead."""
+        today = today or date.today()
+        this_week = self.week_start(today)
+        start = this_week - timedelta(days=7 * weeks)
+        out: Dict[date, Dict[str, float]] = {start + timedelta(days=7 * i): {} for i in range(weeks)}
+        for d, cat, amt, is_bill in self._spend_rows():
+            if is_bill != bills or d < start or d >= this_week:
+                continue
+            ws = self.week_start(d)
+            out[ws][cat] = out[ws].get(cat, 0.0) + amt
+        return out
+
+    # ── baselines ────────────────────────────────────────────────────────
+    def category_baseline(self, category: str, weeks: int = 12, today: Optional[date] = None) -> dict:
+        series = self.weekly_series(weeks, today)
+        active = sorted(ws for ws, cats in series.items() if sum(cats.values()) > 0)
+        vals = [(ws, series[ws].get(category, 0.0)) for ws in active]
+        n = len(vals)
+        empty = {"category": category, "weeks": n, "typical": 0.0, "low": 0.0, "high": 0.0,
+                 "outliers": [], "trend": None, "confidence": 0.0}
+        if n < 3:
+            return empty
+        q1, med, q3 = self._quartiles([v for _, v in vals])
+        if med <= 0:
+            return empty
+        iqr = max(q3 - q1, 0.0)
+        cut = q3 + 1.5 * iqr if iqr > 0 else med * 1.75
+        outliers = [(ws, round(v, 2)) for ws, v in vals if v > cut and v > med * 1.25]
+        trend = None
+        if n >= 8:
+            recent = sum(v for _, v in vals[-4:]) / 4.0
+            prior = sum(v for _, v in vals[-8:-4]) / 4.0
+            if prior > 0:
+                trend = int(round((recent - prior) / prior * 100))
+        spread = (iqr / med) if med > 0 else 1.0
+        conf = min(1.0, n / 10.0) * (1.0 - min(0.5, spread / 2.0))
+        return {"category": category, "weeks": n, "typical": round(med, 2), "low": round(q1, 2), "high": round(q3, 2),
+                "outliers": outliers, "trend": trend, "confidence": round(conf, 2)}
+
+    def typical_week(self, weeks: int = 12, today: Optional[date] = None, min_weeks: int = 3) -> dict:
+        series = self.weekly_series(weeks, today)
+        totals: Dict[str, float] = {}
+        for cats in series.values():
+            for c, v in cats.items():
+                totals[c] = totals.get(c, 0.0) + v
+        rows = []
+        for c in sorted(totals, key=lambda k: -totals[k]):
+            b = self.category_baseline(c, weeks, today)
+            if b["weeks"] >= min_weeks and b["typical"] > 0:
+                rows.append((c, b))
+        active = [sum(v.values()) for v in series.values() if sum(v.values()) > 0]
+        q1, med, q3 = self._quartiles(active) if len(active) >= min_weeks else (0.0, 0.0, 0.0)
+        return {"rows": rows, "total": round(med, 2), "low": round(q1, 2), "high": round(q3, 2), "weeks": len(active)}
+
+    def cycle_weeks(self) -> float:
+        return self.CYCLE_WEEKS.get(self.state.pay_frequency, 2.0)
+
+    def typical_cycle_spend(self, today: Optional[date] = None) -> float:
+        tw = self.typical_week(today=today)
+        return round(tw["total"] * self.cycle_weeks(), 2) if tw["weeks"] >= 3 else 0.0
+
+    def big_weeks(self, weeks: int = 12, today: Optional[date] = None) -> List[dict]:
+        series = self.weekly_series(weeks, today)
+        totals = [(ws, sum(c.values())) for ws, c in sorted(series.items()) if sum(c.values()) > 0]
+        if len(totals) < 4:
+            return []
+        q1, med, q3 = self._quartiles([v for _, v in totals])
+        iqr = q3 - q1
+        cut = q3 + 1.5 * iqr if iqr > 0 else med * 1.75
+        out = []
+        for ws, v in totals:
+            if v > cut and v > med * 1.25:
+                cats = series[ws]
+                top = max(cats, key=cats.get)
+                out.append({"week": ws, "total": round(v, 2), "typical": round(med, 2),
+                            "driver": top, "driver_amount": round(cats[top], 2)})
+        return out
+
+    # ── structure discovered from the data ───────────────────────────────
+    def recurring_candidates(self, today: Optional[date] = None) -> List[dict]:
+        """Merchants that look like regular bills and are not bills yet (nor dismissed)."""
+        today = today or date.today()
+        groups: Dict[str, list] = {}
+        for t in self.state.transactions:
+            if t.direction() != "out" or t.matched_type in ("ignore", "transfer", "linked_bill", "linked_fund") or t.money_out <= 0:
+                continue
+            groups.setdefault(merchant_group_key(t.description), []).append(t)
+        existing = {b.name.lower() for b in self.state.bills}
+        existing_keys = {str(k).lower() for b in self.state.bills for k in (getattr(b, "keywords", []) or [])}
+        dismissed = {str(k) for k in (getattr(self.state, "recurring_dismissed", []) or [])}
+        eng = BudgetEngine(self.state)
+        out = []
+        for key, txs in groups.items():
+            if not key or key == "unknown merchant" or key in dismissed or len(txs) < 2:
+                continue
+            name = extract_merchant_name(txs[0].description)
+            if name.lower() in existing or key.lower() in existing_keys:
+                continue
+            amts = sorted(round(t.money_out, 2) for t in txs)
+            med = amts[len(amts) // 2]
+            steady = (amts[-1] - amts[0]) <= max(2.0, 0.15 * med)
+            dates = sorted({t.tx_date for t in txs})
+            if len(dates) < 2:
+                continue
+            gaps = sorted((dates[i + 1] - dates[i]).days for i in range(len(dates) - 1))
+            gap = gaps[len(gaps) // 2]
+            freq = self._freq_from_gap(gap)
+            if not freq:
+                continue
+            regular = all(abs(g - gap) <= max(3, gap * 0.25) for g in gaps)
+            if not regular or not (steady or len(txs) >= 3):
+                continue
+            # Weekly shopping is spending, not a bill: short cadences need a steady amount, and
+            # spending-type categories only count with a monthly-or-longer cadence.
+            spendy = (txs[0].category or "").strip().lower() in ("groceries", "fuel", "food", "general", "dining", "eating out", "entertainment")
+            if freq in ("weekly", "fortnightly") and not steady:
+                continue
+            if spendy and freq in ("weekly", "fortnightly"):
+                continue
+            nxt = dates[-1]
+            guard = 0
+            while nxt <= today and guard < 400:
+                nxt = eng.next_due_date(nxt, freq)
+                guard += 1
+            conf = min(1.0, len(txs) / 4.0) * (1.0 if steady else 0.7)
+            out.append({"key": key, "name": name, "amount": med, "frequency": freq, "next_due": nxt,
+                        "count": len(txs), "last": dates[-1], "confidence": round(conf, 2),
+                        "category": (txs[0].category or "Bill")})
+        out.sort(key=lambda d: (-d["confidence"], -d["count"], -d["amount"]))
+        return out[:8]
+
+    def income_rhythm(self, today: Optional[date] = None) -> Optional[dict]:
+        inc = sorted(self.state.incomes, key=lambda i: i.received_on)
+        if not inc:
+            return None
+        amounts = sorted(i.amount for i in inc)
+        typical = amounts[len(amounts) // 2]
+        freq = self.state.pay_frequency or "fortnightly"
+        if len(inc) >= 2:
+            gaps = sorted((inc[i + 1].received_on - inc[i].received_on).days for i in range(len(inc) - 1))
+            f = self._freq_from_gap(gaps[len(gaps) // 2])
+            if f in ("weekly", "fortnightly", "monthly"):
+                freq = f
+        return {"typical": typical, "freq": freq, "count": len(inc), "last": inc[-1].received_on}
+
+    def bills_per_cycle(self) -> float:
+        eng = BudgetEngine(self.state)
+        return round(sum(eng.bill_recommended_allocation(b) for b in self.state.bills), 2)
+
+    def savings_picture(self, today: Optional[date] = None) -> dict:
+        """What a typical pay leaves after confirmed bills and a typical cycle of spending."""
+        rhythm = self.income_rhythm(today)
+        spend = self.typical_cycle_spend(today)
+        bills = self.bills_per_cycle()
+        pay = float(rhythm["typical"]) if rhythm else 0.0
+        could = round(pay - bills - spend, 2) if (pay > 0 and spend > 0) else None
+        return {"pay": pay, "bills": bills, "spend": spend, "could_save": could,
+                "weeks": self.typical_week(today=today)["weeks"]}
+
+    def money_flow(self, start: date, end: date) -> dict:
+        """Income → bills · spending by category · saved, over a window (inclusive)."""
+        income = sum(float(i.amount) for i in self.state.incomes if start <= i.received_on <= end)
+        if income <= 0:
+            income = sum(float(t.money_in) for t in self.state.transactions
+                         if t.direction() == "in" and t.matched_type == "income" and start <= t.tx_date <= end)
+        bills = 0.0
+        cats: Dict[str, float] = {}
+        for d, cat, amt, is_bill in self._spend_rows():
+            if d < start or d > end:
+                continue
+            if is_bill:
+                bills += amt
+            else:
+                cats[cat] = cats.get(cat, 0.0) + amt
+        out = bills + sum(cats.values())
+        return {"income": round(income, 2), "bills": round(bills, 2),
+                "categories": dict(sorted(cats.items(), key=lambda kv: -kv[1])),
+                "out": round(out, 2), "saved": round(income - out, 2)}
 
 
 class TransactionMatcher:
@@ -15629,6 +15906,9 @@ class BudgetApp(tk.Tk):
         # Engagement row sits above the quick actions: Daily Vault + Next Up.
         self._hook_row = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._hook_row.pack(fill="x", pady=(0, SP_MD), before=qa_lbl)
+        # "Where your money goes" — the core picture, above the engagement row
+        self._flow_host = tk.Frame(quick_inner, bg=UI_SURFACE)
+        self._flow_host.pack(fill="x", pady=(0, SP_MD), before=self._hook_row)
         self._hook_row.columnconfigure(0, weight=1, uniform="hook")
         self._hook_row.columnconfigure(1, weight=1, uniform="hook")
         self._vault_host = tk.Frame(self._hook_row, bg=UI_SURFACE2, highlightthickness=1,
@@ -15646,6 +15926,7 @@ class BudgetApp(tk.Tk):
         self._flagged_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._reimb_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._pending_bills_host = tk.Frame(quick_inner, bg=UI_SURFACE)
+        self._recurring_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._month_report_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._today_extras_summary = tk.StringVar(value="")
         _ex_wrap, _ex = self._collapsible_section(quick_inner, "Pacts & this month", "today.extras", default_open=False,
@@ -16206,6 +16487,14 @@ class BudgetApp(tk.Tk):
         self._review_nudges_frame = tk.Frame(trend_panel, bg=UI_SURFACE)
         self._review_nudges_frame.grid(row=1, column=0, sticky="ew",
                                         padx=SP_LG, pady=(0, SP_SM))
+        self.review_typical_summary_var = tk.StringVar(value="")
+        typical_wrap, typical_content = self._collapsible_section(
+            frame, "Typical week & big weeks", "review.typical", default_open=True,
+            summary_var=self.review_typical_summary_var)
+        typical_wrap.grid(row=5, column=0, columnspan=2, sticky="nsew", padx=SP_XL, pady=(0, SP_XL))
+        self._review_typical_frame = tk.Frame(typical_content, bg=UI_SURFACE, highlightthickness=1,
+                                              highlightbackground=UI_BORDER, padx=SP_LG, pady=SP_SM)
+        self._review_typical_frame.grid(row=0, column=0, sticky="nsew")
         self.review_trend_canvas = tk.Canvas(trend_panel, bg=UI_SURFACE,
                                               highlightthickness=0, height=240)
         self.review_trend_canvas.grid(row=2, column=0, sticky="nsew",
@@ -16846,7 +17135,7 @@ class BudgetApp(tk.Tk):
         overlay.rowconfigure(0, weight=1)
 
         glow = tk.Frame(overlay, bg=UI_BORDER, padx=2, pady=2)
-        glow.grid(row=0, column=0, padx=SP_XL, pady=SP_XL)
+        glow.grid(row=0, column=0, sticky="n", padx=SP_XL, pady=SP_XL)
         card = tk.Frame(glow, bg=UI_SURFACE, padx=SP_XL * 2, pady=SP_XL)
         card.pack(fill="both", expand=True)
 
@@ -16854,8 +17143,8 @@ class BudgetApp(tk.Tk):
                  bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_DISPLAY_XL).pack(anchor="w")
         tk.Label(card,
-                 text="Let's get you set up. Start with where your money is right now, "
-                      "then add what's upcoming. No need to wait for pay day.",
+                 text="Bring in a bank statement and the app shows where your money goes. "
+                      "It learns your regular bills and your typical week from there — nothing to plan up front.",
                  bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_BODY, wraplength=640, justify="left").pack(
             anchor="w", pady=(SP_XS, SP_LG))
@@ -16870,8 +17159,7 @@ class BudgetApp(tk.Tk):
 
         # Close hint
         tk.Label(card,
-                 text="This checklist disappears once your starting position is set "
-                      "and at least one bill is added.",
+                 text="This disappears as soon as there is something to show.",
                  bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_MICRO, wraplength=640,
                  justify="left").pack(anchor="w", pady=(SP_LG, 0))
@@ -16888,10 +17176,9 @@ class BudgetApp(tk.Tk):
         has_savings = bool(self.state.funds) or bool(self.state.goals)
         has_import = bool(self.state.transactions) or bool(self.latest_import)
 
-        # Auto-hide once the two mandatory steps are complete: the user has
-        # told us where they stand and what's upcoming. Logging a pay is not
-        # required — it happens whenever pay day arrives.
-        if has_position and has_bill:
+        # Hide as soon as there is anything to show — a statement, a pay, a bill
+        # or a finished plan. Nothing is mandatory any more.
+        if has_import or has_pay or has_bill or has_position:
             overlay.place_forget()
             return
         overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -16900,28 +17187,22 @@ class BudgetApp(tk.Tk):
         for w in host.winfo_children():
             w.destroy()
 
+        unsorted = self._unsorted_outgoing_count() if hasattr(self, "_unsorted_outgoing_count") else 0
         steps = [
-            ("Create your profile", "Done — The Vault knows you now.", True, lambda: None),
-            ("Hatch your avatar + claim the Founder card",
-             "Finishing the money plan unlocks a free pack and today's Gold chest.",
-             bool(self.state.game.day_one_done), lambda: self._show_page("collection") if self.state.game.day_one_done else self._show_setup_wizard()),
-            ("Set up your money plan",
-             "Bills, things to set aside for, goals, your accounts — then where your money is "
-             "right now. A few minutes, and you can come back to it.",
-             has_position, self._show_setup_wizard),
-            ("Add your bills",
-             "Setup → Bills. Everything upcoming: rent, subscriptions, utilities. "
-             "The plan and the 'short by' warnings are built from these.",
-             has_bill, lambda: self._show_page("bills")),
-            ("Add a savings goal or sinking fund",
-             "Setup → Funds or Goals. Optional but unlocks the full progression loop.",
-             has_savings, lambda: self._show_page("funds")),
-            ("Log a pay when it arrives",
-             "Income tab. You'll see the calculated split and can adjust any line before it's applied.",
+            ("Bring in a statement",
+             "Statements → Import (PDF / CSV / OFX), or open your bank's page and the app catches the download. "
+             "Everything else grows from this.",
+             has_import, lambda: (self._show_page("transactions"), self.import_pdf_transactions())),
+            ("Sort what it found",
+             "One card per merchant, one click each. The app remembers, so the next statement sorts itself.",
+             has_import and unsorted == 0, lambda: (self._show_page("transactions"), self.open_review_queue())),
+            ("Confirm your pay when it shows up",
+             "A pay on the statement appears on Today — one click logs it. Or log one on the Income tab.",
              has_pay, lambda: self._show_page("income")),
-            ("Import a bank statement (optional)",
-             "Transactions tab → Import PDF. Sorts spending so Analysis works.",
-             has_import, lambda: self._show_page("transactions")),
+            ("Optional: a full money plan",
+             "Bills, set-asides, goals and your accounts in one go. Not needed — the app learns your regular "
+             "bills from statements and asks you to confirm them.",
+             has_position, self._show_setup_wizard),
         ]
         first_open = True
         for title, desc, done, action in steps:
@@ -17784,6 +18065,10 @@ class BudgetApp(tk.Tk):
             self._render_reimbursements()
         if hasattr(self, "_pending_bills_host"):
             self._render_pending_bills()
+        if hasattr(self, "_recurring_host"):
+            self._render_recurring_suggestions()
+        if hasattr(self, "_flow_host"):
+            self._render_money_flow()
         if hasattr(self, "_pact_host"):
             self._settle_pacts_ui()
             self._render_pact_card()
@@ -17818,8 +18103,14 @@ class BudgetApp(tk.Tk):
         actions = snapshot["actions"]
 
         # ── Hero cards ───────────────────────────────────────────────────────
+        _safe_val = float(self.state.last_safe_to_spend)
+        _track_only = (not self.state.starting_position_set and float(self.state.last_safe_to_spend) <= 0
+                       and bool(self.state.transactions))
+        if _track_only:
+            _fl = InsightEngine(self.state).money_flow(date.today() - timedelta(days=29), date.today())
+            _safe_val = max(0.0, _fl["saved"]) if _fl["income"] > 0 else 0.0
         self._tween_number(self.today_safe_to_spend_var,
-                            float(self.state.last_safe_to_spend),
+                            _safe_val,
                             lambda v: f"${v:,.2f}", key="today_safe")
         self._tween_number(self.today_daily_pace_var,
                             float(pace["safe_per_day"]),
@@ -17837,12 +18128,15 @@ class BudgetApp(tk.Tk):
             self.today_velocity_var.set(
                 f"{days_left}d left · ${remaining:,.0f} of ${safe:,.0f} remaining · {pace['status']}"
             )
+        elif _track_only:
+            self.today_velocity_var.set(f"in ${_fl['income']:,.0f} · out ${_fl['out']:,.0f} over the last 30 days"
+                                        if _fl["income"] > 0 else f"${_fl['out']:,.0f} out over the last 30 days · confirm a pay to see what's left")
         elif self.state.incomes:
             self.today_velocity_var.set(f"${remaining:,.0f} remaining this cycle")
         elif self.state.starting_position_set:
             self.today_velocity_var.set("Your spending-account balance. Log a pay when it arrives.")
         else:
-            self.today_velocity_var.set("Set your starting position to get started.")
+            self.today_velocity_var.set("Bring in a statement to get started.")
 
         top_action = actions[0]
         if top_action["priority"] >= 85:
@@ -18204,6 +18498,8 @@ class BudgetApp(tk.Tk):
                 f"Latest month net {'+' if net >= 0 else '−'}${abs(net):,.0f}")
         else:
             self.review_trend_summary_var.set("No trend data yet")
+        if hasattr(self, "_review_typical_frame"):
+            self._render_typical_week()
 
     def _refresh_personality_panel(self):
         if not hasattr(self, "_personality_attr_vars"):
@@ -19674,6 +19970,14 @@ class BudgetApp(tk.Tk):
                                          else f"No statement has shown a {b_.name} charge in {age_} days — type it in if you know it."),
                               "cta": "Set amount", "run": lambda b=b_: self._ask_bill_amount(b)})
                 break
+        try:
+            _rc = InsightEngine(self.state).recurring_candidates()
+        except Exception:
+            _rc = []
+        if _rc and not unsorted:
+            cands.append({"priority": 70, "title": f"Confirm {len(_rc)} regular bill{'s' if len(_rc) != 1 else ''} I spotted",
+                          "detail": ", ".join(f"{c['name']} ${c['amount']:,.0f} {c['frequency']}" for c in _rc[:3]) + (" …" if len(_rc) > 3 else "") + ". One click each on Today.",
+                          "cta": "Review", "run": lambda: (self._show_page("today"), self._expand_recurring())})
         due_stmt = self._statement_due()
         if due_stmt and not unsorted:
             l_ = due_stmt['link']
@@ -19974,7 +20278,8 @@ class BudgetApp(tk.Tk):
         per_pay_bills = sum(self.engine.bill_recommended_allocation(b) for _, b in bills)
         sec = _section("BILLS", UI_RUBY, f"{len(bills)} bill{'s' if len(bills) != 1 else ''} · about ${per_pay_bills:,.0f} per pay")
         if not bills:
-            tk.Label(sec, text="No bills yet. Use + Add bill, or the cost guide if you're not sure what something costs.",
+            tk.Label(sec, text="No bills yet — the app spots regular charges on your statements and asks you to confirm them on Today. "
+                               "Or add one here, use the cost guide, or let Gerald ask (Find my bills).",
                      bg=UI_BG, fg=UI_MUTED, font=FONT_SMALL).pack(anchor="w")
         for idx, b in bills:
             self._plan_row(sec, UI_RUBY, "bill", idx, b)
@@ -23889,6 +24194,378 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         st["no"] = _no
         _render()
 
+
+    # ── Track first: onboarding, money flow, learned bills, typical week ────
+    def _show_track_first_onboarding(self, on_done=None):
+        """First run, two cards: how you're paid (optional) → bring in a statement.
+        The full money-plan wizard is one link away for people who want it."""
+        existing = getattr(self, "_track_onboarding_scrim", None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            return
+        scrim, content, btn_row, step_var, close = self._overlay_card("WELCOME", 760, 540)
+        self._track_onboarding_scrim = scrim
+        wrap_w = 760 - 2 * SP_XL - 20
+        st = {"step": 0, "freq": tk.StringVar(value=self.state.pay_frequency or "fortnightly"),
+              "pay": tk.StringVar(value=(f"{self.state.income_baseline:.0f}" if self.state.income_baseline else ""))}
+        self._track_onboarding = st
+
+        def _clear():
+            for w in content.winfo_children():
+                w.destroy()
+            for w in btn_row.winfo_children():
+                w.destroy()
+
+        def _gerald(quip, expr="wink"):
+            row = tk.Frame(content, bg=UI_SURFACE)
+            row.pack(fill="x", pady=(0, SP_MD))
+            c = tk.Canvas(row, width=56, height=72, bg=UI_SURFACE, highlightthickness=0)
+            c.pack(side="left", padx=(0, SP_MD))
+            try:
+                _draw_gerald(c, w=56, h=72, expression=expr)
+            except Exception:
+                pass
+            tk.Label(row, text=quip, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY, wraplength=wrap_w - 80,
+                     justify="left").pack(side="left", anchor="w")
+
+        def _finish(then=None):
+            freq = st["freq"].get() or "fortnightly"
+            self.state.pay_frequency = freq
+            pay = self._parse_money_field(st["pay"].get())
+            if pay and pay > 0 and not self.state.incomes:
+                self.state.income_baseline = pay
+            self.state.setup_mode = "track"
+            if not self.state.starting_position_date:
+                # older statement rows are history (recorded, never allocated)
+                self.state.starting_position_date = date.today().isoformat()
+            self.save_state()
+            close()
+            self._track_onboarding_scrim = None
+            self._track_onboarding = None
+            try:
+                self.refresh_all_views()
+            except Exception:
+                pass
+            if on_done:
+                on_done()
+            if then:
+                self.after(250, then)
+
+        def _full_plan():
+            close()
+            self._track_onboarding_scrim = None
+            self._track_onboarding = None
+            self.state.setup_mode = "plan"
+            self._show_setup_wizard(first_run=True, on_done=on_done)
+
+        def _render():
+            _clear()
+            if st["step"] == 0:
+                step_var.set("1 of 2")
+                _gerald("Hi — I'm Gerald. I'll show you where your money goes, and learn your regular bills and "
+                        "your typical week as we go. Nothing to plan up front.")
+                tk.Label(content, text="Let's see where your money goes.", bg=UI_SURFACE, fg=UI_TEXT_BRIGHT,
+                         font=FONT_DISPLAY_MD).pack(anchor="w")
+                tk.Label(content, text="Two quick things and you're in. Both can change later.",
+                         bg=UI_SURFACE, fg=UI_MUTED, font=FONT_BODY, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(0, SP_LG))
+                tk.Label(content, text="How often are you paid?", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w")
+                chips = tk.Frame(content, bg=UI_SURFACE)
+                chips.pack(anchor="w", pady=(SP_XS, SP_LG))
+                for key, label in (("weekly", "Weekly"), ("fortnightly", "Fortnightly"), ("monthly", "Monthly")):
+                    sel = st["freq"].get() == key
+                    tk.Button(chips, text=label, bg=UI_ACCENT_SOFT if sel else UI_SURFACE2,
+                              fg=UI_TEXT_BRIGHT if sel else UI_TEXT, activebackground=UI_SURFACE3,
+                              activeforeground=UI_TEXT_BRIGHT, relief="flat", bd=0, highlightthickness=1,
+                              highlightbackground=UI_ACCENT if sel else UI_BORDER, font=FONT_BODY_BOLD,
+                              padx=SP_MD, pady=SP_XS, cursor="hand2", takefocus=0,
+                              command=lambda k=key: (st["freq"].set(k), _render())).pack(side="left", padx=(0, SP_SM))
+                line = tk.Frame(content, bg=UI_SURFACE)
+                line.pack(anchor="w")
+                tk.Label(line, text="Typical pay (optional)  $", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(side="left")
+                e = ttk.Entry(line, textvariable=st["pay"], width=10, font=FONT_SUBHEADING, justify="right")
+                e.pack(side="left", padx=(SP_XS, SP_MD))
+                tk.Label(line, text="— or leave it; a statement tells me.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left")
+                e.bind("<Return>", lambda _e: (st.update(step=1), _render()))
+                ttk.Button(btn_row, text="Next  →", style="Primary.TButton",
+                           command=lambda: (st.update(step=1), _render())).pack(side="right")
+                return
+            step_var.set("2 of 2")
+            _gerald("One statement is enough to start. I'll sort it, spot the regular charges and ask you to "
+                    "confirm them — and the picture sharpens every time you bring in another.", "happy")
+            tk.Label(content, text="Bring in a statement", bg=UI_SURFACE, fg=UI_TEXT_BRIGHT,
+                     font=FONT_DISPLAY_MD).pack(anchor="w")
+            tk.Label(content, text="PDF, CSV or OFX from your bank — the last month or three is ideal.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_BODY, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(0, SP_LG))
+            ttk.Button(content, text="Import a statement now  (PDF / CSV / OFX)", style="Primary.TButton",
+                       command=lambda: _finish(lambda: (self._show_page("transactions"), self.import_pdf_transactions()))).pack(fill="x")
+            ttk.Button(content, text="Open my bank's statement page first", style="Secondary.TButton",
+                       command=lambda: _finish(lambda: (self._show_page("transactions"), self._show_bank_links_editor()))).pack(fill="x", pady=(SP_SM, 0))
+            ttk.Button(content, text="I'll log things as I go", style="Secondary.TButton",
+                       command=lambda: _finish(None)).pack(fill="x", pady=(SP_SM, 0))
+            tk.Label(content, text="Prefer to set everything up now — bills, set-asides, goals, accounts?",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(SP_LG, 0))
+            lnk = tk.Label(content, text="Set up a full money plan instead →", bg=UI_SURFACE, fg=UI_ACCENT_BRIGHT,
+                           font=FONT_CAPTION_BOLD, cursor="hand2")
+            lnk.pack(anchor="w")
+            lnk.bind("<Button-1>", lambda _e: _full_plan())
+            ttk.Button(btn_row, text="←  Back", style="Secondary.TButton",
+                       command=lambda: (st.update(step=0), _render())).pack(side="left")
+        st["render"] = _render
+        st["finish"] = _finish
+        _render()
+
+    def _expand_recurring(self):
+        host = getattr(self, "_recurring_host", None)
+        if host is not None and host.winfo_manager():
+            try:
+                host.focus_set()
+            except tk.TclError:
+                pass
+
+    def _render_recurring_suggestions(self):
+        """'Looks like regular bills' — merchants the InsightEngine thinks are bills."""
+        host = getattr(self, "_recurring_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        try:
+            cands = InsightEngine(self.state).recurring_candidates()
+        except Exception:
+            cands = []
+        if not cands:
+            host.pack_forget()
+            return
+        host.pack(fill="x", pady=(SP_SM, 0))
+        tk.Label(host, text=f"LOOKS LIKE REGULAR BILLS · {len(cands)}", bg=UI_SURFACE, fg=UI_SAPPHIRE,
+                 font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_SM, 2))
+        tk.Label(host, text="Say yes and it becomes a bill: future charges link to it automatically and the plan sets money aside for it.",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=700, justify="left").pack(anchor="w", pady=(0, SP_XS))
+        for c in cands[:4]:
+            row = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_SM, pady=SP_XS)
+            row.pack(fill="x", pady=(0, SP_XS))
+            txt = f"{c['name'][:28]} · ${c['amount']:,.2f} {c['frequency']} · seen {c['count']}× · next {c['next_due']:%d %b}"
+            tk.Label(row, text=txt, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, anchor="w", wraplength=460, justify="left").pack(side="left", fill="x", expand=True)
+            ttk.Button(row, text="Not a bill", style="Ghost.TButton", command=lambda c=c: self._dismiss_recurring(c)).pack(side="right")
+            ttk.Button(row, text="Yes, it's a bill  ✓", style="Secondary.TButton", command=lambda c=c: self._confirm_recurring_bill(c)).pack(side="right", padx=(0, SP_SM))
+        if len(cands) > 4:
+            tk.Label(host, text=f"+ {len(cands) - 4} more once these are answered", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
+
+    def _confirm_recurring_bill(self, c: dict):
+        """A suggested regular charge becomes a Bill, its past rows link to it and a rule keeps it that way."""
+        name = c["name"]
+        if self._name_exists("bill", name):
+            self._show_toast(f"You already have a bill called {name}.", "info")
+            return
+        bill = Bill(name, round(float(c["amount"]), 2), c["next_due"], c["frequency"], "important", "Bill", 0.0, "", "", [c["key"]])
+        self.state.bills.append(bill)
+        self._ensure_merchant_rule({"key": c["key"], "name": name}, "linked_bill", name, "Bill")
+        relabelled = []
+        for t in self.state.transactions:
+            if t.direction() == "out" and merchant_group_key(t.description) == c["key"] and t.matched_type not in ("linked_bill", "ignore", "transfer"):
+                relabelled.append((t, t.matched_type, t.matched_target, t.category, t.user_verified, t.needs_review))
+                t.matched_type, t.matched_target, t.category = "linked_bill", name, "Bill"
+                t.user_verified, t.needs_review = True, False
+        self.save_state()
+        try:
+            self.refresh_bills()
+        except Exception:
+            pass
+        self.refresh_all_views()
+
+        def _undo():
+            if bill in self.state.bills:
+                self.state.bills.remove(bill)
+            self.state.advanced_match_rules = [r for r in self.state.advanced_match_rules
+                                               if not (r.rule_type == "contains" and r.keyword.strip().lower() == c["key"] and r.matched_target == name)]
+            for t, mt, tg, cat, uv, nr in relabelled:
+                t.matched_type, t.matched_target, t.category, t.user_verified, t.needs_review = mt, tg, cat, uv, nr
+            self.save_state()
+            self.refresh_all_views()
+            self._show_toast(f"{name} is not a bill again.", "info", 2500)
+        self._show_toast(f"{name}: ${bill.amount:,.2f} {bill.frequency}, next {bill.due_date:%d %b}. {len(relabelled)} past charge{'s' if len(relabelled) != 1 else ''} linked.",
+                         "success", duration=7000, action_label="Undo", action_cb=_undo)
+        try:
+            self._fire_trigger("contribute")
+        except Exception:
+            pass
+
+    def _dismiss_recurring(self, c: dict):
+        if c["key"] not in self.state.recurring_dismissed:
+            self.state.recurring_dismissed.append(c["key"])
+        self.save_state()
+        self.refresh_today_tab()
+        self._show_toast(f"Okay — {c['name']} won't be suggested again.", "info", 2500)
+
+    def _render_money_flow(self):
+        """'Where your money goes' — income → bills · categories · saved over the last 30 days,
+        then the typical week the app has learned and what a pay could leave for savings."""
+        host = getattr(self, "_flow_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        eng = InsightEngine(self.state)
+        today = date.today()
+        start = today - timedelta(days=29)
+        flow = eng.money_flow(start, today)
+        card = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_MD, pady=SP_SM)
+        card.pack(fill="x")
+        head = tk.Frame(card, bg=UI_SURFACE2)
+        head.pack(fill="x")
+        tk.Label(head, text="WHERE YOUR MONEY GOES", bg=UI_SURFACE2, fg=UI_ACCENT, font=FONT_CAPTION_BOLD).pack(side="left")
+        tk.Label(head, text="last 30 days", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="right")
+        if flow["out"] <= 0 and flow["income"] <= 0:
+            tk.Label(card, text="Nothing in the last 30 days yet. Import a statement and this fills in.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL, wraplength=700, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+            tk.Label(card, text=eng.learning_line(), bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=700, justify="left").pack(anchor="w", pady=(2, 0))
+            return
+        # segments: bills, top categories, other, saved (or over)
+        segs = []
+        if flow["bills"] > 0:
+            segs.append(("Bills", flow["bills"], UI_RUBY))
+        cats = list(flow["categories"].items())
+        for n, (cat, amt) in enumerate(cats[:5]):
+            segs.append((cat, amt, PIE_COLORS[n % len(PIE_COLORS)]))
+        rest = sum(a for _, a in cats[5:])
+        if rest > 0:
+            segs.append(("Other", rest, UI_MUTED))
+        over = 0.0
+        if flow["income"] > 0:
+            if flow["saved"] >= 0:
+                segs.append(("Saved", flow["saved"], UI_EMERALD))
+            else:
+                over = -flow["saved"]
+        total = max(flow["income"], flow["out"]) or 1.0
+        bar = tk.Canvas(card, height=26, width=10, bg=UI_SURFACE2, highlightthickness=0)
+        bar.pack(fill="x", pady=(SP_SM, SP_XS))
+
+        def _draw(e=None, bar=bar, segs=list(segs), total=total, over=over):
+            bar.delete("all")
+            w = bar.winfo_width()
+            x = 0.0
+            for label, amt, color in segs:
+                seg_w = w * (amt / total)
+                if seg_w < 1:
+                    continue
+                bar.create_rectangle(x, 4, x + seg_w - 1, 22, fill=color, outline="")
+                if seg_w > 46:
+                    bar.create_text(x + seg_w / 2, 13, text=label, fill=UI_HERO, font=FONT_MICRO)
+                x += seg_w
+            if over > 0:
+                bar.create_rectangle(x, 4, w, 22, fill=UI_DANGER_SOFT, outline=UI_RUBY, dash=(3, 2))
+        bar.bind("<Configure>", _draw)
+        legend = tk.Frame(card, bg=UI_SURFACE2)
+        legend.pack(fill="x")
+        inc_txt = f"In ${flow['income']:,.0f}" if flow["income"] > 0 else "No pay in this window"
+        tk.Label(legend, text=inc_txt, bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD).pack(side="left", padx=(0, SP_MD))
+        for label, amt, color in segs:
+            chip = tk.Label(legend, text=f"{label} ${amt:,.0f}", bg=UI_SURFACE2, fg=color, font=FONT_CAPTION_BOLD, cursor="hand2")
+            chip.pack(side="left", padx=(0, SP_SM))
+            chip.bind("<Button-1>", lambda _e: self._show_page("review"))
+        if over > 0:
+            tk.Label(legend, text=f"over by ${over:,.0f}", bg=UI_SURFACE2, fg=UI_RUBY, font=FONT_CAPTION_BOLD).pack(side="left")
+        # typical week + learning status
+        tw = eng.typical_week()
+        line = tk.Frame(card, bg=UI_SURFACE2)
+        line.pack(fill="x", pady=(SP_SM, 0))
+        if tw["rows"]:
+            chips_txt = "  ·  ".join(f"{c} ~${b['typical']:,.0f}/wk" for c, b in tw["rows"][:5])
+            tk.Label(line, text=f"Typical week:  {chips_txt}", bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_CAPTION,
+                     wraplength=700, justify="left").pack(anchor="w")
+        big = [b for b in eng.big_weeks() if (today - b["week"]).days <= 21]
+        if big:
+            b = big[-1]
+            tk.Label(line, text=f"Big week: w/c {b['week']:%d %b} was ${b['total']:,.0f} against a typical ${b['typical']:,.0f} — {b['driver']} ${b['driver_amount']:,.0f}.",
+                     bg=UI_SURFACE2, fg=UI_GOLD, font=FONT_CAPTION, wraplength=700, justify="left").pack(anchor="w")
+        tk.Label(line, text=eng.learning_line(), bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=700, justify="left").pack(anchor="w")
+        pic = eng.savings_picture()
+        if pic["could_save"] is not None and pic["could_save"] > 0:
+            cyc = {"weekly": "week", "fortnightly": "fortnight", "monthly": "month"}.get(self.state.pay_frequency, "pay")
+            save_row = tk.Frame(card, bg=UI_SURFACE2)
+            save_row.pack(fill="x", pady=(SP_XS, 0))
+            tk.Label(save_row, text=f"After bills and a typical {cyc} of spending, about ${pic['could_save']:,.0f} of each pay is free to save.",
+                     bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_SMALL_BOLD, wraplength=560, justify="left").pack(side="left")
+            ttk.Button(save_row, text=f"Put ${pic['could_save']:,.0f} aside", style="Secondary.TButton",
+                       command=lambda a=pic["could_save"]: self._put_aside(a)).pack(side="right")
+        self._flow_last = flow
+
+    def _savings_pot(self) -> Goal:
+        """The one open-ended 'Savings' pot, created on first use."""
+        for g in self.state.goals:
+            if g.name.lower() == "savings":
+                return g
+        g = Goal("Savings", 0.0, None, 5, 0.0, "fixed", 0.0)
+        self.state.goals.append(g)
+        return g
+
+    def _put_aside(self, amount: float):
+        """Move an amount into the Savings pot (undoable) — saving without a 'for'."""
+        amount = round(float(amount), 2)
+        if amount <= 0:
+            return
+        g = self._savings_pot()
+        idx = self.state.goals.index(g)
+        before = g.current_saved
+        g.current_saved = round(g.current_saved + amount, 2)
+        bal = self.state.account_balances or {}
+        bal["savings"] = round(float(bal.get("savings", 0.0)) + amount, 2)
+        bal["spending"] = round(float(bal.get("spending", 0.0)) - amount, 2)
+        self.state.account_balances = bal
+        self.save_state()
+        try:
+            self._after_money_change([("goal", g, amount)])
+        except Exception:
+            pass
+        self.refresh_all_views()
+
+        def _undo():
+            g.current_saved = before
+            b2 = self.state.account_balances or {}
+            b2["savings"] = round(float(b2.get("savings", 0.0)) - amount, 2)
+            b2["spending"] = round(float(b2.get("spending", 0.0)) + amount, 2)
+            self.save_state(); self.refresh_all_views()
+        self._show_toast(f"${amount:,.2f} put aside in Savings (now ${g.current_saved:,.2f}). Move it in your bank app too.",
+                         "success", duration=6000, action_label="Undo", action_cb=_undo)
+        return idx
+
+    def _render_typical_week(self):
+        host = getattr(self, "_review_typical_frame", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        eng = InsightEngine(self.state)
+        tw = eng.typical_week()
+        big = eng.big_weeks()
+        if not tw["rows"]:
+            tk.Label(host, text=eng.learning_line(), bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, wraplength=800, justify="left").pack(anchor="w")
+            self.review_typical_summary_var.set(eng.learning_line())
+            return
+        tk.Label(host, text=f"Median of the last 12 weeks · a normal week is about ${tw['total']:,.0f} (usually ${tw['low']:,.0f}–${tw['high']:,.0f}) · {eng.learning_line()}",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=900, justify="left").pack(anchor="w", pady=(0, SP_XS))
+        grid = tk.Frame(host, bg=UI_SURFACE)
+        grid.pack(fill="x")
+        for n, h in enumerate(("CATEGORY", "TYPICAL / WK", "USUALLY", "TREND", "BIG WEEKS")):
+            tk.Label(grid, text=h, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD, anchor="w").grid(row=0, column=n, sticky="w", padx=(0, SP_LG))
+        for r, (cat, b) in enumerate(tw["rows"][:8], start=1):
+            tk.Label(grid, text=cat, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD, anchor="w").grid(row=r, column=0, sticky="w", padx=(0, SP_LG))
+            tk.Label(grid, text=f"${b['typical']:,.0f}", bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD, anchor="w").grid(row=r, column=1, sticky="w", padx=(0, SP_LG))
+            tk.Label(grid, text=f"${b['low']:,.0f}–${b['high']:,.0f}", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, anchor="w").grid(row=r, column=2, sticky="w", padx=(0, SP_LG))
+            if b["trend"] is None:
+                tr, col = "—", UI_MUTED
+            elif abs(b["trend"]) < 5:
+                tr, col = "steady", UI_MUTED
+            else:
+                tr, col = (f"▲ {b['trend']}%" if b["trend"] > 0 else f"▼ {abs(b['trend'])}%"), (UI_RUBY if b["trend"] > 0 else UI_EMERALD)
+            tk.Label(grid, text=tr, bg=UI_SURFACE, fg=col, font=FONT_SMALL, anchor="w").grid(row=r, column=3, sticky="w", padx=(0, SP_LG))
+            ol = ", ".join(f"w/c {ws:%d %b} ${v:,.0f}" for ws, v in b["outliers"][-3:]) or "none"
+            tk.Label(grid, text=ol, bg=UI_SURFACE, fg=UI_GOLD if b["outliers"] else UI_MUTED, font=FONT_CAPTION, anchor="w").grid(row=r, column=4, sticky="w")
+        if big:
+            tk.Label(host, text="Big weeks overall: " + "; ".join(f"w/c {b['week']:%d %b} ${b['total']:,.0f} (typical ${b['typical']:,.0f}, mostly {b['driver']})" for b in big[-4:]),
+                     bg=UI_SURFACE, fg=UI_GOLD, font=FONT_CAPTION, wraplength=900, justify="left").pack(anchor="w", pady=(SP_SM, 0))
+        self.review_typical_summary_var.set("  ·  ".join(f"{c} ${b['typical']:,.0f}/wk" for c, b in tw["rows"][:4]))
+
     def _build_rules_tab(self):
         frame = self.rules_tab
         frame.columnconfigure(0, weight=0)
@@ -27119,13 +27796,16 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         """First run: the money-plan wizard, then Gerald's tutorial. If the user
         chooses 'Finish later', onboarding stays incomplete and the welcome
         checklist on Today offers the wizard again."""
+        if self.state.onboarding_complete:
+            return   # completed (or marked complete) before the first-run timer fired
+
         def _after():
             self.state.onboarding_complete = True
             self.save_state()
             self._day_one_head_start_ui()
             if not self.state.tutorial_complete:
                 self.after(2600, lambda: self._when_pack_closed(self._run_tutorial))
-        self._show_setup_wizard(first_run=True, on_done=_after)
+        self._show_track_first_onboarding(on_done=_after)
 
     # ── Tutorial walkthrough ─────────────────────────────────────────────
     def _run_tutorial(self):
@@ -28624,6 +29304,20 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         warn_var = tk.StringVar()
         tk.Label(content, textvariable=warn_var, bg=UI_SURFACE, fg=UI_GOLD, font=FONT_CAPTION,
                  wraplength=680, justify="left").pack(anchor="w", pady=(SP_XS, 0))
+        try:
+            _pic = InsightEngine(self.state).savings_picture()
+        except Exception:
+            _pic = {"spend": 0.0}
+        if _pic.get("spend", 0) > 0:
+            _cyc = {"weekly": "week", "fortnightly": "fortnight", "monthly": "month"}.get(self.state.pay_frequency, "fortnight")
+            _txt = f"Learned from {_pic['weeks']} weeks of statements: a typical {_cyc} of spending is about ${_pic['spend']:,.0f}."
+            _left = (amount - base["bill_total"] - base["fund_total"] - base["goal_total"] - base["invest_total"]) - _pic["spend"]
+            if _left > 0:
+                _txt += f" After this split and a normal {_cyc}, roughly ${_left:,.0f} is free to save."
+            elif _left < 0:
+                _txt += f" This split leaves less than a normal {_cyc} needs — about ${-_left:,.0f} short."
+            tk.Label(content, text=_txt, bg=UI_SURFACE, fg=UI_SAPPHIRE, font=FONT_CAPTION,
+                     wraplength=680, justify="left").pack(anchor="w", pady=(SP_XS, 0))
 
         def _overrides() -> dict:
             out = {}
