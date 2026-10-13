@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.21"
+APP_VERSION = "1.0.22"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -4740,40 +4740,40 @@ TUTORIAL_STEPS = [
         "Let's take a quick tour, yeah?",
     ]),
     ("The Big Idea", None, [
-        "Here's the deal. When you get paid, this app",
-        "tells you exactly where to put your money.",
+        "Here's the deal. Bring in a statement and",
+        "I show you where your money goes.",
         "",
-        "Bills account, savings, spending -- the lot.",
-        "You do the transfers, I do the maths.",
+        "I learn your regular bills and your typical",
+        "week from it. Nothing to plan up front.",
         "",
-        "Fair trade, right?",
+        "You confirm, I do the maths.",
     ]),
     ("Your Dashboard", "today", [
         "This is your mission control.",
         "",
-        "After you log a pay, it shows you exactly",
-        "how much to transfer where.",
+        "Where your money goes, what a normal week",
+        "costs you, and what's free to put aside.",
         "",
         "Pretty colours, very official.",
         "I'm a little jealous, honestly.",
     ]),
     ("Log Your Pay", "income", [
-        "This is where the magic starts.",
+        "When a pay lands, log it here -- or confirm",
+        "it from the statement in one click.",
         "",
-        "Enter your pay amount and hit the button.",
-        "I'll split it across your bills, savings",
-        "and goals automatically.",
+        "I'll tell you what to keep for a normal",
+        "fortnight and what you can put aside.",
         "",
         "You just move the money. Easy as.",
     ]),
     ("Your Setup", "setup", [
-        "Bills, Funds, Goals -- they all live here.",
+        "Bills, set-asides, goals -- optional, all",
+        "of them, and they live here.",
         "",
-        "Bills are the essentials. Funds are things",
-        "you're saving towards. Goals are the big",
-        "dreams -- emergency fund, house deposit...",
+        "Bills show up on their own: I spot the",
+        "regular charges and ask you to confirm.",
         "",
-        "Set 'em up once. I handle the rest.",
+        "Add anything else whenever you like.",
     ]),
     ("Score & Rewards", "score", [
         "NOW we're talking.",
@@ -4927,7 +4927,10 @@ def extract_merchant_name(desc: str) -> str:
 
 def clean_merchant_label(name: str) -> str:
     """'Netflix Com' → 'Netflix', 'Optus Mobile Pty' → 'Optus Mobile': drop domain and company suffixes."""
-    parts = [p for p in (name or "").split() if p.lower() not in ("com", "au", "net", "org", "www", "pty", "ltd", "inc", "aus", "co", "llc")]
+    drop = {"com", "au", "net", "org", "www", "pty", "ltd", "inc", "aus", "co", "llc", "australia",
+            "melbourne", "sydney", "brisbane", "perth", "adelaide", "hobart", "darwin", "canberra",
+            "nsw", "vic", "qld", "wa", "sa", "tas", "nt", "act", "bpay", "direct", "debit", "dd"}
+    parts = [p for p in (name or "").split() if p.lower() not in drop]
     return " ".join(parts) or (name or "")
 
 
@@ -21495,7 +21498,7 @@ class BudgetApp(tk.Tk):
         self._celebrate("Welcome to The Vault", "Founder card + a free pack are yours. Today's vault holds a Gold chest.", UI_AMETHYST, 2200)
         pack = out.get("pack")
         if pack and pack.get("success"):
-            self.after(2300, lambda: self._open_pack_animation(pack["cards"], pack.get("set_completions", [])))
+            self.after(2300, lambda: self._when_quiet(lambda: self._open_pack_animation(pack["cards"], pack.get("set_completions", []))))
 
     def _when_pack_closed(self, cb, _tries: int = 0):
         win = getattr(self, "_pack_win", None)
@@ -22342,6 +22345,10 @@ class BudgetApp(tk.Tk):
             return None
         amounts = sorted(i.amount for i in inc)
         typical = amounts[len(amounts) // 2]
+        srcs: Dict[str, int] = {}
+        for i in inc:
+            srcs[i.source] = srcs.get(i.source, 0) + 1
+        source = max(srcs, key=srcs.get) if srcs else ""
         freq, gap = None, None
         if len(inc) >= 2:
             gaps = sorted((inc[i + 1].received_on - inc[i].received_on).days for i in range(len(inc) - 1))
@@ -22352,7 +22359,15 @@ class BudgetApp(tk.Tk):
                 freq = "fortnightly"
             elif 26 <= gap <= 35:
                 freq = "monthly"
-        return {"count": len(inc), "typical": typical, "freq": freq, "gap": gap, "last": inc[-1].received_on}
+        return {"count": len(inc), "typical": typical, "freq": freq, "gap": gap, "last": inc[-1].received_on, "source": source}
+
+    def _statement_closing_balance(self) -> Optional[tuple]:
+        """(balance, date) after the latest imported row that carried a balance, else None."""
+        rows = [t for t in self.state.transactions if getattr(t, "balance", None) is not None]
+        if not rows:
+            return None
+        last = max(rows, key=lambda t: (t.tx_date, t.fingerprint))
+        return (round(float(last.balance), 2), last.tx_date)
 
     def _detect_recurring_bills(self) -> List[dict]:
         groups: Dict[str, list] = {}
@@ -22365,7 +22380,7 @@ class BudgetApp(tk.Tk):
         for key, txs in groups.items():
             if not key or key == "unknown merchant":
                 continue
-            name = extract_merchant_name(txs[0].description)
+            name = clean_merchant_label(extract_merchant_name(txs[0].description))
             if name.lower() in existing:
                 continue
             amts = sorted(round(t.money_out, 2) for t in txs)
@@ -22400,6 +22415,7 @@ class BudgetApp(tk.Tk):
         return None
 
     def _statement_setup_offer(self, batch: List[TransactionRecord]):
+        self._followup_pending = False
         if self.state.ui_prefs.get("statement_setup.done"):
             return
         if not any(self._is_historical(t) for t in batch):
@@ -22413,7 +22429,8 @@ class BudgetApp(tk.Tk):
         rhythm = self._detect_pay_rhythm()
         bills = self._detect_recurring_bills()
         mix = self._history_mix()
-        scrim, content, btn_row, step_var, close = self._overlay_card("SET UP FROM YOUR STATEMENT", 720, 620)
+        scrim, content, btn_row, step_var, close = self._overlay_card("CONFIRM WHAT I FOUND", 720, 640)
+        self._statement_setup_scrim = scrim
         head = tk.Frame(content, bg=UI_SURFACE)
         head.pack(fill="x")
         c = tk.Canvas(head, width=64, height=84, bg=UI_SURFACE, highlightthickness=0)
@@ -22422,8 +22439,8 @@ class BudgetApp(tk.Tk):
             _draw_gerald(c, 64, 84, "happy")
         except Exception:
             pass
-        tk.Label(head, text="Your statement already knows a lot about you. Nothing from before today has been allocated — "
-                            "it's history. But history is useful: here's what it tells me, each one is one click.",
+        tk.Label(head, text="Here's what your statement tells me. Say yes to what's right — each one is one click. "
+                            "Nothing before today is allocated; it's history that teaches me your normal.",
                  bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL, wraplength=600, justify="left").pack(side="left", fill="x", expand=True)
         area, bind_wheel = self._overlay_scroll_area(content, 430)
 
@@ -22433,18 +22450,21 @@ class BudgetApp(tk.Tk):
             tk.Label(box, text=title, bg=UI_SURFACE2, fg=color, font=FONT_CAPTION_BOLD).pack(anchor="w")
             return box
 
-        # 1. Rhythm
-        box = card("YOUR PAY RHYTHM", UI_EMERALD)
+        # 1. Your pay
+        box = card("IS THIS YOUR PAY?", UI_EMERALD)
         if rhythm and rhythm["count"] >= 1:
             freq_word = rhythm["freq"] or self.state.pay_frequency
-            txt = (f"{rhythm['count']} pay{'s' if rhythm['count'] != 1 else ''} found · typical ${rhythm['typical']:,.0f}"
-                   + (f" · about every {rhythm['gap']} days → {freq_word}" if rhythm["gap"] else "")
-                   + f" · last on {rhythm['last']:%d %b}.")
-            tk.Label(box, text=txt, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=640, justify="left").pack(anchor="w", pady=(2, 0))
+            src_txt = f" from {rhythm['source']}" if rhythm.get("source") else ""
+            tk.Label(box, text=f"${rhythm['typical']:,.2f} {freq_word}{src_txt}", bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT,
+                     font=FONT_SUBHEADING).pack(anchor="w", pady=(2, 0))
             nxt = rhythm["last"] + timedelta(days=BudgetEngine.PAY_CYCLE_DAYS.get(freq_word, 14))
-            tk.Label(box, text=f"Next pay expected {nxt:%a %d %b}. Logging it on the day is what starts the streak.",
+            tk.Label(box, text=f"{rhythm['count']} pay{'s' if rhythm['count'] != 1 else ''} on the statement"
+                               + (f", about every {rhythm['gap']} days" if rhythm["gap"] else "")
+                               + f", last on {rhythm['last']:%d %b}. Next one expected {nxt:%a %d %b}.",
                      bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=640, justify="left").pack(anchor="w")
             r_var = tk.StringVar(value="")
+            r_btns = tk.Frame(box, bg=UI_SURFACE2)
+            r_btns.pack(anchor="w", pady=(SP_XS, 0))
 
             def _use_rhythm():
                 if rhythm["freq"]:
@@ -22453,12 +22473,40 @@ class BudgetApp(tk.Tk):
                 self.state.ui_prefs["statement_setup.rhythm_done"] = True
                 self.save_state()
                 self.refresh_all_views()
-                r_var.set("Rhythm set ✓")
-            ttk.Button(box, text="Use this rhythm  ✓", style="Primary.TButton", command=_use_rhythm).pack(anchor="w", pady=(SP_XS, 0))
-            tk.Label(box, textvariable=r_var, bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_CAPTION).pack(anchor="w")
+                r_var.set("Pay confirmed ✓")
+
+            def _not_pay():
+                self.state.ui_prefs["statement_setup.rhythm_done"] = True
+                self.save_state()
+                r_var.set("Okay — log your pay on the Income tab when it lands, and I'll learn from that.")
+            ttk.Button(r_btns, text="Yes, that's my pay  ✓", style="Primary.TButton", command=_use_rhythm).pack(side="left")
+            ttk.Button(r_btns, text="No", style="Secondary.TButton", command=_not_pay).pack(side="left", padx=(SP_SM, 0))
+            tk.Label(box, textvariable=r_var, bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_CAPTION, wraplength=640, justify="left").pack(anchor="w")
         else:
-            tk.Label(box, text="No pay rows found in the statement. Log your pay on the Income tab when it lands.",
+            tk.Label(box, text="No pay on this statement. Log your pay on the Income tab when it lands.",
                      bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=640, justify="left").pack(anchor="w", pady=(2, 0))
+
+        # 1b. Your balance (when the statement carries one)
+        closing = self._statement_closing_balance()
+        if closing and not self.state.starting_position_set:
+            bal_amt, bal_date = closing
+            box = card("YOUR BALANCE", UI_SAPPHIRE)
+            tk.Label(box, text=f"${bal_amt:,.2f} after the last row on {bal_date:%d %b}.", bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT,
+                     font=FONT_SUBHEADING).pack(anchor="w", pady=(2, 0))
+            tk.Label(box, text=f"Use it as what's in {self._account_label('spending')} now? Safe to Spend starts from it.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=640, justify="left").pack(anchor="w")
+            bal_var = tk.StringVar(value="")
+
+            def _use_balance():
+                bal = dict(self.state.account_balances or {})
+                bal["spending"] = bal_amt
+                self.state.account_balances = bal
+                self.state.last_safe_to_spend = bal_amt
+                self.save_state()
+                self.refresh_all_views()
+                bal_var.set("Balance set ✓")
+            ttk.Button(box, text="Yes, use it  ✓", style="Primary.TButton", command=_use_balance).pack(anchor="w", pady=(SP_XS, 0))
+            tk.Label(box, textvariable=bal_var, bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_CAPTION).pack(anchor="w")
 
         # 2. Recurring bills
         box = card("CHARGES THAT LOOK LIKE BILLS", UI_RUBY)
@@ -22528,7 +22576,7 @@ class BudgetApp(tk.Tk):
             self.save_state()
             close()
             self.refresh_all_views()
-        ttk.Button(btn_row, text="Done", style="Secondary.TButton", command=_done).pack(side="right")
+        ttk.Button(btn_row, text="Done  ✓", style="Primary.TButton", command=_done).pack(side="right")
         self._statement_setup_widgets = {"rhythm": rhythm, "bills": bills, "mix": mix}
 
     # ── Analysis periods: month / calendar quarter / financial year / YTD / custom ──
@@ -23540,9 +23588,18 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         var.set(" · ".join(bits))
 
     # ── Split a transaction across categories ────────────────────────────
+    NEW_CATEGORY_CHOICE = "+ New category…"
+
     def _split_category_choices(self) -> list:
         cats = [c for c in self.state.expense_categories if c not in ("Income", "Transfer", "Ignore")]
-        return cats or ["General"]
+        return (cats or ["General"]) + [self.NEW_CATEGORY_CHOICE]
+
+    def _ask_new_category(self) -> str:
+        name = simpledialog.askstring("New category", "Name for the new category (e.g. Pets, Kids, Hobbies):", parent=self)
+        name = (name or "").strip()
+        if not name:
+            return ""
+        return self.register_expense_category(name)
 
     def _show_split_editor(self, txs: List[TransactionRecord], on_done=None, title: str = "SPLIT ACROSS CATEGORIES"):
         """One block per transaction: category + amount lines that must add up to the
@@ -23590,6 +23647,13 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 line.pack(fill="x", pady=(2, 0))
                 cb = ttk.Combobox(line, textvariable=cat_v, values=choices, width=18)
                 cb.pack(side="left")
+
+                def _maybe_new(_e=None, v=cat_v, i=i):
+                    if v.get() == self.NEW_CATEGORY_CHOICE:
+                        nm = self._ask_new_category()
+                        v.set(nm or "")
+                        _render_tx(i)
+                cb.bind("<<ComboboxSelected>>", _maybe_new)
                 tk.Label(line, text="$", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL_BOLD).pack(side="left", padx=(SP_SM, 2))
                 e = ttk.Entry(line, textvariable=amt_v, width=9)
                 e.pack(side="left")
@@ -24373,7 +24437,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                         "your typical week as we go. Nothing to plan up front.")
                 tk.Label(content, text="Let's see where your money goes.", bg=UI_SURFACE, fg=UI_TEXT_BRIGHT,
                          font=FONT_DISPLAY_MD).pack(anchor="w")
-                tk.Label(content, text="Two quick things and you're in. Both can change later.",
+                tk.Label(content, text="One question, one statement, and you're in.",
                          bg=UI_SURFACE, fg=UI_MUTED, font=FONT_BODY, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(0, SP_LG))
                 tk.Label(content, text="How often are you paid?", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(anchor="w")
                 chips = tk.Frame(content, bg=UI_SURFACE)
@@ -24386,13 +24450,8 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                               highlightbackground=UI_ACCENT if sel else UI_BORDER, font=FONT_BODY_BOLD,
                               padx=SP_MD, pady=SP_XS, cursor="hand2", takefocus=0,
                               command=lambda k=key: (st["freq"].set(k), _render())).pack(side="left", padx=(0, SP_SM))
-                line = tk.Frame(content, bg=UI_SURFACE)
-                line.pack(anchor="w")
-                tk.Label(line, text="Typical pay (optional)  $", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(side="left")
-                e = ttk.Entry(line, textvariable=st["pay"], width=10, font=FONT_SUBHEADING, justify="right")
-                e.pack(side="left", padx=(SP_XS, SP_MD))
-                tk.Label(line, text="— or leave it; a statement tells me.", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left")
-                e.bind("<Return>", lambda _e: (st.update(step=1), _render()))
+                tk.Label(content, text="Your pay amount comes from the statement — I'll ask you to confirm it.",
+                         bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w")
                 ttk.Button(btn_row, text="Next  →", style="Primary.TButton",
                            command=lambda: (st.update(step=1), _render())).pack(side="right")
                 return
@@ -27974,15 +28033,50 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         def _after():
             self.state.onboarding_complete = True
             self.save_state()
-            self._day_one_head_start_ui()
-            if not self.state.tutorial_complete:
-                self.after(2600, lambda: self._when_pack_closed(self._run_tutorial))
+            # The welcome pack and the tour wait until the user is not in the middle of
+            # something — importing, sorting, confirming — and nothing else is on screen.
+            def _head_start():
+                self._day_one_head_start_ui()
+                if not self.state.tutorial_complete:
+                    self.after(2600, lambda: self._when_pack_closed(lambda: self._when_quiet(self._run_tutorial)))
+            self.after(400, lambda: self._when_quiet(_head_start))
         self._show_track_first_onboarding(on_done=_after)
+
+    def _screen_busy(self) -> bool:
+        """True while an overlay, a pop-up window, the tour or an unsorted import is on screen."""
+        toasts = {id(t) for t in getattr(self, "_toast_stack", [])}
+        if getattr(self, "_celebration_top", None) is not None:
+            toasts.add(id(self._celebration_top))   # confetti is transient, never something to wait for
+        try:
+            for w in self.winfo_children():
+                if isinstance(w, tk.Toplevel) and w.winfo_exists() and id(w) not in toasts and w.winfo_viewable():
+                    return True
+                if isinstance(w, tk.Frame) and w.winfo_manager() == "place" and str(w.cget("bg")) == UI_HERO:
+                    return True
+        except tk.TclError:
+            return False
+        if getattr(self, "_tutorial_overlay", None) or getattr(self, "_followup_pending", False):
+            return True
+        if getattr(self, "_review_queue_scrim", None) is not None:
+            return True
+        if self.latest_import and any(t.direction() == "out" and not t.user_verified for t in self.latest_import):
+            return True
+        return False
+
+    def _when_quiet(self, cb, _tries: int = 0):
+        """Run cb once the screen is quiet (polls every 400 ms, gives up after ~10 min)."""
+        if not self._screen_busy() or _tries > 1500:
+            cb()
+        else:
+            self.after(400, lambda: self._when_quiet(cb, _tries + 1))
 
     # ── Tutorial walkthrough ─────────────────────────────────────────────
     def _run_tutorial(self):
         """Gerald's guided tutorial — floating panel next to the live page."""
         if self.state.tutorial_complete:
+            return
+        if self._screen_busy():
+            self._when_quiet(self._run_tutorial)
             return
 
         step_idx = [0]
@@ -29932,6 +30026,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         self.after(1500, lambda b=batch: self._offer_reimbursement_match(b))
         n_hist = sum(1 for t_ in batch if self._is_historical(t_))
         if n_hist:
+            self._followup_pending = True   # the confirmation step is about to open: keep the screen 'busy'
             self.after(700, lambda b=batch: self._statement_setup_offer(b))
         self.latest_import = []
         self.latest_import_qa = []
@@ -30026,7 +30121,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             if nxt <= due:
                 break
             due = nxt
-        return {"name": group.get("name", "New bill"), "amount": float(amount), "frequency": freq, "due": due, "why": why}
+        return {"name": clean_merchant_label(group.get("name", "New bill")) or "New bill", "amount": float(amount), "frequency": freq, "due": due, "why": why}
 
     def _unsorted_outgoing_count(self) -> int:
         return sum(1 for t in self.latest_import if t.direction() == "out" and not t.user_verified)
@@ -30240,7 +30335,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             n = self.accept_review_suggestions()
             st["touched"] = True
             groups[:] = self._review_queue_groups()
-            self._show_toast(f"Accepted {n} suggested match(es).", "success")
+            self._show_toast(f"Accepted {n} suggestion{'s' if n != 1 else ''}.", "success")
             st["idx"] = 0
             _render()
 
@@ -30264,7 +30359,14 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                      bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_DISPLAY_MD).pack(anchor="w")
             sub = f"{recognised} outgoing already recognised from past imports."
             if incoming:
-                sub += f"  {incoming} incoming — confirmed on Today after commit."
+                _cut = self._history_cutoff()
+                _hist = sum(1 for t in self.latest_import if t.direction() == "in" and _cut and t.tx_date < _cut)
+                if _hist == incoming:
+                    sub += f"  {incoming} pay{'s' if incoming != 1 else ''} found — I'll ask you to confirm your pay after commit."
+                elif _hist:
+                    sub += f"  {incoming} incoming: {_hist} recorded as history, {incoming - _hist} to confirm on Today."
+                else:
+                    sub += f"  {incoming} incoming — confirm on Today after commit."
             tk.Label(content, text=sub, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL,
                      wraplength=CARD_W - 2 * SP_XL, justify="left").pack(anchor="w", pady=(2, SP_MD))
 
@@ -30423,7 +30525,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             chips = tk.Frame(content, bg=UI_SURFACE)
             chips.pack(fill="x")
             COLS = 4
-            cats = list(self.state.expense_categories)
+            cats = [c for c in self.state.expense_categories if c.lower() not in ("income", "transfer", "bill", "fund", "ignore")] or ["General"]
             sug_cat = (g["suggested_category"] or "").lower() if g["suggested_type"] == "discretionary" else ""
             for k, cat in enumerate(cats):
                 r, c = divmod(k, COLS)

@@ -1,10 +1,15 @@
 {
-  "version": "1.0.21",
-  "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.21/BudgetPlanner.exe",
-  "sha256": "e834b124d9de68cf49b816d7a775fc0d1d71601a5a0da4a9cb3fe3e980f91866",
-  "notes": "Less to read: page subtitles, tips and hints are gone where the screen already says it, labels are single words (Name, Amount, Date, Already saved), the Statements page is Import statement / Sort / Commit / Clear with a plain 'Preview', and the Plan rows lost their 'click to edit' captions. Nothing was removed.",
+  "version": "1.0.22",
+  "date": "2026-10-14",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.22/BudgetPlanner.exe",
+  "sha256": "3eb133f247c8a336577323b1970ac3bdb835e85a759fa5401362c071620c3aec",
+  "notes": "A clean first run: the welcome pack and Gerald's tour now wait until you've finished importing, sorting and confirming \u2014 nothing pops over the sort window any more. After your first statement, a 'Confirm what I found' step asks 'Is this your pay?' (amount, cadence and source read from the statement), offers the statement's closing balance as your Everyday balance, and lists the regular charges to confirm. The split editor has '+ New category\u2026', sort cards show only real categories, suggested bills get clean names, and the first screen no longer asks for a pay figure.",
   "history": [
+    {
+      "version": "1.0.22",
+      "date": "2026-10-14",
+      "notes": "A clean first run: the welcome pack and Gerald's tour now wait until you've finished importing, sorting and confirming \u2014 nothing pops over the sort window any more. After your first statement, a 'Confirm what I found' step asks 'Is this your pay?' (amount, cadence and source read from the statement), offers the statement's closing balance as your Everyday balance, and lists the regular charges to confirm. The split editor has '+ New category\u2026', sort cards show only real categories, suggested bills get clean names, and the first screen no longer asks for a pay figure."
+    },
     {
       "version": "1.0.21",
       "date": "2026-10-13",
