@@ -8,3 +8,5 @@ Smoke tests drive the real Tkinter app against a temporary data file (never `bud
 - `python tests/raster.py gerald` rasterises canvas drawings through PIL when ImageGrab is black.
 
 Tests stub Task Scheduler, the browser and Windows toasts. The window grabs focus while they run.
+
+Tests 9, 10 and 22 need keyboard focus and the real pointer (Enter-to-save, wheel routing). Run them on their own, not alongside the audit or another app window.

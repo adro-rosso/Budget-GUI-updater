@@ -4734,15 +4734,39 @@ def previous_calendar_month_window(today: date) -> tuple[date, date]:
     return first_prev, last_prev
 
 
+def tx_net_out(tx: "TransactionRecord") -> float:
+    """Money out after any reimbursement received back."""
+    return max(0.0, round(float(tx.money_out) - float(getattr(tx, "reimbursed_amount", 0.0) or 0.0), 2))
+
+
+def tx_desc_cell(tx: "TransactionRecord") -> str:
+    """Tree description cell with the follow-up / reimbursement markers."""
+    pre = ("🚩 " if getattr(tx, "flagged", False) else "")
+    rb = getattr(tx, "reimburse", "")
+    if rb == "pending":
+        pre += "↩ "
+    elif rb == "done":
+        pre += "↩✓ "
+    if getattr(tx, "reimburses", None):
+        pre += "↩ "
+    return pre + tx.description[:40]
+
+
 def tx_category_amounts(tx: "TransactionRecord") -> list:
-    """[(category, amount)] for an outgoing transaction — its splits, or one line."""
+    """[(category, amount)] for an outgoing transaction — its splits, or one line —
+    scaled down by whatever has been reimbursed (fully reimbursed → no lines)."""
+    gross = float(tx.money_out)
+    net = tx_net_out(tx)
+    if gross <= 0 or net <= 0:
+        return []
+    factor = net / gross
     splits = getattr(tx, "splits", None) or []
     if splits:
-        out = [((s.get("category") or tx.category or "").strip() or "Uncategorized", float(s.get("amount", 0.0))) for s in splits]
+        out = [((s.get("category") or tx.category or "").strip() or "Uncategorized", round(float(s.get("amount", 0.0)) * factor, 2)) for s in splits]
         out = [(c, a) for c, a in out if a > 0]
         if out:
             return out
-    return [((tx.category or "").strip() or "Uncategorized", float(tx.money_out))]
+    return [((tx.category or "").strip() or "Uncategorized", net)]
 
 
 def tx_category_label(tx: "TransactionRecord", width: int = 24) -> str:
@@ -5186,6 +5210,11 @@ class TransactionRecord:
     # One receipt, several categories: [{'category', 'amount'}] summing to money_out.
     # `category` stays the largest share so single-category code keeps working.
     splits: List[Dict] = field(default_factory=list)
+    # Reimbursements: '' | 'pending' | 'done' | 'dismissed'; reimbursed_amount nets off spend.
+    # An incoming row that paid expenses back lists them in `reimburses` and is typed 'reimbursement'.
+    reimburse: str = ""
+    reimbursed_amount: float = 0.0
+    reimburses: List[Dict] = field(default_factory=list)
 
     def amount(self) -> float:
         return self.money_in if self.money_in > 0 else self.money_out
@@ -5217,6 +5246,9 @@ class TransactionRecord:
             data.get("notes", ""),
             bool(data.get("flagged", False)),
             [dict(s) for s in (data.get("splits") or [])],
+            str(data.get("reimburse", "") or ""),
+            float(data.get("reimbursed_amount", 0.0) or 0.0),
+            [dict(s) for s in (data.get("reimburses") or [])],
         )
 
 
@@ -15492,6 +15524,7 @@ class BudgetApp(tk.Tk):
         # classified as income and awaiting user confirmation to log as pay.
         self._confirm_income_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._flagged_host = tk.Frame(quick_inner, bg=UI_SURFACE)
+        self._reimb_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._month_report_host = tk.Frame(quick_inner, bg=UI_SURFACE)
         self._today_extras_summary = tk.StringVar(value="")
         _ex_wrap, _ex = self._collapsible_section(quick_inner, "Pacts & this month", "today.extras", default_open=False,
@@ -16589,7 +16622,7 @@ class BudgetApp(tk.Tk):
             start, end = month_bounds(ref)
         income_total = sum(x.amount for x in self.state.incomes if start <= x.received_on <= end)
         outgoing = [tx for tx in self.state.transactions if tx.direction() == "out" and tx.matched_type != "ignore" and start <= tx.tx_date <= end]
-        outgoing_total = sum(tx.money_out for tx in outgoing)
+        outgoing_total = sum(tx_net_out(tx) for tx in outgoing)
         category_totals = outgoing_category_totals(self.state.transactions, start, end)
         actual_pct = percents_from_amounts(category_totals)
 
@@ -16908,6 +16941,9 @@ class BudgetApp(tk.Tk):
                    command=lambda f=fp: self._confirm_income_log(f)).pack(side="left")
         ttk.Button(btns, text="Dismiss", style="Ghost.TButton",
                    command=lambda f=fp: self._confirm_income_dismiss(f)).pack(side="left", padx=(SP_SM, 0))
+        if self.pending_reimbursements():
+            ttk.Button(btns, text="It's a reimbursement", style="Secondary.TButton",
+                       command=lambda t=tx: self._show_reimburse_assign([t])).pack(side="left", padx=(SP_SM, 0))
 
     def _confirm_income_log(self, fp: str):
         tx = next((t for t in self.state.transactions if t.fingerprint == fp), None)
@@ -17628,6 +17664,8 @@ class BudgetApp(tk.Tk):
         self._render_pay_overdue_nudge()
         self._render_income_confirmations()
         self._render_flagged_followups()
+        if hasattr(self, "_reimb_host"):
+            self._render_reimbursements()
         if hasattr(self, "_pact_host"):
             self._settle_pacts_ui()
             self._render_pact_card()
@@ -23072,6 +23110,21 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                     menu.add_command(label="Split across categories…", command=lambda t=tx: self._show_split_editor([t]))
                     if getattr(tx, "splits", None):
                         menu.add_command(label="Remove split (single category)", command=lambda t=tx: self._unsplit_tx(t))
+                if tx.direction() == "out":
+                    rb = getattr(tx, "reimburse", "")
+                    menu.add_separator()
+                    if rb != "pending":
+                        menu.add_command(label="Getting reimbursed", command=lambda t=tx: self._set_reimburse([t], "pending"))
+                    if rb in ("pending", ""):
+                        menu.add_command(label="Has been reimbursed (in full)", command=lambda t=tx: self._set_reimburse([t], "done"))
+                    if rb == "pending":
+                        menu.add_command(label="Reimbursed in part…", command=lambda t=tx: self._receive_partial(t))
+                        menu.add_command(label="Not getting reimbursed", command=lambda t=tx: self._set_reimburse([t], "dismissed"))
+                    if rb == "done":
+                        menu.add_command(label="Undo reimbursement", command=lambda t=tx: self._set_reimburse([t], ""))
+                else:
+                    menu.add_command(label="This is a reimbursement for…", command=lambda t=tx: self._show_reimburse_assign([t]))
+                menu.add_separator()
                 menu.add_command(label="Flag for follow-up" if not tx.flagged else "Unflag", command=lambda t=tx: self._set_transactions_flag([t], not t.flagged, extract_merchant_name(t.description)))
                 try:
                     menu.tk_popup(event.x_root, event.y_root)
@@ -23088,6 +23141,214 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         except Exception:
             pass
         self._show_toast(f"Back to a single category: {tx.category}.", "info", 3000)
+
+    # ── Reimbursements ───────────────────────────────────────────────────
+    # An outgoing row can be 'getting reimbursed' (pending until received or
+    # dismissed). An incoming row can be assigned, fully or partly, to pending
+    # expenses; the expense's net spend drops by what came back and the
+    # incoming row is typed 'reimbursement' so it never reads as a pay.
+    def _all_tx_rows(self) -> list:
+        return list(self.state.transactions) + list(self.latest_import)
+
+    def pending_reimbursements(self) -> list:
+        return [t for t in self._all_tx_rows() if t.direction() == "out" and getattr(t, "reimburse", "") == "pending"
+                and t.money_out - float(getattr(t, "reimbursed_amount", 0.0)) > 0.005]
+
+    def _set_reimburse(self, txs: list, status: str, quiet: bool = False):
+        n = 0
+        for t in txs:
+            if t.direction() != "out":
+                continue
+            if status == "pending":
+                t.reimburse = "pending"
+            elif status == "done":
+                t.reimburse = "done"
+                t.reimbursed_amount = round(t.money_out, 2)
+            elif status == "dismissed":
+                t.reimburse = "dismissed" if float(getattr(t, "reimbursed_amount", 0.0)) <= 0 else "done"
+            else:
+                t.reimburse = ""
+                t.reimbursed_amount = 0.0
+            n += 1
+        self.save_state()
+        try:
+            self.refresh_transactions_tab()
+            self.refresh_today_tab()
+        except Exception:
+            pass
+        if not quiet and n:
+            msg = {"pending": "Marked as getting reimbursed — it stays on Today until the money comes back.",
+                   "done": "Marked as reimbursed in full — it no longer counts as spending.",
+                   "dismissed": "Not getting reimbursed — back to normal spending."}.get(status, "Updated.")
+            self._show_toast(msg, "success" if status != "dismissed" else "info", 3500)
+
+    def _receive_partial(self, tx: TransactionRecord):
+        from tkinter import simpledialog as _sd
+        outstanding = round(tx.money_out - float(getattr(tx, "reimbursed_amount", 0.0)), 2)
+        amt = _sd.askfloat("Partial reimbursement", f"How much came back for {extract_merchant_name(tx.description)}?\nOutstanding: ${outstanding:,.2f}",
+                           parent=self, minvalue=0.01, maxvalue=max(0.01, outstanding))
+        if not amt:
+            return
+        self._apply_reimbursement(tx, round(min(amt, outstanding), 2), source=None)
+        self.save_state()
+        self.refresh_transactions_tab(); self.refresh_today_tab()
+        self._show_toast(f"${amt:,.2f} received for {extract_merchant_name(tx.description)}" + (" — all of it now." if tx.reimburse == "done" else f" — ${tx.money_out - tx.reimbursed_amount:,.2f} still to come."), "success", 4000)
+
+    def _apply_reimbursement(self, expense: TransactionRecord, amount: float, source: Optional[TransactionRecord]):
+        expense.reimbursed_amount = round(float(getattr(expense, "reimbursed_amount", 0.0)) + amount, 2)
+        if expense.reimbursed_amount + 0.005 >= expense.money_out:
+            expense.reimbursed_amount = round(expense.money_out, 2)
+            expense.reimburse = "done"
+        else:
+            expense.reimburse = "pending"
+        if source is not None:
+            source.reimburses = list(getattr(source, "reimburses", []) or []) + [{"fingerprint": expense.fingerprint, "amount": amount, "description": expense.description[:40]}]
+            source.matched_type = "reimbursement"
+            source.matched_target = ""
+            source.category = self.register_expense_category("Reimbursement") if hasattr(self, "register_expense_category") else "Reimbursement"
+            source.confidence = "manual"
+            source.needs_review = False
+            source.user_verified = True
+            if source.fingerprint in self.state.pending_income_confirmations:
+                self.state.pending_income_confirmations.remove(source.fingerprint)
+
+    def _show_reimburse_assign(self, incoming: list, on_done=None):
+        """Assign one incoming row (chips choose which, if several) to pending expenses."""
+        incoming = [t for t in incoming if t.direction() == "in" and t.money_in > 0]
+        if not incoming:
+            self._show_toast("Pick an incoming transaction to assign.", "info")
+            return
+        pend = self.pending_reimbursements()
+        if not pend:
+            self._show_toast("Nothing is marked as getting reimbursed. Right-click an expense → 'Getting reimbursed' first.", "info", 5000)
+            return
+        scrim, content, btn_row, step_var, close = self._overlay_card("THIS MONEY CAME BACK FOR…", 680, min(640, 320 + 44 * len(pend)))
+        st = {"src": incoming[0], "vars": {}}
+        head = tk.Frame(content, bg=UI_SURFACE)
+        head.pack(fill="x")
+        src_var = tk.StringVar()
+        tk.Label(head, textvariable=src_var, bg=UI_SURFACE, fg=UI_TEXT_BRIGHT, font=FONT_BODY_BOLD, wraplength=620, justify="left").pack(anchor="w")
+        if len(incoming) > 1:
+            chips = tk.Frame(head, bg=UI_SURFACE)
+            chips.pack(fill="x", pady=(SP_XS, 0))
+
+            def _pick(t_):
+                st["src"] = t_
+                _render()
+            for i, t_ in enumerate(incoming[:8]):
+                c = tk.Label(chips, text=f"+${t_.money_in:,.0f} {extract_merchant_name(t_.description)[:16]} {t_.tx_date:%d %b}", bg=UI_SURFACE2, fg=UI_TEXT,
+                             font=FONT_CAPTION_BOLD, padx=SP_SM, pady=3, cursor="hand2", highlightthickness=1, highlightbackground=UI_BORDER)
+                c.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 4), pady=2)
+                c.bind("<Button-1>", lambda _e, t_=t_: _pick(t_))
+        lst = tk.Frame(content, bg=UI_SURFACE)
+        lst.pack(fill="x", pady=(SP_SM, 0))
+        left_var = tk.StringVar()
+        tk.Label(content, textvariable=left_var, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(SP_XS, 0))
+        err = tk.StringVar()
+        tk.Label(content, textvariable=err, bg=UI_SURFACE, fg=UI_RUBY, font=FONT_CAPTION, wraplength=620, justify="left").pack(anchor="w")
+
+        def _recalc(*_a):
+            used = 0.0
+            for v in st["vars"].values():
+                x = self._parse_money_field(v.get()) if v.get().strip() else None
+                used += x or 0.0
+            rem = round(st["src"].money_in - used, 2)
+            left_var.set(f"${used:,.2f} assigned · ${rem:,.2f} of the incoming amount left" + ("" if rem >= -0.005 else "  — that's more than came in"))
+
+        def _render():
+            for w_ in lst.winfo_children():
+                w_.destroy()
+            src = st["src"]
+            src_var.set(f"+${src.money_in:,.2f} from {extract_merchant_name(src.description)} on {src.tx_date:%d %b} — which expenses does it cover?")
+            st["vars"] = {}
+            budget = src.money_in
+            for t_ in pend:
+                outstanding = round(t_.money_out - float(getattr(t_, "reimbursed_amount", 0.0)), 2)
+                row = tk.Frame(lst, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_SM, pady=SP_XS)
+                row.pack(fill="x", pady=(0, 3))
+                tk.Label(row, text=f"{extract_merchant_name(t_.description)[:28]} · {t_.tx_date:%d %b}", bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL_BOLD, width=30, anchor="w").pack(side="left")
+                tk.Label(row, text=f"${outstanding:,.2f} outstanding" + (f" of ${t_.money_out:,.2f}" if outstanding < t_.money_out - 0.005 else ""), bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left", padx=(SP_SM, 0))
+                take = round(min(outstanding, max(0.0, budget)), 2)
+                budget = round(budget - take, 2)
+                v = tk.StringVar(value=f"{take:.2f}" if take > 0 else "")
+                v.trace_add("write", _recalc)
+                st["vars"][t_.fingerprint] = v
+                tk.Label(row, text="$", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL_BOLD).pack(side="right", padx=(0, 2))
+                ttk.Entry(row, textvariable=v, width=9).pack(side="right")
+                tk.Label(row, text="$", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL_BOLD).pack(side="right")
+            _recalc()
+
+        def _apply():
+            src = st["src"]
+            plan = []
+            for t_ in pend:
+                v = st["vars"].get(t_.fingerprint)
+                if v is None or not v.get().strip():
+                    continue
+                x = self._parse_money_field(v.get())
+                if x is None or x < 0:
+                    err.set("Amounts must be numbers."); return
+                outstanding = round(t_.money_out - float(getattr(t_, "reimbursed_amount", 0.0)), 2)
+                if x > outstanding + 0.005:
+                    err.set(f"{extract_merchant_name(t_.description)[:20]}: only ${outstanding:,.2f} is outstanding."); return
+                if x > 0:
+                    plan.append((t_, round(x, 2)))
+            total = round(sum(x for _t, x in plan), 2)
+            if not plan:
+                err.set("Enter at least one amount."); return
+            if total > src.money_in + 0.005:
+                err.set(f"${total:,.2f} is more than the ${src.money_in:,.2f} that came in."); return
+            for t_, x in plan:
+                self._apply_reimbursement(t_, x, src)
+            close()
+            self.save_state()
+            self._log_engagement("reimburse")
+            try:
+                self.refresh_transactions_tab(); self.refresh_today_tab()
+            except Exception:
+                pass
+            done = sum(1 for t_, _x in plan if t_.reimburse == "done")
+            self._show_toast(f"${total:,.2f} assigned to {len(plan)} expense{'s' if len(plan) != 1 else ''}" + (f" — {done} fully reimbursed." if done else " — still partly outstanding."), "success", 4500)
+            if on_done:
+                on_done()
+
+        _render()
+        self._reimb_assign = {"state": st, "apply": _apply, "render": _render}
+        ttk.Button(btn_row, text="Cancel", style="Ghost.TButton", command=close).pack(side="left")
+        ttk.Button(btn_row, text="Assign  ✓", style="Primary.TButton", command=_apply).pack(side="right")
+
+    def _offer_reimbursement_match(self, batch: list):
+        pend = self.pending_reimbursements()
+        incoming = [t for t in batch if t.direction() == "in" and t.matched_type != "reimbursement"]
+        if not pend or not incoming:
+            return
+        self._show_toast(f"{len(incoming)} incoming row{'s' if len(incoming) != 1 else ''} landed and {len(pend)} expense{'s are' if len(pend) != 1 else ' is'} waiting on a reimbursement.",
+                         "info", 9000, action_label="Assign", action_cb=lambda inc=incoming: self._show_reimburse_assign(inc))
+
+    def _render_reimbursements(self):
+        host = getattr(self, "_reimb_host", None)
+        if host is None:
+            return
+        for w_ in host.winfo_children():
+            w_.destroy()
+        pend = self.pending_reimbursements()
+        if not pend:
+            host.pack_forget()
+            return
+        host.pack(fill="x", pady=(SP_SM, 0))
+        total = sum(t.money_out - float(getattr(t, "reimbursed_amount", 0.0)) for t in pend)
+        tk.Label(host, text=f"AWAITING REIMBURSEMENT · ${total:,.2f}", bg=UI_SURFACE, fg=UI_SAPPHIRE, font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_SM, SP_XS))
+        for t in pend[:6]:
+            outstanding = round(t.money_out - float(getattr(t, "reimbursed_amount", 0.0)), 2)
+            row = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_SM, pady=SP_XS)
+            row.pack(fill="x", pady=(0, SP_XS))
+            txt = f"{extract_merchant_name(t.description)[:30]} · {t.tx_date:%d %b} · ${outstanding:,.2f}" + (f" of ${t.money_out:,.2f} still to come" if outstanding < t.money_out - 0.005 else "")
+            tk.Label(row, text=txt, bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, anchor="w").pack(side="left", fill="x", expand=True)
+            ttk.Button(row, text="Dismiss", style="Ghost.TButton", command=lambda t=t: self._set_reimburse([t], "dismissed")).pack(side="right")
+            ttk.Button(row, text="Partial…", style="Secondary.TButton", command=lambda t=t: self._receive_partial(t)).pack(side="right", padx=(0, SP_XS))
+            ttk.Button(row, text="Received ✓", style="Secondary.TButton", command=lambda t=t: self._set_reimburse([t], "done")).pack(side="right", padx=(0, SP_XS))
+        tk.Label(host, text="When the money shows up on a statement, right-click that incoming row → 'This is a reimbursement for…' to link it (full or partial).",
+                 bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=700, justify="left").pack(anchor="w")
 
     def _build_rules_tab(self):
         frame = self.rules_tab
@@ -28156,6 +28417,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         self._last_commit = {"txs": batch, "pending_added": list(new_pending), "bills_paid": bills_paid,
                              "incomes_added": hist_pays, "when": datetime.now()}
         self._log_engagement("commit")
+        self.after(1500, lambda b=batch: self._offer_reimbursement_match(b))
         n_hist = sum(1 for t_ in batch if self._is_historical(t_))
         if n_hist:
             self.after(700, lambda b=batch: self._statement_setup_offer(b))
@@ -28599,6 +28861,20 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                       highlightbackground=UI_RUBY if is_flagged else UI_BORDER,
                       font=FONT_CAPTION_BOLD, padx=SP_SM, pady=2, cursor="hand2",
                       takefocus=0, command=_toggle_flag).pack(side="right")
+            is_reimb = bool(group_txs) and all(getattr(t_, "reimburse", "") == "pending" for t_ in group_txs)
+
+            def _toggle_reimb(txs=group_txs, now=is_reimb):
+                self._set_reimburse(txs, "" if now else "pending", quiet=True)
+                st["touched"] = True
+                if not now:
+                    self._show_toast("Marked as getting reimbursed — it stays on Today until the money comes back.", "info", 3500)
+                _render()
+            tk.Button(meta_row, text="↩ Getting reimbursed ✓" if is_reimb else "↩ Getting reimbursed",
+                      bg=UI_INFO_SOFT if is_reimb else UI_SURFACE2, fg=UI_SAPPHIRE if is_reimb else UI_MUTED,
+                      activebackground=UI_SURFACE_HOVER, activeforeground=UI_TEXT_BRIGHT, relief="flat", bd=0,
+                      highlightthickness=1, highlightbackground=UI_SAPPHIRE if is_reimb else UI_BORDER,
+                      font=FONT_CAPTION_BOLD, padx=SP_SM, pady=2, cursor="hand2", takefocus=0,
+                      command=_toggle_reimb).pack(side="right", padx=(0, SP_SM))
 
             if confident:
                 banner = tk.Frame(content, bg=UI_INFO_SOFT, padx=SP_MD, pady=SP_SM,
@@ -29824,7 +30100,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             tag = "matched" if tx.user_verified else "review" if tx.needs_review else "urgent"
             self.transaction_tree.insert("", tk.END, iid=str(idx), values=(
                 tx.tx_date.isoformat(),
-                tx.description[:40],
+                tx_desc_cell(tx),
                 f"${tx.amount():,.2f}",
                 tx.direction(),
                 tx.matched_type,
@@ -29852,7 +30128,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 continue
             self.tx_history_tree.insert("", tk.END, iid=str(idx), values=(
                 tx.tx_date.isoformat(),
-                ("🚩 " if getattr(tx, "flagged", False) else "") + tx.description[:40],
+                tx_desc_cell(tx),
                 f"${tx.amount():,.2f}",
                 tx.matched_type,
                 tx.matched_target,

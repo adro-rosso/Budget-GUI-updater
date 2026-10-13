@@ -173,6 +173,15 @@ app.state.incomes.append(bg.IncomeEntry(2400.0, _t - _td(days=38), "Acme")); app
 app._show_statement_setup(); app.update(); sc = scrims(app)[-1]; audit(sc, "statement-setup"); btn(sc, "Done")[0].invoke(); app.update()
 
 from datetime import date as _d2, timedelta as _td2
+from datetime import date as _d2, timedelta as _td2
+# Reimbursement assign overlay + Today card
+_pe = bg.TransactionRecord(tx_date=_d2.today(), description="THE RIVER BISTRO", money_out=140.0, category="Food", fingerprint="re1", user_verified=True, needs_review=False, matched_type="discretionary")
+_pe.reimburse = "pending"; app.state.transactions.append(_pe)
+_inc = [bg.TransactionRecord(tx_date=_d2.today(), description=f"TRANSFER FROM {n_}", money_in=50.0 + i, fingerprint=f"ri{i}") for i, n_ in enumerate(("SAM", "ALEX", "JO"))]
+app._show_reimburse_assign(_inc); app.update(); sc = scrims(app)[-1]; audit(sc, "reimburse-assign"); btn(sc, "Cancel")[0].invoke(); app.update()
+app._show_page("today"); app.refresh_today_tab(); app.update(); audit(app.today_tab, "page:today+reimb")
+app.state.transactions.remove(_pe)
+
 # Split editor (two transactions)
 _sp = [bg.TransactionRecord(tx_date=_d2.today(), description="KMART 1234", money_out=85.0, category="General", fingerprint="sp1", user_verified=True, needs_review=False, matched_type="discretionary"),
        bg.TransactionRecord(tx_date=_d2.today(), description="WOOLWORTHS 99", money_out=42.5, category="Groceries", fingerprint="sp2", user_verified=True, needs_review=False, matched_type="discretionary")]
