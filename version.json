@@ -1,10 +1,15 @@
 {
-  "version": "1.0.16",
+  "version": "1.0.17",
   "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.16/BudgetPlanner.exe",
-  "sha256": "c02c4394b89698831dd47fd2595d109a1d1a172857085cf1a51ca694e88c3b38",
-  "notes": "A quieter, more professional look: one hairline border on every card (no coloured outlines), no decorative accent bars, a flat slimmer top bar, a title-only navigation rail that fits a laptop screen, neutral badges, plain table rows and pills, and Plan rows with a tidy \u22ef menu for Edit and Remove. Nothing was removed.",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.17/BudgetPlanner.exe",
+  "sha256": "88e1b574ede44b9e7c2dc866fb592383c223722e3f57aa16008ba7c6e00bc49c",
+  "notes": "Three small frictions fixed: every date field now takes '27/10', '15 Nov', '28th' and the like (not only full dates), including the Analysis custom range; the Plan header shows an Undo link for two minutes after you remove a row; and the Bills table's Priority and Frequency are one readable 'fortnightly \u00b7 essential' column.",
   "history": [
+    {
+      "version": "1.0.17",
+      "date": "2026-10-13",
+      "notes": "Three small frictions fixed: every date field now takes '27/10', '15 Nov', '28th' and the like (not only full dates), including the Analysis custom range; the Plan header shows an Undo link for two minutes after you remove a row; and the Bills table's Priority and Frequency are one readable 'fortnightly \u00b7 essential' column."
+    },
     {
       "version": "1.0.16",
       "date": "2026-10-13",

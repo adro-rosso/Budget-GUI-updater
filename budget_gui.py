@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.16"
+APP_VERSION = "1.0.17"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -19753,6 +19753,9 @@ class BudgetApp(tk.Tk):
         ttk.Button(bulk, text="Pay all due this week", style="Ghost.TButton", command=self._plan_pay_due_this_week).pack(side="left")
         ttk.Button(bulk, text="Add $ to several savings…", style="Ghost.TButton", command=self._show_bulk_contribute).pack(side="left", padx=(SP_SM, 0))
         ttk.Button(bulk, text="Savings challenges…", style="Ghost.TButton", command=self._show_savings_challenges).pack(side="left", padx=(SP_SM, 0))
+        self._plan_undo_lbl = tk.Label(bulk, text="", bg=UI_BG, fg=UI_ACCENT_BRIGHT, font=FONT_CAPTION_BOLD, cursor="hand2")
+        self._plan_undo_lbl.pack(side="right")
+        self._plan_undo_lbl.bind("<Button-1>", lambda _e: self._plan_undo_last_remove())
         self._plan_host = tk.Frame(frame, bg=UI_BG)
         self._plan_host.grid(row=1, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_XL))
         self._plan_host.columnconfigure(0, weight=1)
@@ -19915,7 +19918,9 @@ class BudgetApp(tk.Tk):
                 self.save_state()
                 self.refresh_all_views()
                 self._show_toast(f"{obj.name} restored.", "info", 2500)
+            self._plan_last_removed = {"obj": obj, "coll": coll, "undo": _undo, "at": time_module.time()}
             self._show_toast(f"Removed {obj.name}.", "success", duration=6000, action_label="Undo", action_cb=_undo)
+            self._render_plan_undo()
         more = tk.Menubutton(acts, text="⋯", bg=UI_SURFACE, fg=UI_MUTED, activebackground=UI_SURFACE_HOVER, activeforeground=UI_TEXT,
                              relief="flat", bd=0, highlightthickness=0, font=FONT_BODY_BOLD, padx=SP_SM, cursor="hand2", takefocus=0)
         menu = tk.Menu(more, tearoff=0, bg=UI_SURFACE2, fg=UI_TEXT, activebackground=UI_SURFACE3, activeforeground=UI_TEXT_BRIGHT, bd=0)
@@ -19927,12 +19932,32 @@ class BudgetApp(tk.Tk):
             self._plan_menus = {}
         self._plan_menus[(kind, idx)] = menu
 
+    def _render_plan_undo(self):
+        """'↶ Undo: X removed' in the Plan header for two minutes after a removal."""
+        lbl = getattr(self, "_plan_undo_lbl", None)
+        if lbl is None:
+            return
+        last = getattr(self, "_plan_last_removed", None)
+        if last and last["obj"] not in last["coll"] and time_module.time() - last["at"] < 120:
+            lbl.configure(text=f"↶ Undo: {last['obj'].name} removed")
+            self._debounce_after("plan_undo_expire", 121000, self._render_plan_undo)
+        else:
+            lbl.configure(text="")
+
+    def _plan_undo_last_remove(self):
+        last = getattr(self, "_plan_last_removed", None)
+        if last and last["obj"] not in last["coll"]:
+            last["undo"]()
+        self._plan_last_removed = None
+        self._render_plan_undo()
+
     def refresh_plan_tab(self):
         self.game_engine.sync_challenge_funds()
         host = getattr(self, "_plan_host", None)
         if host is None:
             return
         self._plan_menus = {}
+        self._render_plan_undo()
         for w_ in host.winfo_children():
             w_.destroy()
 
@@ -22141,12 +22166,10 @@ class BudgetApp(tk.Tk):
         tk.Label(content, textvariable=err, bg=UI_SURFACE, fg=UI_RUBY, font=FONT_CAPTION).pack(anchor="w", pady=(SP_SM, 0))
 
         def _apply():
-            a = self._parse_date_text(fe.get()) if hasattr(self, "_parse_date_text") else None
-            b = self._parse_date_text(te.get()) if hasattr(self, "_parse_date_text") else None
-            try:
-                a = a or date.fromisoformat(fe.get().strip()); b = b or date.fromisoformat(te.get().strip())
-            except ValueError:
-                err.set("Dates like 2026-07-01 (or pick a chip)."); return
+            a = self._parse_smart_date(fe.get())
+            b = self._parse_smart_date(te.get())
+            if a is None or b is None:
+                err.set("Dates like 1/7/2026, '1 Jul' or 'last monday' (or pick a chip)."); return
             if b < a:
                 a, b = b, a
             self._review_custom = (a, b)
@@ -24158,12 +24181,12 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         box.grid(row=1, column=0, sticky="nsew")
         box.rowconfigure(0, weight=1)
         box.columnconfigure(0, weight=1)
-        self.bill_tree = ttk.Treeview(box, columns=("amount", "due", "priority", "freq", "saved", "per_pay"),
+        self.bill_tree = ttk.Treeview(box, columns=("amount", "due", "cycle", "saved", "per_pay"),
                                        show="tree headings")
         self.bill_tree.heading("#0", text="Bill")
         self.bill_tree.column("#0", width=140, minwidth=80)
-        for c, t, w in [("amount", "Amount", 80), ("due", "Due Date", 180), ("priority", "Priority", 65),
-                         ("freq", "Frequency", 80), ("saved", "Saved", 120), ("per_pay", "Rec. / Pay", 80)]:
+        for c, t, w in [("amount", "Amount", 80), ("due", "Due Date", 170), ("cycle", "Every · priority", 150),
+                         ("saved", "Saved", 120), ("per_pay", "Rec. / Pay", 80)]:
             self.bill_tree.heading(c, text=t)
             self.bill_tree.column(c, width=w, minwidth=60)
         self.bill_tree.grid(row=0, column=0, sticky="nsew")
@@ -30900,11 +30923,53 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             return datetime.strptime(s, "%Y-%m-%d").date()
         except ValueError:
             pass
-        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y"):
+        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y", "%d.%m.%Y", "%d.%m.%y",
+                    "%d %b %Y", "%d %B %Y", "%d %b %y", "%d-%b-%Y", "%d %b, %Y", "%b %d %Y", "%B %d %Y"):
             try:
                 return datetime.strptime(s, fmt).date()
             except ValueError:
                 continue
+        today = date.today()
+        m = re.fullmatch(r"(\d{1,2})(?:st|nd|rd|th)?", s, re.I)
+        if m:
+            # a bare day: this month if still ahead, otherwise next month
+            d = int(m.group(1))
+            try:
+                cand = today.replace(day=d)
+            except ValueError:
+                cand = None
+            if cand is not None and cand >= today:
+                return cand
+            nxt = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+            try:
+                return nxt.replace(day=d)
+            except ValueError:
+                return None
+        m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})", s)
+        if m:
+            # day/month without a year: the next time that date comes around
+            d, mo = int(m.group(1)), int(m.group(2))
+            for y in (today.year, today.year + 1):
+                try:
+                    cand = date(y, mo, d)
+                except ValueError:
+                    continue
+                if cand >= today:
+                    return cand
+            return None
+        for fmt in ("%d %b", "%d %B", "%b %d", "%B %d", "%d-%b"):
+            try:
+                dt = datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+            for y in (today.year, today.year + 1):
+                try:
+                    cand = dt.replace(year=y)
+                except ValueError:
+                    continue
+                if cand >= today:
+                    return cand
+            return None
         if not hasattr(self, "gerald_assistant"):
             try:
                 self.gerald_assistant = GeraldAssistant(self)
@@ -30937,7 +31002,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         for idx, bill in sorted(enumerate(self.state.bills), key=lambda x: x[1].due_date):
             days = (bill.due_date - date.today()).days
             tag = "overdue" if days < 0 else "urgent" if days <= self.engine.current_cycle_days() else "good"
-            self.bill_tree.insert("", tk.END, iid=str(idx), text=self._label_with_icon(bill.name), values=(("amount?" if getattr(bill, "amount_pending", "") else f"${bill.amount:,.2f}"), self._format_date_with_relative(bill.due_date), self._priority_pill(bill.priority), self._frequency_pill(bill.frequency), f"${bill.current_saved:,.0f} {self._progress_bar(bill.current_saved, bill.amount)}", f"${self.engine.bill_recommended_allocation(bill):,.2f}"), tags=(tag,))
+            self.bill_tree.insert("", tk.END, iid=str(idx), text=self._label_with_icon(bill.name), values=(("amount?" if getattr(bill, "amount_pending", "") else f"${bill.amount:,.2f}"), self._format_date_with_relative(bill.due_date), f"{bill.frequency} · {bill.priority}", f"${bill.current_saved:,.0f} {self._progress_bar(bill.current_saved, bill.amount)}", f"${self.engine.bill_recommended_allocation(bill):,.2f}"), tags=(tag,))
         self._restripe_tree(self.bill_tree)
         self._toggle_tree_empty_state(self.bill_tree)
 
