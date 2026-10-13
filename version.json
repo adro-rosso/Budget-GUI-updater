@@ -1,10 +1,15 @@
 {
-  "version": "1.0.18",
+  "version": "1.0.19",
   "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.18/BudgetPlanner.exe",
-  "sha256": "20fc3a9a583fc1af096772f4b032693e1df7fd7fdf0c102d957ffe064ec5beab",
-  "notes": "A new beginning: no plan needed. First run is two cards (how you're paid, bring in a statement). Today shows where your money goes \u2014 income to bills, categories and what's left \u2014 learns your typical week from your statements, spots regular charges and asks 'is this a bill?' with one click, and tells you how much of each pay is free to put aside. Analysis gains 'Typical week & big weeks'. The full money plan, set-asides and goals are still there, now optional.",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.19/BudgetPlanner.exe",
+  "sha256": "9c3163a0266b43052cfff8b174ffc89b37e28f31c41f7534f064dced51cdb064",
+  "notes": "The app now learns how to split your pay: Today shows 'hold $X for bills \u00b7 keep $Y for a normal fortnight \u00b7 $Z to savings' from what you actually do (click to copy), how this week compares with your typical week and which category is running hot, and what's truly free after a normal rest of cycle. Analysis can set your target mix from your typical shares. Gerald answers 'what's my typical week' and 'is this a big week'. A reminder lands at six and ten weeks of data.",
   "history": [
+    {
+      "version": "1.0.19",
+      "date": "2026-10-13",
+      "notes": "The app now learns how to split your pay: Today shows 'hold $X for bills \u00b7 keep $Y for a normal fortnight \u00b7 $Z to savings' from what you actually do (click to copy), how this week compares with your typical week and which category is running hot, and what's truly free after a normal rest of cycle. Analysis can set your target mix from your typical shares. Gerald answers 'what's my typical week' and 'is this a big week'. A reminder lands at six and ten weeks of data."
+    },
     {
       "version": "1.0.18",
       "date": "2026-10-13",

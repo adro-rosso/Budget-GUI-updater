@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.18"
+APP_VERSION = "1.0.19"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -7957,6 +7957,66 @@ class InsightEngine:
         return {"pay": pay, "bills": bills, "spend": spend, "could_save": could,
                 "weeks": self.typical_week(today=today)["weeks"]}
 
+    def learned_split(self, pay: Optional[float] = None, today: Optional[date] = None) -> Optional[dict]:
+        """How a pay should be split, from what actually happens: confirmed bills per cycle,
+        a normal cycle of spending plus 10%, and the rest to savings. None until 3 weeks of data."""
+        spend = self.typical_cycle_spend(today)
+        if spend <= 0:
+            return None
+        rhythm = self.income_rhythm(today)
+        pay = float(pay) if pay else (float(rhythm["typical"]) if rhythm else float(self.state.income_baseline or 0.0))
+        bills = self.bills_per_cycle()
+        everyday = round(spend * 1.1, 2)
+        savings = round(max(0.0, pay - bills - everyday), 2) if pay > 0 else 0.0
+        short = round(max(0.0, bills + everyday - pay), 2) if pay > 0 else 0.0
+        return {"pay": round(pay, 2), "bills": bills, "spend": spend, "everyday": everyday, "savings": savings,
+                "short": short, "weeks": self.typical_week(today=today)["weeks"]}
+
+    def suggested_mix(self, today: Optional[date] = None) -> Optional[dict]:
+        """Target-mix percentages from the typical week (median shares, up to 8 categories)."""
+        tw = self.typical_week(today=today)
+        rows = [(c, b["typical"]) for c, b in tw["rows"]][:8]
+        total = sum(v for _, v in rows)
+        if len(rows) < 2 or total <= 0:
+            return None
+        pcts = [round(v / total * 100.0, 1) for _, v in rows]
+        pcts[0] = round(pcts[0] + (100.0 - sum(pcts)), 1)
+        return {"rows": [(c, p) for (c, _), p in zip(rows, pcts)], "weeks": tw["weeks"]}
+
+    def week_so_far(self, today: Optional[date] = None) -> Optional[dict]:
+        """This week (Monday to today) against the typical week; `hot` = categories running ahead."""
+        today = today or date.today()
+        tw = self.typical_week(today=today)
+        if tw["weeks"] < 3 or tw["total"] <= 0:
+            return None
+        ws = self.week_start(today)
+        spent: Dict[str, float] = {}
+        total = 0.0
+        for d, cat, amt, is_bill in self._spend_rows():
+            if is_bill or d < ws or d > today:
+                continue
+            spent[cat] = spent.get(cat, 0.0) + amt
+            total += amt
+        days = today.weekday() + 1
+        frac = days / 7.0
+        expected = tw["total"] * frac
+        hot = []
+        for cat, b in tw["rows"]:
+            s = spent.get(cat, 0.0)
+            if s > b["typical"] * max(frac, 0.5) * 1.3 and s > 20:
+                hot.append((cat, round(s, 2), b["typical"]))
+        hot.sort(key=lambda x: -(x[1] - x[2]))
+        return {"spent": round(total, 2), "typical": tw["total"], "expected": round(expected, 2), "days": days,
+                "hot": hot, "over": total > tw["total"] * 1.05, "ahead": total > expected * 1.2 and total > 20,
+                "by_category": spent}
+
+    def reserve_for_days(self, days_left: int, today: Optional[date] = None) -> float:
+        """What a normal run of `days_left` days costs — the soft envelope Safe to Spend should keep back."""
+        tw = self.typical_week(today=today)
+        if tw["weeks"] < 3:
+            return 0.0
+        return round(tw["total"] * max(0, int(days_left)) / 7.0, 2)
+
     def money_flow(self, start: date, end: date) -> dict:
         """Income → bills · spending by category · saved, over a window (inclusive)."""
         income = sum(float(i.amount) for i in self.state.incomes if start <= i.received_on <= end)
@@ -8843,6 +8903,8 @@ class GeraldAssistant:
         if intent == "unmute_alerts": return self._handle_mute_alerts(False)
         if intent == "setup_wizard":  return self._handle_setup_wizard()
         if intent == "bill_interview": return self._handle_bill_interview()
+        if intent == "typical_week":  return self._handle_typical_week(text)
+        if intent == "big_week":      return self._handle_big_week(text)
         if intent == "alias_add":     return self._handle_alias_add(text)
         if intent == "alias_list":    return self._handle_alias_list()
         if intent == "alias_remove":  return self._handle_alias_remove(text)
@@ -8955,6 +9017,15 @@ class GeraldAssistant:
             return "mute_alerts"
         if re.search(r"\b(alerts?\s+on|unmute|start (?:alert|nagging)|speak up)\b", lower):
             return "unmute_alerts"
+        # Learned spending — "what's my typical week", "how much do I usually spend on groceries",
+        # "is this a big week", "am I overspending this week"
+        if re.search(r"\b(typical|usual|normal|average)\b.*\b(week|spend|spending|groceries|fuel|food|cost)\b", lower) or \
+                re.search(r"\bhow much do i (?:usually|normally|typically|generally) spend\b", lower):
+            return "typical_week"
+        if re.search(r"\b(is this|is it|am i having)\b.*\b(big|expensive|bad|heavy)\b.*\bweek\b", lower) or \
+                re.search(r"\bhow(?:'s| is| are) (?:this|my|the) week\b", lower) or \
+                re.search(r"\bam i (?:over ?spending|ahead|behind|on track)\b", lower) or re.search(r"\bbig week\b", lower):
+            return "big_week"
         # Bill interview — "find my bills", "ask me what I pay for", "what bills do I have"
         if re.search(r"\b(find|discover|work out|figure out|go through|identify|hunt)\s+(?:all\s+)?(?:my|the|our)?\s*(?:regular\s+|monthly\s+)?(?:bills?|subscriptions?|payments)\b", lower) or \
                 re.search(r"\bask me (?:about|what)\b.*\b(bills?|pay for|subscriptions?)\b", lower) or \
@@ -11563,6 +11634,36 @@ class GeraldAssistant:
         except Exception:
             pass
         return ("Now we're talking. Pick the promise and the stake — keep it and I pay double.", "wink")
+
+    def _handle_typical_week(self, text: str):
+        eng = InsightEngine(self.app.state)
+        tw = eng.typical_week()
+        if not tw["rows"]:
+            return (eng.learning_line(), "thinking")
+        lower = text.lower()
+        for cat, b in tw["rows"]:
+            if cat.lower() in lower:
+                tr = ""
+                if b["trend"] is not None and abs(b["trend"]) >= 5:
+                    tr = f", {'up' if b['trend'] > 0 else 'down'} {abs(b['trend'])}% on the month before"
+                ol = f" {len(b['outliers'])} big week{'s' if len(b['outliers']) != 1 else ''} in the last 12 (latest w/c {b['outliers'][-1][0]:%d %b}, ${b['outliers'][-1][1]:,.0f})." if b["outliers"] else ""
+                return (f"{cat}: about ${b['typical']:,.0f} a week, usually ${b['low']:,.0f}–${b['high']:,.0f}{tr}.{ol}", "normal")
+        parts = ", ".join(f"{c} ~${b['typical']:,.0f}" for c, b in tw["rows"][:5])
+        return (f"A normal week costs you about ${tw['total']:,.0f} (usually ${tw['low']:,.0f}–${tw['high']:,.0f}): {parts}. {eng.learning_line()}", "normal")
+
+    def _handle_big_week(self, text: str):
+        eng = InsightEngine(self.app.state)
+        w = eng.week_so_far()
+        if not w:
+            return (eng.learning_line(), "thinking")
+        if w["spent"] <= 0:
+            return (f"Nothing spent yet this week. A typical week is about ${w['typical']:,.0f}.", "happy")
+        hot = f" {w['hot'][0][0]} is the one running hot: ${w['hot'][0][1]:,.0f} of a usual ~${w['hot'][0][2]:,.0f}." if w["hot"] else ""
+        if w["over"]:
+            return (f"Yes — ${w['spent']:,.0f} so far, past a typical week (~${w['typical']:,.0f}) with {7 - w['days']} day{'s' if 7 - w['days'] != 1 else ''} to go.{hot}", "shocked")
+        if w["ahead"]:
+            return (f"Running ahead: ${w['spent']:,.0f} by day {w['days']}, where a typical week would be ~${w['expected']:,.0f} by now.{hot}", "thinking")
+        return (f"Looks normal: ${w['spent']:,.0f} by day {w['days']} against ~${w['expected']:,.0f} for a typical week at this point.{hot}", "happy")
 
     def _handle_bill_interview(self):
         try:
@@ -16437,6 +16538,8 @@ class BudgetApp(tk.Tk):
         right_top.columnconfigure(0, weight=1)
         tk.Label(right_top, text="Actual vs Target Mix", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING, padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
+        ttk.Button(right_top, text="Use my typical shares", style="Ghost.TButton",
+                   command=self._use_suggested_mix).grid(row=0, column=1, sticky="e", padx=(0, SP_MD))
         mix_inner = tk.Frame(right_top, bg=UI_SURFACE)
         mix_inner.grid(row=1, column=0, sticky="nsew", padx=SP_LG, pady=(0, SP_LG))
         mix_inner.rowconfigure(0, weight=1)
@@ -18112,9 +18215,17 @@ class BudgetApp(tk.Tk):
         self._tween_number(self.today_safe_to_spend_var,
                             _safe_val,
                             lambda v: f"${v:,.2f}", key="today_safe")
-        self._tween_number(self.today_daily_pace_var,
-                            float(pace["safe_per_day"]),
-                            lambda v: f"${v:,.2f} / day", key="today_pace")
+        _pace_val = float(pace["safe_per_day"])
+        _pace_fmt = (lambda v: f"${v:,.2f} / day")
+        if _pace_val <= 0:
+            try:
+                _tw = InsightEngine(self.state).typical_week()
+                if _tw["weeks"] >= 3 and _tw["total"] > 0:
+                    _pace_val = round(_tw["total"] / 7.0, 2)
+                    _pace_fmt = (lambda v: f"~${v:,.0f} / day")
+            except Exception:
+                pass
+        self._tween_number(self.today_daily_pace_var, _pace_val, _pace_fmt, key="today_pace")
         self.today_pending_reviews_var.set(f"{pending_review} to review")
         self.today_workflow_summary_var.set(self._format_transaction_workflow_summary())
 
@@ -18125,8 +18236,13 @@ class BudgetApp(tk.Tk):
         remaining = max(0.0, safe - spent)
         if safe > 0 and days_left > 0:
             pct_used = (spent / safe) * 100 if safe > 0 else 0
+            try:
+                _res = InsightEngine(self.state).reserve_for_days(days_left)
+            except Exception:
+                _res = 0.0
+            _env = f" · ~${_res:,.0f} for a normal {days_left}d → ${max(0.0, remaining - _res):,.0f} truly free" if _res > 0 else ""
             self.today_velocity_var.set(
-                f"{days_left}d left · ${remaining:,.0f} of ${safe:,.0f} remaining · {pace['status']}"
+                f"{days_left}d left · ${remaining:,.0f} of ${safe:,.0f} remaining · {pace['status']}{_env}"
             )
         elif _track_only:
             self.today_velocity_var.set(f"in ${_fl['income']:,.0f} · out ${_fl['out']:,.0f} over the last 30 days"
@@ -24314,6 +24430,34 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         st["finish"] = _finish
         _render()
 
+    def _use_suggested_mix(self):
+        """Seed the target mix from the typical week's shares (undoable)."""
+        mix = InsightEngine(self.state).suggested_mix()
+        if not mix:
+            self._show_toast(InsightEngine(self.state).learning_line(), "info", 4000)
+            return
+        prev = (list(self.state.expense_target_order), list(self.state.expense_target_pct), bool(self.state.target_is_locked))
+        self.state.expense_target_order = [c for c, _ in mix["rows"]]
+        self.state.expense_target_pct = [float(p) for _, p in mix["rows"]]
+        self.state.target_is_locked = False
+        self.save_state()
+        try:
+            self.refresh_score_target_pie()
+        except Exception:
+            pass
+        self.refresh_all_views()
+
+        def _undo():
+            self.state.expense_target_order, self.state.expense_target_pct, self.state.target_is_locked = prev
+            self.save_state()
+            try:
+                self.refresh_score_target_pie()
+            except Exception:
+                pass
+            self.refresh_all_views()
+        self._show_toast("Target mix set from your typical week (" + ", ".join(f"{c} {p:.0f}%" for c, p in mix["rows"][:4]) + "…). Submit it on the Score tab when you're happy.",
+                         "success", duration=7000, action_label="Undo", action_cb=_undo)
+
     def _expand_recurring(self):
         host = getattr(self, "_recurring_host", None)
         if host is not None and host.winfo_manager():
@@ -24478,16 +24622,55 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             b = big[-1]
             tk.Label(line, text=f"Big week: w/c {b['week']:%d %b} was ${b['total']:,.0f} against a typical ${b['typical']:,.0f} — {b['driver']} ${b['driver_amount']:,.0f}.",
                      bg=UI_SURFACE2, fg=UI_GOLD, font=FONT_CAPTION, wraplength=700, justify="left").pack(anchor="w")
+        wsf = eng.week_so_far()
+        self._week_so_far_text = ""
+        if wsf and wsf["spent"] > 0:
+            if wsf["over"]:
+                txt, col = f"This week so far: ${wsf['spent']:,.0f} — already past a typical week (~${wsf['typical']:,.0f}).", UI_RUBY
+            elif wsf["ahead"]:
+                txt, col = f"This week so far: ${wsf['spent']:,.0f} by day {wsf['days']} — ahead of a typical week's pace (~${wsf['expected']:,.0f} by now).", UI_GOLD
+            else:
+                txt, col = f"This week so far: ${wsf['spent']:,.0f} by day {wsf['days']} — on track for a typical week (~${wsf['typical']:,.0f}).", UI_EMERALD
+            if wsf["hot"]:
+                hc, hs, ht = wsf["hot"][0]
+                txt += f" {hc} is running hot: ${hs:,.0f} of ~${ht:,.0f}."
+            tk.Label(line, text=txt, bg=UI_SURFACE2, fg=col, font=FONT_CAPTION, wraplength=700, justify="left").pack(anchor="w")
+            self._week_so_far_text = txt
         tk.Label(line, text=eng.learning_line(), bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=700, justify="left").pack(anchor="w")
-        pic = eng.savings_picture()
-        if pic["could_save"] is not None and pic["could_save"] > 0:
-            cyc = {"weekly": "week", "fortnightly": "fortnight", "monthly": "month"}.get(self.state.pay_frequency, "pay")
-            save_row = tk.Frame(card, bg=UI_SURFACE2)
-            save_row.pack(fill="x", pady=(SP_XS, 0))
-            tk.Label(save_row, text=f"After bills and a typical {cyc} of spending, about ${pic['could_save']:,.0f} of each pay is free to save.",
-                     bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_SMALL_BOLD, wraplength=560, justify="left").pack(side="left")
-            ttk.Button(save_row, text=f"Put ${pic['could_save']:,.0f} aside", style="Secondary.TButton",
-                       command=lambda a=pic["could_save"]: self._put_aside(a)).pack(side="right")
+        cyc = {"weekly": "week", "fortnightly": "fortnight", "monthly": "month"}.get(self.state.pay_frequency, "pay")
+        split = eng.learned_split()
+        self._learned_split_last = split
+        if split and split["pay"] > 0:
+            srow = tk.Frame(card, bg=UI_SURFACE2)
+            srow.pack(fill="x", pady=(SP_XS, 0))
+            tk.Label(srow, text=f"Each ${split['pay']:,.0f} pay, from what you actually do:", bg=UI_SURFACE2, fg=UI_TEXT,
+                     font=FONT_SMALL_BOLD).pack(side="left")
+            chips = [(f"hold ${split['bills']:,.0f} for bills", split["bills"], "bills", UI_RUBY),
+                     (f"keep ${split['everyday']:,.0f} for a normal {cyc}", split["everyday"], self._account_label("spending"), UI_SAPPHIRE),
+                     (f"${split['savings']:,.0f} to savings", split["savings"], "savings", UI_EMERALD)]
+            for n, (label, amt, name, color) in enumerate(chips):
+                if n:
+                    tk.Label(srow, text="·", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_SMALL).pack(side="left", padx=SP_XS)
+                ch = tk.Label(srow, text=label, bg=UI_SURFACE2, fg=color, font=FONT_SMALL_BOLD, cursor="hand2")
+                ch.pack(side="left")
+                ch.bind("<Button-1>", lambda _e, a=amt, nm=name: self._copy_amount_to_clipboard(a, nm))
+            if split["short"] > 0:
+                tk.Label(srow, text=f"  (short by ${split['short']:,.0f} — a normal {cyc} costs more than this pay leaves)", bg=UI_SURFACE2,
+                         fg=UI_RUBY, font=FONT_CAPTION).pack(side="left")
+            if split["savings"] > 0:
+                ttk.Button(srow, text=f"Put ${split['savings']:,.0f} aside", style="Secondary.TButton",
+                           command=lambda a=split["savings"]: self._put_aside(a)).pack(side="right")
+            tk.Label(card, text="Click an amount to copy it for your bank app. Bills from the ones you've confirmed; the rest from your typical week.",
+                     bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_MICRO, wraplength=700, justify="left").pack(anchor="w")
+        else:
+            pic = eng.savings_picture()
+            if pic["could_save"] is not None and pic["could_save"] > 0:
+                save_row = tk.Frame(card, bg=UI_SURFACE2)
+                save_row.pack(fill="x", pady=(SP_XS, 0))
+                tk.Label(save_row, text=f"After bills and a typical {cyc} of spending, about ${pic['could_save']:,.0f} of each pay is free to save.",
+                         bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_SMALL_BOLD, wraplength=560, justify="left").pack(side="left")
+                ttk.Button(save_row, text=f"Put ${pic['could_save']:,.0f} aside", style="Secondary.TButton",
+                           command=lambda a=pic["could_save"]: self._put_aside(a)).pack(side="right")
         self._flow_last = flow
 
     def _savings_pot(self) -> Goal:
@@ -29114,6 +29297,20 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             elif any(v > 0 for v in now.values()):
                 tk.Label(content, text="Everything already sits where it should — nothing to move.", bg=UI_SURFACE,
                          fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(SP_SM, 0))
+            try:
+                _split = InsightEngine(self.state).learned_split(_money(wz["income"]) or None)
+            except Exception:
+                _split = None
+            if _split:
+                _cyc = {"weekly": "week", "fortnightly": "fortnight", "monthly": "month"}.get(wz["freq"].get(), "fortnight")
+                lb = tk.Frame(content, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM, highlightthickness=1, highlightbackground=UI_BORDER)
+                lb.pack(fill="x", pady=(SP_SM, 0))
+                tk.Label(lb, text="FROM YOUR STATEMENTS", bg=UI_SURFACE2, fg=UI_SAPPHIRE, font=FONT_CAPTION_BOLD).pack(anchor="w")
+                tk.Label(lb, text=(f"A normal {_cyc} of spending is about ${_split['spend']:,.0f} (learned from {_split['weeks']} weeks). "
+                                   f"After each pay keep at least ${_split['everyday']:,.0f} in {wz['acct']['spending'].get().strip() or 'Everyday'}; "
+                                   f"bills need ${_split['bills']:,.0f}; that leaves about ${_split['savings']:,.0f} to save."
+                                   + (f" Heads up: that's ${_split['short']:,.0f} more than a pay covers." if _split["short"] > 0 else "")),
+                         bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_SMALL, wraplength=wrap_w - 40, justify="left").pack(anchor="w", pady=(2, 0))
             tk.Label(content, text=f"Safe to Spend starts at ${bal['spending']:,.2f}.", bg=UI_SURFACE,
                      fg=UI_EMERALD, font=FONT_BODY_BOLD).pack(anchor="w", pady=(SP_SM, 0))
 
@@ -32985,6 +33182,17 @@ def _reminder_messages(state: "AppState", now: datetime) -> List[tuple]:
         _due = [l for l in state.bank_links if _d >= int(l.get('every_days', 14) or 14)]
         if _due and _d > 0:
             out.append(("statement", "Statement time", (f"Last import {_d} days ago. " if _d < 999 else "") + f"Open {_due[0].get('name', 'your bank')} from the Statements tab — the app catches the download."))
+    if now.hour >= 9 and today.weekday() == 0:
+        try:
+            _lvl = InsightEngine(state).data_level(today)
+            if _lvl["weeks"] == 6:
+                out.append(("learn:6", "Six weeks in — your typical week is ready",
+                            "Today now shows what a normal week costs you and where it goes; Analysis has it per category."))
+            elif _lvl["weeks"] == 10:
+                out.append(("learn:10", "Ten weeks in — the picture is solid",
+                            "Your typical week, big weeks and the per-pay split now rest on a solid run of statements."))
+        except Exception:
+            pass
     if now.hour >= 8 and today.day <= 3:
         last_prev = today.replace(day=1) - timedelta(days=1)
         ym = last_prev.strftime("%Y-%m")
