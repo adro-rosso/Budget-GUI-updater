@@ -1,10 +1,15 @@
 {
-  "version": "1.0.12",
+  "version": "1.0.13",
   "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.12/BudgetPlanner.exe",
-  "sha256": "76457a4c48f225588242556563f220b8c24087dd4b53926fa9369672fdf192fd",
-  "notes": "Reimbursements: mark an expense 'getting reimbursed', see it on Today until the money comes back, and assign any incoming amount to it in full or in part \u2014 spending nets off automatically",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.13/BudgetPlanner.exe",
+  "sha256": "bbda468e58feeb97e769419d56f17437757efaaef4d9ad2a7a87206130b30ab4",
+  "notes": "Money plan wizard: the transfer step now lists all four accounts, with empty ones explained instead of hidden",
   "history": [
+    {
+      "version": "1.0.13",
+      "date": "2026-10-13",
+      "notes": "Money plan wizard: the transfer step now lists all four accounts, with empty ones explained instead of hidden"
+    },
     {
       "version": "1.0.12",
       "date": "2026-10-13",
