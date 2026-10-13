@@ -172,6 +172,13 @@ for n_, desc, out_, inn_, mt, cat in [(38, "ACME PAY", 0.0, 2400.0, "income", "I
 app.state.incomes.append(bg.IncomeEntry(2400.0, _t - _td(days=38), "Acme")); app.state.incomes.append(bg.IncomeEntry(2400.0, _t - _td(days=24), "Acme"))
 app._show_statement_setup(); app.update(); sc = scrims(app)[-1]; audit(sc, "statement-setup"); btn(sc, "Done")[0].invoke(); app.update()
 
+# Sort queue: long overview + a card with the recurring-bill form
+from datetime import date as _d2, timedelta as _td2
+app.latest_import = [app.matcher.match(bg.TransactionRecord(tx_date=_d2.today() - _td2(days=i % 20), description=f"{chr(65 + i)}{chr(65 + i)} TRADING PTY", money_out=10.0 + i, fingerprint=f"rq{i}")) for i in range(14)]
+app._show_page("transactions"); app.update(); app.open_review_queue(); app.update(); sc = app._review_queue_scrim; audit(sc, "review-overview")
+btn(sc, "Start sorting  →")[0].invoke(); app.update(); btn(sc, "Make it a recurring bill")[0].invoke(); app.update(); audit(sc, "review-card+bill")
+sc.destroy(); app._review_queue_scrim = None; app.update(); app.latest_import = []
+
 # Bank links editor
 app.state.bank_links = [{"name": "CommBank", "url": "https://www.my.commbank.com.au/netbank/Logon/Logon.aspx", "every_days": 14, "last_opened": ""}]
 app._show_bank_links_editor(); app.update(); sc = scrims(app)[-1]; audit(sc, "bank-links"); btn(sc, "Done")[0].invoke(); app.update()

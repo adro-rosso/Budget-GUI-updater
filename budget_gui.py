@@ -28161,8 +28161,12 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
 
         btn_row = tk.Frame(card, bg=UI_SURFACE)
         btn_row.pack(fill="x", side="bottom", padx=SP_XL, pady=(0, SP_LG))
-        content = tk.Frame(card, bg=UI_SURFACE)
-        content.pack(fill="both", expand=True, padx=SP_XL, pady=SP_LG)
+        # The overview lists every merchant and a card can grow a bill form —
+        # both overflow a laptop-height card, so the content always scrolls.
+        area = tk.Frame(card, bg=UI_SURFACE)
+        area.pack(fill="both", expand=True, padx=(SP_XL, SP_SM), pady=SP_LG)
+        content, _bind_wheel = self._overlay_scroll_area(area, max(160, CARD_H - 150))
+        self._review_queue_content = content
 
         st = {
             "idx": -1,               # -1 = overview, len(groups) = done screen
@@ -28201,6 +28205,10 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 w.destroy()
             for w in btn_row.winfo_children():
                 w.destroy()
+            try:
+                content.master.yview_moveto(0)   # each screen starts at the top
+            except tk.TclError:
+                pass
 
         def _go(delta: int):
             st["idx"] = max(-1, min(len(groups), st["idx"] + delta))
@@ -28295,9 +28303,9 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                      font=FONT_BODY_BOLD).pack(anchor="w", pady=(0, SP_XS))
             list_host = tk.Frame(content, bg=UI_SURFACE)
             list_host.pack(fill="x")
-            MAX_ROWS = 8
-            for g in groups[:MAX_ROWS]:
-                row = tk.Frame(list_host, bg=UI_SURFACE2,
+            # Every merchant is listed (the content scrolls); clicking a row jumps to its card.
+            for i_, g in enumerate(groups):
+                row = tk.Frame(list_host, bg=UI_SURFACE2, cursor="hand2",
                                highlightthickness=1, highlightbackground=UI_BORDER)
                 row.pack(fill="x", pady=(0, 2))
                 color = UI_SAPPHIRE if g["confident"] else UI_GOLD
@@ -28312,9 +28320,14 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 tag = f"Suggested: {_describe(g)}" if g["confident"] else "Unknown"
                 tk.Label(inner, text=tag, bg=UI_SURFACE2, fg=color,
                          font=FONT_SMALL_BOLD, anchor="e").pack(side="right")
-            if len(groups) > MAX_ROWS:
-                tk.Label(list_host, text=f"+{len(groups) - MAX_ROWS} more",
-                         bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(2, 0))
+
+                def _jump(_e=None, i=i_):
+                    st["idx"] = i
+                    _render()
+                for w_ in (row, inner, *inner.winfo_children()):
+                    w_.bind("<Button-1>", _jump)
+            tk.Label(list_host, text=f"{len(groups)} merchant{'s' if len(groups) != 1 else ''} — scroll for the rest, or click one to start there.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(2, 0))
 
             tk.Label(content,
                      text="Next: one card per merchant. Click a category and it moves on. "
