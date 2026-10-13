@@ -117,6 +117,14 @@ btn(rq, "Start sorting  →")[0].invoke(); app.update(); audit(rq, "sort:card")
 btn(rq, "Make it a recurring bill")[0].invoke(); app.update(); audit(rq, "sort:card+billform")
 btn(rq, "Finish later")[0].invoke(); app.update()
 
+# Bill interview: a yes/no card, an opened single card, an opened multi-pick card, the done screen
+app._show_bill_interview(); app.update(); _iv = app._bill_interview; _sc = app._bill_interview_scrim
+audit(_sc, "interview-q")
+_iv["yes"](); app.update(); audit(_sc, "interview-single")
+_ids = [i["id"] for i in bg.BILL_INTERVIEW]
+_iv["idx"] = _ids.index("streaming"); _iv["open"] = True; _iv["render"](); app.update(); audit(_sc, "interview-multi")
+_iv["idx"] = len(_ids); _iv["render"](); app.update(); audit(_sc, "interview-done")
+btn(_sc, "Done  ✓")[0].invoke(); app.update()
 # Allocation editor
 app._show_allocation_editor(2000.0, today, "Pay"); app.update(); audit(app._allocation_editor_scrim, "alloc-editor")
 btn(app._allocation_editor_scrim, "Cancel")[0].invoke(); app.update()
