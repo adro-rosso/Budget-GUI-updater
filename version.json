@@ -1,10 +1,15 @@
 {
-  "version": "1.0.15",
+  "version": "1.0.16",
   "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.15/BudgetPlanner.exe",
-  "sha256": "373759a61f99c3b0f37f7d4255740e7a26467f293b5312465de8f96b2a20576b",
-  "notes": "Gerald now asks what you pay for: a bill interview (rent, power, phone, insurance, streaming, gym and more) one question at a time. Say yes and either type the amount, let your next statement fill it in, or flag it to come back to \u2014 pending bills show on Today, the Plan and the sort cards until they have an amount.",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.16/BudgetPlanner.exe",
+  "sha256": "c02c4394b89698831dd47fd2595d109a1d1a172857085cf1a51ca694e88c3b38",
+  "notes": "A quieter, more professional look: one hairline border on every card (no coloured outlines), no decorative accent bars, a flat slimmer top bar, a title-only navigation rail that fits a laptop screen, neutral badges, plain table rows and pills, and Plan rows with a tidy \u22ef menu for Edit and Remove. Nothing was removed.",
   "history": [
+    {
+      "version": "1.0.16",
+      "date": "2026-10-13",
+      "notes": "A quieter, more professional look: one hairline border on every card (no coloured outlines), no decorative accent bars, a flat slimmer top bar, a title-only navigation rail that fits a laptop screen, neutral badges, plain table rows and pills, and Plan rows with a tidy \u22ef menu for Edit and Remove. Nothing was removed."
+    },
     {
       "version": "1.0.15",
       "date": "2026-10-13",

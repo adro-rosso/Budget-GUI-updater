@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.15"
+APP_VERSION = "1.0.16"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -114,8 +114,8 @@ UI_GLOW_ACCENT = "#1e2438"  # subtle active-item tint
 UI_SURFACE_HOVER = "#1a1d25" # card / row hover
 UI_ACCENT_SOFT = "#1a2033"   # selected-pill background tint
 UI_ACCENT_BRIGHT = "#a5b2ed" # accent text (links, focused labels)
-UI_GRADIENT_TOP = "#0e1017"  # hero gradient top
-UI_GRADIENT_BOT = "#12141c"  # hero gradient bottom
+UI_GRADIENT_TOP = "#0c0d11"  # hero band — flat, same as the page (was a gradient strip)
+UI_GRADIENT_BOT = "#0c0d11"
 UI_NAV_ACTIVE = "#1b1e28"    # active nav bg
 UI_CARD_GLOW = "#161923"     # barely-there card elevation
 # Button tier palette — Linear/Vercel style hierarchy
@@ -12277,22 +12277,26 @@ class BudgetApp(tk.Tk):
                         troughcolor=UI_SURFACE2,
                         background=UI_ACCENT,
                         thickness=6,
-                        borderwidth=0)
+                        borderwidth=0,
+                        bordercolor=UI_SURFACE2, lightcolor=UI_SURFACE2, darkcolor=UI_SURFACE2)
         style.configure("Gold.Horizontal.TProgressbar",
                         troughcolor=UI_SURFACE2,
                         background=UI_GOLD,
                         thickness=6,
-                        borderwidth=0)
+                        borderwidth=0,
+                        bordercolor=UI_SURFACE2, lightcolor=UI_SURFACE2, darkcolor=UI_SURFACE2)
         style.configure("Gem.Horizontal.TProgressbar",
                         troughcolor=UI_SURFACE2,
                         background=UI_SAPPHIRE,
                         thickness=6,
-                        borderwidth=0)
+                        borderwidth=0,
+                        bordercolor=UI_SURFACE2, lightcolor=UI_SURFACE2, darkcolor=UI_SURFACE2)
         style.configure("Season.Horizontal.TProgressbar",
                         troughcolor=UI_SURFACE2,
                         background=UI_EMERALD,
                         thickness=6,
-                        borderwidth=0)
+                        borderwidth=0,
+                        bordercolor=UI_SURFACE2, lightcolor=UI_SURFACE2, darkcolor=UI_SURFACE2)
 
         # ── Separator ─────────────────────────────────────────────────────────
         style.configure("TSeparator", background=UI_BORDER)
@@ -12473,14 +12477,14 @@ class BudgetApp(tk.Tk):
         tree.heading(col, command=lambda: self._sort_tree_column(tree, col, not reverse))
 
     def _apply_tree_tags(self, tree):
-        tree.tag_configure("overdue",  background=UI_DANGER_SOFT,  foreground=UI_RUBY)
-        tree.tag_configure("urgent",   background=UI_WARNING_SOFT, foreground=UI_GOLD)
-        tree.tag_configure("good",     background=UI_SUCCESS_SOFT, foreground=UI_EMERALD)
-        tree.tag_configure("high",     background=UI_SUCCESS_SOFT, foreground=UI_EMERALD)
-        tree.tag_configure("medium",   background=UI_WARNING_SOFT, foreground=UI_GOLD)
-        tree.tag_configure("low",      background=UI_DANGER_SOFT,  foreground=UI_RUBY)
-        tree.tag_configure("review",   background=UI_WARNING_SOFT, foreground=UI_GOLD)
-        tree.tag_configure("matched",  background=UI_SUCCESS_SOFT, foreground=UI_EMERALD)
+        tree.tag_configure("overdue",  foreground=UI_RUBY)
+        tree.tag_configure("urgent",   foreground=UI_GOLD)
+        tree.tag_configure("good",     foreground=UI_EMERALD)
+        tree.tag_configure("high",     foreground=UI_EMERALD)
+        tree.tag_configure("medium",   foreground=UI_GOLD)
+        tree.tag_configure("low",      foreground=UI_RUBY)
+        tree.tag_configure("review",   foreground=UI_GOLD)
+        tree.tag_configure("matched",  foreground=UI_EMERALD)
 
     def _card_frame(self, parent, padx=16, pady=14, **kwargs) -> tk.Frame:
         """A surface card with subtle border."""
@@ -12713,7 +12717,7 @@ class BudgetApp(tk.Tk):
         accent_bar.grid(row=0, column=0, sticky="ns")
         accent_bar.grid_propagate(False)
         # Content area
-        content = tk.Frame(wrap, bg=UI_PANEL_ALT, padx=SP_MD + 2, pady=SP_SM + 1, cursor="hand2")
+        content = tk.Frame(wrap, bg=UI_PANEL_ALT, padx=SP_MD + 2, pady=SP_XS + 2, cursor="hand2")
         content.grid(row=0, column=1, sticky="nsew")
         content.columnconfigure(0, weight=1)
         # All nav items get the same refined treatment — primary vs secondary
@@ -12726,7 +12730,8 @@ class BudgetApp(tk.Tk):
         title_lbl.grid(row=0, column=0, sticky="w")
         subtitle_lbl = tk.Label(content, text=subtitle, bg=UI_PANEL_ALT, fg=subtitle_fg,
                                 font=FONT_MICRO, anchor="w", cursor="hand2")
-        subtitle_lbl.grid(row=1, column=0, sticky="w", pady=(1, 0))
+        # Subtitles are not shown: a title-only rail fits a laptop screen and reads cleaner.
+        # (The widget stays so page metadata and tooltips still have the text.)
         self.page_button_meta[key] = {"frame": wrap, "content": content, "accent": accent_bar,
                                       "title": title_lbl, "subtitle": subtitle_lbl,
                                       "pill": None, "primary": primary}
@@ -12817,16 +12822,17 @@ class BudgetApp(tk.Tk):
                         pass
                     meta["pill"] = None
                 continue
-            color = color_map.get(key, UI_RUBY)
+            color = UI_RUBY if key == "transactions" else UI_SURFACE3
+            fg = "#ffffff" if key == "transactions" else UI_TEXT
             text = str(val)
             if existing is None:
-                pill = tk.Label(content, text=text, bg=color, fg="#ffffff",
+                pill = tk.Label(content, text=text, bg=color, fg=fg,
                                 font=FONT_MICRO, padx=6, pady=1)
                 pill.grid(row=0, column=1, sticky="e", padx=(SP_SM, 0))
                 meta["pill"] = pill
             else:
                 try:
-                    existing.configure(text=text, bg=color)
+                    existing.configure(text=text, bg=color, fg=fg)
                 except Exception:
                     pass
 
@@ -13073,7 +13079,7 @@ class BudgetApp(tk.Tk):
         tb_win = tb_canvas.create_window(0, 0, window=tb_content, anchor="nw")
         tb_content.columnconfigure(1, weight=1)
         def _tb_resize(e):
-            self._draw_gradient(tb_canvas, "#060c18", "#0e1829", e.width, e.height)
+            self._draw_gradient(tb_canvas, UI_HERO, UI_HERO, e.width, e.height)
             tb_canvas.itemconfigure(tb_win, width=e.width)
             tb_canvas.tag_lower("gradient")
         def _tb_content_resize(_e=None):
@@ -13088,16 +13094,16 @@ class BudgetApp(tk.Tk):
         brand = tk.Frame(tb_content, bg=UI_HERO)
         brand.grid(row=0, column=0, sticky="w")
         tk.Label(brand, text="◈", bg=UI_HERO, fg=UI_ACCENT,
-                 font=("Segoe UI Variable Display", 22, "bold")).pack(side="left", padx=(0, SP_MD))
+                 font=("Segoe UI Variable Display", 15, "bold")).pack(side="left", padx=(0, SP_SM))
         tk.Label(brand, text="Budget Planner", bg=UI_HERO, fg=UI_TEXT_BRIGHT,
-                 font=("Segoe UI Variable Display", 16, "bold")).pack(side="left")
+                 font=("Segoe UI Variable Display", 13, "bold")).pack(side="left")
 
         # Status pill — rank + gold + gems (with section dividers)
         self.topbar_rank_var = tk.StringVar(value="The Recruit")
         self.topbar_gold_var = tk.StringVar(value="0")
         self.topbar_gem_var  = tk.StringVar(value="0")
-        pill = tk.Frame(tb_content, bg=UI_SURFACE, padx=SP_LG, pady=SP_SM,
-                        highlightbackground=UI_BORDER, highlightthickness=1)
+        pill = tk.Frame(tb_content, bg=UI_SURFACE, padx=SP_LG, pady=SP_XS,
+                        highlightthickness=0)
         pill.grid(row=0, column=1, sticky="w", padx=(SP_2XL, 0))
         tk.Label(pill, textvariable=self.topbar_rank_var, bg=UI_SURFACE, fg=UI_ACCENT,
                  font=FONT_SMALL_BOLD).pack(side="left", padx=(0, SP_MD))
@@ -13118,23 +13124,11 @@ class BudgetApp(tk.Tk):
         tk.Label(pill, text="Gems", bg=UI_SURFACE, fg=UI_MUTED,
                  font=FONT_CAPTION).pack(side="left")
 
-        ttk.Button(tb_content, text="  Save  ", style="Accent.TButton",
+        ttk.Button(tb_content, text="Save", style="Ghost.TButton",
                    command=self.manual_save).grid(row=0, column=2, sticky="e")
         # Bottom accent line — accent glow
-        accent_line = tk.Canvas(topbar, height=3, bg=UI_HERO, highlightthickness=0)
+        accent_line = tk.Frame(topbar, height=1, bg=UI_BORDER)
         accent_line.grid(row=1, column=0, sticky="ew")
-        def _accent_resize(e):
-            accent_line.delete("all")
-            mid = e.width // 2
-            # Gradient from transparent to accent to transparent
-            for x in range(e.width):
-                dist = abs(x - mid) / max(mid, 1)
-                alpha = max(0, 1.0 - dist * 1.2)
-                r = int(0x0a + (0x38 - 0x0a) * alpha)
-                g = int(0x10 + (0xbd - 0x10) * alpha)
-                b = int(0x19 + (0xf8 - 0x19) * alpha)
-                accent_line.create_line(x, 0, x, 3, fill=f"#{r:02x}{g:02x}{b:02x}")
-        accent_line.bind("<Configure>", _accent_resize)
 
         content = tk.Frame(outer, bg=UI_BG)
         content.grid(row=1, column=0, sticky="nsew")
@@ -13191,7 +13185,7 @@ class BudgetApp(tk.Tk):
         row_idx = 1
         for section_title, items in nav_sections:
             section = tk.Frame(nav, bg=UI_PANEL_ALT)
-            section.grid(row=row_idx, column=0, sticky="ew", pady=(0, SP_XL))
+            section.grid(row=row_idx, column=0, sticky="ew", pady=(0, SP_MD))
             section.columnconfigure(0, weight=1)
             # Section label — small caps with accent dot and subtle underline
             sec_header = tk.Frame(section, bg=UI_PANEL_ALT)
@@ -13205,10 +13199,10 @@ class BudgetApp(tk.Tk):
             tk.Frame(sec_header, bg=UI_BORDER, height=1).pack(fill="x", padx=SP_SM, pady=(SP_XS, 0))
             for item_idx, (key, label, subtitle, primary) in enumerate(items, start=1):
                 btn = self._create_nav_button(section, key, label, subtitle, primary)
-                btn.grid(row=item_idx, column=0, sticky="ew", pady=(0, 3))
+                btn.grid(row=item_idx, column=0, sticky="ew", pady=(0, 1))
             row_idx += 1
         # Focus mode toggle — hides the game layers for people who just want the budget
-        self._focus_btn = tk.Label(nav, text="◎ Focus mode: off — hide the game", bg=UI_PANEL_ALT, fg=UI_MUTED,
+        self._focus_btn = tk.Label(nav, text="◎ Focus mode", bg=UI_PANEL_ALT, fg=UI_MUTED,
                                    font=FONT_CAPTION, cursor="hand2", anchor="w", wraplength=170, justify="left")
         self._focus_btn.grid(row=row_idx, column=0, sticky="ew", padx=SP_SM, pady=(SP_SM, 0))
         self._focus_btn.bind("<Button-1>", lambda _e: self._toggle_focus_mode())
@@ -13218,7 +13212,7 @@ class BudgetApp(tk.Tk):
         self._sample_banner.grid_remove()
         self._sample_banner.bind("<Button-1>", lambda _e: self._settings_clear_sample())
         self._nav_rank_lbl = tk.Label(nav, text="", bg=UI_PANEL_ALT, fg=UI_GOLD, font=FONT_CAPTION_BOLD, anchor="w", wraplength=170, justify="left")
-        self._nav_rank_lbl.grid(row=row_idx + 2, column=0, sticky="ew", padx=SP_SM, pady=(SP_XS, 0))
+        # Not gridded: the top-bar pill already shows the rank, and the floating Add button sits here.
 
         self._build_game_tab()
         self._build_collection_tab()
@@ -13561,7 +13555,6 @@ class BudgetApp(tk.Tk):
         breakdown_outer.grid(row=0, column=0, sticky="nsew")
         breakdown_outer.rowconfigure(1, weight=1)
         breakdown_outer.columnconfigure(0, weight=1)
-        tk.Frame(breakdown_outer, bg=UI_GOLD, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(breakdown_outer, text="Score Breakdown", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING, padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
         bd_inner = tk.Frame(breakdown_outer, bg=UI_SURFACE)
@@ -13585,7 +13578,6 @@ class BudgetApp(tk.Tk):
         ach_outer.grid(row=0, column=0, sticky="nsew")
         ach_outer.rowconfigure(1, weight=1)
         ach_outer.columnconfigure(0, weight=1)
-        tk.Frame(ach_outer, bg=UI_AMETHYST, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(ach_outer, text="Achievements", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING, padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
         ach_inner = tk.Frame(ach_outer, bg=UI_SURFACE)
@@ -15570,7 +15562,7 @@ class BudgetApp(tk.Tk):
         self._pace_sparkline_canvas = None
         self._today_hero_cards = []
         for idx, (title, var, accent) in enumerate(cards):
-            glow = tk.Frame(hero, bg=accent, padx=1, pady=1)
+            glow = tk.Frame(hero, bg=UI_BORDER, padx=1, pady=1)
             glow.grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else SP_MD, 0))
             self._today_hero_cards.append(glow)
             box = tk.Frame(glow, bg=UI_SURFACE, padx=SP_XL, pady=SP_XL)
@@ -15621,12 +15613,11 @@ class BudgetApp(tk.Tk):
                          justify="left", anchor="w").pack(fill="x", pady=(SP_SM, 0))
 
         # ── Row 1: Quick Actions ─────────────────────────────────────────────
-        quick_glow = tk.Frame(frame, bg=UI_ACCENT_DIM, padx=1, pady=1)
+        quick_glow = tk.Frame(frame, bg=UI_BORDER, padx=1, pady=1)
         quick_glow.grid(row=1, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
         quick = tk.Frame(quick_glow, bg=UI_SURFACE)
         quick.pack(fill="both", expand=True)
         quick.columnconfigure(0, weight=1)
-        tk.Frame(quick, bg=UI_ACCENT, height=3).grid(row=0, column=0, sticky="ew")
         quick_inner = tk.Frame(quick, bg=UI_SURFACE, padx=SP_LG, pady=SP_LG)
         quick_inner.grid(row=1, column=0, sticky="ew")
         qa_lbl = tk.Label(quick_inner, text="QUICK ACTIONS", bg=UI_SURFACE, fg=UI_ACCENT,
@@ -15641,7 +15632,7 @@ class BudgetApp(tk.Tk):
         self._hook_row.columnconfigure(0, weight=1, uniform="hook")
         self._hook_row.columnconfigure(1, weight=1, uniform="hook")
         self._vault_host = tk.Frame(self._hook_row, bg=UI_SURFACE2, highlightthickness=1,
-                                    highlightbackground=UI_GOLD, padx=SP_MD, pady=SP_SM)
+                                    highlightbackground=UI_BORDER, padx=SP_MD, pady=SP_SM)
         self._vault_host.grid(row=0, column=0, sticky="nsew", padx=(0, SP_MD))
         self._next_up_host = tk.Frame(self._hook_row, bg=UI_SURFACE2, highlightthickness=1,
                                       highlightbackground=UI_BORDER, padx=SP_MD, pady=SP_SM)
@@ -15695,7 +15686,7 @@ class BudgetApp(tk.Tk):
             frame, "Gerald's Take", "today.gerald", default_open=False,
             summary_var=self.today_gerald_summary_var)
         gerald_wrap.grid(row=2, column=0, columnspan=2, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
-        gerald_glow = tk.Frame(gerald_content, bg=UI_EMERALD, padx=1, pady=1)
+        gerald_glow = tk.Frame(gerald_content, bg=UI_BORDER, padx=1, pady=1)
         gerald_glow.grid(row=0, column=0, sticky="ew")
         gerald_card = tk.Frame(gerald_glow, bg=UI_SURFACE)
         gerald_card.pack(fill="both", expand=True)
@@ -15779,14 +15770,13 @@ class BudgetApp(tk.Tk):
         self._today_streak_canvas.pack(side="left", padx=(SP_XS, 0))
 
         # ── Row 5 left: Pay Distribution Plan ────────────────────────────────
-        alloc_glow = tk.Frame(frame, bg=UI_EMERALD, padx=1, pady=1)
+        alloc_glow = tk.Frame(frame, bg=UI_BORDER, padx=1, pady=1)
         alloc_glow.grid(row=5, column=0, sticky="nsew", padx=(SP_XL, SP_SM), pady=(0, SP_MD))
         alloc_panel = tk.Frame(alloc_glow, bg=UI_SURFACE)
         alloc_panel.pack(fill="both", expand=True)
         alloc_panel.rowconfigure(1, weight=1)
         alloc_panel.columnconfigure(0, weight=1)
         alloc_panel.columnconfigure(1, weight=0)
-        tk.Frame(alloc_panel, bg=UI_EMERALD, height=3).grid(row=0, column=0, columnspan=2, sticky="ew")
         tk.Label(alloc_panel, text="Your Pay Distribution Plan", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING, padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
         tk.Button(alloc_panel, text="Setup Accounts", bg=UI_SURFACE2, fg=UI_MUTED,
@@ -15806,13 +15796,12 @@ class BudgetApp(tk.Tk):
         self._alloc_plan_frame.grid(row=1, column=0, columnspan=2, sticky="nsew")
 
         # ── Row 5 right: Due Soon / Upcoming ─────────────────────────────────
-        right_glow = tk.Frame(frame, bg=UI_RUBY, padx=1, pady=1)
+        right_glow = tk.Frame(frame, bg=UI_BORDER, padx=1, pady=1)
         right_glow.grid(row=5, column=1, sticky="nsew", padx=(SP_SM, SP_XL), pady=(0, SP_MD))
         right_top = tk.Frame(right_glow, bg=UI_SURFACE)
         right_top.pack(fill="both", expand=True)
         right_top.rowconfigure(1, weight=1)
         right_top.columnconfigure(0, weight=1)
-        tk.Frame(right_top, bg=UI_RUBY, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(right_top, text="Upcoming Payments", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING, padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
         due_inner = tk.Frame(right_top, bg=UI_SURFACE)
@@ -15859,7 +15848,7 @@ class BudgetApp(tk.Tk):
         host.columnconfigure(1, weight=1, uniform="health")
 
         # ── Left: Setup completeness ────────────────────────────────────────
-        left_glow = tk.Frame(host, bg=UI_EMERALD, padx=1, pady=1)
+        left_glow = tk.Frame(host, bg=UI_BORDER, padx=1, pady=1)
         left_glow.grid(row=0, column=0, sticky="nsew", padx=(0, SP_SM))
         left_card = tk.Frame(left_glow, bg=UI_SURFACE)
         left_card.pack(fill="both", expand=True)
@@ -15879,7 +15868,7 @@ class BudgetApp(tk.Tk):
         self._setup_health_checklist.pack(side="left", fill="both", expand=True)
 
         # ── Right: At-Risk ──────────────────────────────────────────────────
-        right_glow = tk.Frame(host, bg=UI_GOLD, padx=1, pady=1)
+        right_glow = tk.Frame(host, bg=UI_BORDER, padx=1, pady=1)
         right_glow.grid(row=0, column=1, sticky="nsew", padx=(SP_SM, 0))
         right_card = tk.Frame(right_glow, bg=UI_SURFACE)
         right_card.pack(fill="both", expand=True)
@@ -16136,7 +16125,7 @@ class BudgetApp(tk.Tk):
             ("Actual vs Target", self.review_mix_summary_var, UI_SAPPHIRE),
             ("Anomalies", self.review_anomaly_var, UI_GOLD),
         ]):
-            glow = tk.Frame(top, bg=accent, padx=1, pady=1)
+            glow = tk.Frame(top, bg=UI_BORDER, padx=1, pady=1)
             glow.grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else SP_MD, 0))
             box = tk.Frame(glow, bg=UI_SURFACE, padx=SP_XL, pady=SP_LG)
             box.pack(fill="both", expand=True)
@@ -16151,7 +16140,6 @@ class BudgetApp(tk.Tk):
         left.grid(row=2, column=0, rowspan=2, sticky="nsew", padx=(SP_XL, SP_SM), pady=(0, SP_XL))
         left.rowconfigure(1, weight=1)
         left.columnconfigure(0, weight=1)
-        tk.Frame(left, bg=UI_ACCENT, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(left, text="Monthly Insights", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING, padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
         left_inner = tk.Frame(left, bg=UI_SURFACE)
@@ -16166,7 +16154,6 @@ class BudgetApp(tk.Tk):
         right_top.grid(row=2, column=1, sticky="nsew", padx=(SP_SM, SP_XL), pady=(0, SP_MD))
         right_top.rowconfigure(1, weight=1)
         right_top.columnconfigure(0, weight=1)
-        tk.Frame(right_top, bg=UI_GOLD, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(right_top, text="Actual vs Target Mix", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING, padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
         mix_inner = tk.Frame(right_top, bg=UI_SURFACE)
@@ -16191,7 +16178,6 @@ class BudgetApp(tk.Tk):
         right_bottom.grid(row=0, column=0, sticky="nsew")
         right_bottom.rowconfigure(1, weight=1)
         right_bottom.columnconfigure(0, weight=1)
-        tk.Frame(right_bottom, bg=UI_RUBY, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(right_bottom, text="Spending Anomalies", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING, padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
         anomaly_inner = tk.Frame(right_bottom, bg=UI_SURFACE)
@@ -16213,7 +16199,6 @@ class BudgetApp(tk.Tk):
                                 highlightbackground=UI_BORDER)
         trend_panel.grid(row=0, column=0, sticky="nsew")
         trend_panel.columnconfigure(0, weight=1)
-        tk.Frame(trend_panel, bg=UI_EMERALD, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(trend_panel, text="6-Month Trend  —  Income vs Outgoing",
                  bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SUBHEADING,
                  padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
@@ -16735,7 +16720,7 @@ class BudgetApp(tk.Tk):
         if not nudges:
             return
         for icon, text, color in nudges:
-            glow = tk.Frame(frame, bg=color, padx=1, pady=1)
+            glow = tk.Frame(frame, bg=UI_BORDER, padx=1, pady=1)
             glow.pack(fill="x", pady=2)
             inner = tk.Frame(glow, bg=UI_SURFACE2, padx=SP_SM, pady=4)
             inner.pack(fill="x")
@@ -16860,7 +16845,7 @@ class BudgetApp(tk.Tk):
         overlay.columnconfigure(0, weight=1)
         overlay.rowconfigure(0, weight=1)
 
-        glow = tk.Frame(overlay, bg=UI_GOLD, padx=2, pady=2)
+        glow = tk.Frame(overlay, bg=UI_BORDER, padx=2, pady=2)
         glow.grid(row=0, column=0, padx=SP_XL, pady=SP_XL)
         card = tk.Frame(glow, bg=UI_SURFACE, padx=SP_XL * 2, pady=SP_XL)
         card.pack(fill="both", expand=True)
@@ -16977,7 +16962,7 @@ class BudgetApp(tk.Tk):
         tk.Label(host, text="PAY SEEMS OVERDUE",
                  bg=UI_SURFACE, fg=UI_RUBY,
                  font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_SM, SP_XS))
-        glow = tk.Frame(host, bg=UI_RUBY, padx=1, pady=1)
+        glow = tk.Frame(host, bg=UI_BORDER, padx=1, pady=1)
         glow.pack(fill="x", pady=(0, SP_SM))
         card = tk.Frame(glow, bg=UI_SURFACE2, padx=SP_MD, pady=SP_MD)
         card.pack(fill="x")
@@ -17048,7 +17033,7 @@ class BudgetApp(tk.Tk):
             self._build_income_confirm_card(host, tx, fp)
 
     def _build_income_confirm_card(self, parent, tx, fp):
-        glow = tk.Frame(parent, bg=UI_GOLD, padx=1, pady=1)
+        glow = tk.Frame(parent, bg=UI_BORDER, padx=1, pady=1)
         glow.pack(fill="x", pady=(0, SP_SM))
         card = tk.Frame(glow, bg=UI_SURFACE2, padx=SP_MD, pady=SP_MD)
         card.pack(fill="x")
@@ -17595,7 +17580,7 @@ class BudgetApp(tk.Tk):
 
         for idx, (label, amount, acct, color) in enumerate(steps):
             r, c = divmod(idx, cols)
-            glow = tk.Frame(grid, bg=color, padx=1, pady=1)
+            glow = tk.Frame(grid, bg=UI_BORDER, padx=1, pady=1)
             glow.grid(row=r, column=c, sticky="nsew", padx=2, pady=2)
             card = tk.Frame(glow, bg=UI_SURFACE2, padx=SP_SM, pady=SP_SM)
             card.pack(fill="both", expand=True)
@@ -17711,7 +17696,7 @@ class BudgetApp(tk.Tk):
         if forecast["pressure_points"]:
             all_warnings.append(forecast["pressure_points"][0])
         if all_warnings:
-            alerts_glow = tk.Frame(parent, bg=UI_GOLD, padx=1, pady=1)
+            alerts_glow = tk.Frame(parent, bg=UI_BORDER, padx=1, pady=1)
             alerts_glow.grid(row=3, column=0, sticky="ew", pady=(SP_SM, 0))
             alerts = tk.Frame(alerts_glow, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM)
             alerts.pack(fill="x")
@@ -17732,7 +17717,7 @@ class BudgetApp(tk.Tk):
     def _alloc_step_card(self, parent, step: dict):
         """Build one step card (glow-bordered, with badge, amount, dest, items)."""
         color = step["color"]
-        glow = tk.Frame(parent, bg=color, padx=1, pady=1)
+        glow = tk.Frame(parent, bg=UI_BORDER, padx=1, pady=1)
         inner = tk.Frame(glow, bg=UI_SURFACE2)
         inner.pack(fill="both", expand=True)
         inner.columnconfigure(1, weight=1)
@@ -18312,7 +18297,6 @@ class BudgetApp(tk.Tk):
         form.pack(fill="both", expand=True)
         form.columnconfigure(0, weight=1)
         # Accent header stripe
-        tk.Frame(form, bg=UI_ACCENT, height=3).grid(row=0, column=0, sticky="ew")
         # Section title
         tk.Label(form, text="Log a Pay", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_HEADING).grid(row=0, column=0, sticky="w", pady=(SP_SM, SP_XS))
@@ -18426,7 +18410,7 @@ class BudgetApp(tk.Tk):
         ttk.Button(controls, text="Import Statement (PDF / CSV / OFX)", style="Primary.TButton",
                    command=self.import_pdf_transactions).grid(row=4, column=0, sticky="ew", pady=(0, SP_XS))
         self.tx_sort_btn_var = tk.StringVar(value="Sort Unrecognised")
-        ttk.Button(controls, textvariable=self.tx_sort_btn_var, style="Accent.TButton",
+        ttk.Button(controls, textvariable=self.tx_sort_btn_var, style="Secondary.TButton",
                    command=self.open_review_queue).grid(row=5, column=0, sticky="ew", pady=(0, SP_XS))
         ttk.Button(controls, text="Commit Reviewed", style="Secondary.TButton",
                    command=self.commit_imported_transactions).grid(row=6, column=0, sticky="ew", pady=(0, SP_XS))
@@ -18495,7 +18479,6 @@ class BudgetApp(tk.Tk):
         preview_outer.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(0, SP_XL), pady=(SP_XL, SP_SM))
         preview_outer.rowconfigure(1, weight=1)
         preview_outer.columnconfigure(0, weight=1)
-        tk.Frame(preview_outer, bg=UI_ACCENT, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(preview_outer, text="Current Import Preview", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING, padx=SP_LG, pady=SP_SM).grid(row=0, column=0, sticky="w")
         preview_inner = tk.Frame(preview_outer, bg=UI_SURFACE)
@@ -18539,7 +18522,6 @@ class BudgetApp(tk.Tk):
         insights_outer = tk.Frame(insights_content, bg=UI_SURFACE, highlightthickness=1, highlightbackground=UI_BORDER)
         insights_outer.grid(row=0, column=0, sticky="ew")
         insights_outer.columnconfigure(0, weight=1)
-        tk.Frame(insights_outer, bg=UI_GOLD, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(insights_outer, text="Workflow Insights", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_BODY_BOLD, padx=SP_MD, pady=SP_SM).grid(row=0, column=0, sticky="w")
         self.transaction_insights_var = tk.StringVar(value="Import a statement to see recurring merchants, unusual spend, and new merchants needing review.")
@@ -18563,7 +18545,6 @@ class BudgetApp(tk.Tk):
             outer.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else SP_SM, 0))
             outer.rowconfigure(1, weight=1)
             outer.columnconfigure(0, weight=1)
-            tk.Frame(outer, bg=accent, height=3).grid(row=0, column=0, sticky="ew")
             tk.Label(outer, text=title, bg=UI_SURFACE, fg=UI_TEXT,
                      font=FONT_BODY_BOLD, padx=SP_MD, pady=SP_SM).grid(row=0, column=0, sticky="w")
             inner = tk.Frame(outer, bg=UI_SURFACE)
@@ -18631,7 +18612,6 @@ class BudgetApp(tk.Tk):
         pie_outer = tk.Frame(insights_content, bg=UI_SURFACE, highlightthickness=1, highlightbackground=UI_BORDER)
         pie_outer.grid(row=1, column=0, sticky="ew", pady=(SP_SM, 0))
         pie_outer.columnconfigure(0, weight=1)
-        tk.Frame(pie_outer, bg=UI_SAPPHIRE, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(pie_outer, text="Committed Outgoing — Spending by Category",
                  bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD,
                  padx=SP_MD, pady=6).grid(row=0, column=0, sticky="w")
@@ -18658,9 +18638,9 @@ class BudgetApp(tk.Tk):
                             "is a real fund, goal or bill. Tend the money and the place thrives.",
                  bg=UI_HERO, fg=UI_MUTED, font=FONT_SMALL, wraplength=760, justify="left").grid(row=1, column=0, sticky="w", pady=(2, 0))
         self._homestead_tier_var = tk.StringVar(value="TIER 0 / 5")
-        tier_badge = tk.Frame(hero, bg=UI_AMETHYST, padx=SP_MD, pady=SP_XS)
+        tier_badge = tk.Frame(hero, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER_LT, padx=SP_MD, pady=SP_XS)
         tier_badge.grid(row=0, column=1, rowspan=2, sticky="e")
-        tk.Label(tier_badge, textvariable=self._homestead_tier_var, bg=UI_AMETHYST, fg=UI_HERO, font=FONT_BODY_BOLD).pack()
+        tk.Label(tier_badge, textvariable=self._homestead_tier_var, bg=UI_SURFACE2, fg=UI_AMETHYST, font=FONT_CAPTION_BOLD).pack()
 
         scene_wrap = tk.Frame(frame, bg=UI_BORDER, padx=1, pady=1)
         scene_wrap.grid(row=1, column=0, sticky="ew", padx=SP_XL, pady=(0, SP_MD))
@@ -18788,7 +18768,7 @@ class BudgetApp(tk.Tk):
             ok, desc, detail = snap["checks"][key]
             comp_id = BudgetGameEngine.HOMESTEAD_COMPANIONS.get(n)
             comp = AVATAR_ITEMS.get(comp_id, {})
-            row = tk.Frame(thost, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_EMERALD if ok else UI_BORDER)
+            row = tk.Frame(thost, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER)
             row.pack(fill="x", pady=(0, SP_XS))
             inner = tk.Frame(row, bg=UI_SURFACE2, padx=SP_SM, pady=SP_XS)
             inner.pack(fill="x")
@@ -19136,7 +19116,7 @@ class BudgetApp(tk.Tk):
         label = date(y, m, 1).strftime("%B")
         host.pack(fill="x", pady=(SP_SM, 0))
         tk.Label(host, text="MONTH CLOSED", bg=UI_SURFACE, fg=UI_SAPPHIRE, font=FONT_CAPTION_BOLD).pack(anchor="w", pady=(SP_SM, SP_XS))
-        glow = tk.Frame(host, bg=UI_SAPPHIRE, padx=1, pady=1)
+        glow = tk.Frame(host, bg=UI_BORDER, padx=1, pady=1)
         glow.pack(fill="x", pady=(0, SP_SM))
         card = tk.Frame(glow, bg=UI_SURFACE2, padx=SP_MD, pady=SP_MD)
         card.pack(fill="x")
@@ -19921,7 +19901,6 @@ class BudgetApp(tk.Tk):
                 {"bill": self.on_bill_select, "fund": self.on_fund_select, "goal": self.on_goal_select}[kind]()
             except tk.TclError:
                 pass
-        ttk.Button(acts, text="Edit", style="Ghost.TButton", command=_edit).pack(side="left", padx=(SP_XS, 0))
 
         def _delete(kind=kind, idx=idx, obj=obj):
             coll = {"bill": self.state.bills, "fund": self.state.funds, "goal": self.state.goals}[kind]
@@ -19937,15 +19916,23 @@ class BudgetApp(tk.Tk):
                 self.refresh_all_views()
                 self._show_toast(f"{obj.name} restored.", "info", 2500)
             self._show_toast(f"Removed {obj.name}.", "success", duration=6000, action_label="Undo", action_cb=_undo)
-        tk.Button(acts, text="✕", bg=UI_SURFACE, fg=UI_MUTED, activebackground=UI_SURFACE_HOVER, activeforeground=UI_RUBY,
-                  relief="flat", bd=0, highlightthickness=0, font=FONT_SMALL_BOLD, padx=SP_SM, cursor="hand2", takefocus=0,
-                  command=_delete).pack(side="left", padx=(SP_XS, 0))
+        more = tk.Menubutton(acts, text="⋯", bg=UI_SURFACE, fg=UI_MUTED, activebackground=UI_SURFACE_HOVER, activeforeground=UI_TEXT,
+                             relief="flat", bd=0, highlightthickness=0, font=FONT_BODY_BOLD, padx=SP_SM, cursor="hand2", takefocus=0)
+        menu = tk.Menu(more, tearoff=0, bg=UI_SURFACE2, fg=UI_TEXT, activebackground=UI_SURFACE3, activeforeground=UI_TEXT_BRIGHT, bd=0)
+        menu.add_command(label="Edit…", command=_edit)
+        menu.add_command(label="Remove", command=_delete)
+        more["menu"] = menu
+        more.pack(side="left", padx=(SP_XS, 0))
+        if not hasattr(self, "_plan_menus"):
+            self._plan_menus = {}
+        self._plan_menus[(kind, idx)] = menu
 
     def refresh_plan_tab(self):
         self.game_engine.sync_challenge_funds()
         host = getattr(self, "_plan_host", None)
         if host is None:
             return
+        self._plan_menus = {}
         for w_ in host.winfo_children():
             w_.destroy()
 
@@ -20190,7 +20177,7 @@ class BudgetApp(tk.Tk):
         gerald_wrap = getattr(self, "_today_gerald_wrap", None)
         btn = getattr(self, "_focus_btn", None)
         if btn is not None:
-            btn.configure(text="◉ Focus mode: on — show the game" if on else "◎ Focus mode: off — hide the game",
+            btn.configure(text="◉ Focus mode on" if on else "◎ Focus mode",
                           fg=UI_GOLD if on else UI_MUTED)
         if on and self.current_page_key in self.FOCUS_HIDDEN_PAGES:
             self._show_page("today")
@@ -20308,7 +20295,7 @@ class BudgetApp(tk.Tk):
             return
         last = max(self.state.incomes, key=lambda i: i.received_on)
         host.pack(fill="x", pady=(SP_SM, 0))
-        card = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_EMERALD, padx=SP_MD, pady=SP_SM)
+        card = tk.Frame(host, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER, padx=SP_MD, pady=SP_SM)
         card.pack(fill="x")
         tk.Label(card, text="SAME AS LAST TIME", bg=UI_SURFACE2, fg=UI_EMERALD, font=FONT_CAPTION_BOLD).pack(anchor="w")
         tk.Label(card, text=f"${last.amount:,.2f} from {last.source}, last on {last.received_on:%d %b}.",
@@ -22544,7 +22531,7 @@ class BudgetApp(tk.Tk):
             grid.columnconfigure(c, weight=1, uniform="decor")
         for i, (did, name, ct, cost, desc, _u, _v) in enumerate(HOMESTEAD_DECOR):
             owned = did in g.homestead_decor
-            card = tk.Frame(grid, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_EMERALD if owned else UI_BORDER, padx=SP_SM, pady=SP_SM)
+            card = tk.Frame(grid, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER_LT if owned else UI_BORDER, padx=SP_SM, pady=SP_SM)
             card.grid(row=i // 5, column=i % 5, sticky="nsew", padx=(0, SP_XS), pady=(0, SP_XS))
             tk.Label(card, text=name, bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SMALL_BOLD, anchor="w").pack(anchor="w")
             tk.Label(card, text=desc, bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION, wraplength=120, justify="left").pack(anchor="w")
@@ -23968,7 +23955,6 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                          highlightthickness=1, highlightbackground=UI_BORDER)
         guide.grid(row=0, column=0, sticky="ew")
         guide.columnconfigure(0, weight=1)
-        tk.Frame(guide, bg=UI_ACCENT, height=3).grid(row=0, column=0, sticky="ew")
         tk.Label(guide, text="How Banking Setup Works", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING).grid(row=1, column=0, sticky="w", pady=(10, 6))
         guide_lines = [
@@ -24018,7 +24004,6 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                           highlightthickness=1, highlightbackground=UI_BORDER)
         editor.grid(row=1, column=0, sticky="nsew", padx=SP_XL, pady=(0, SP_XL))
         editor.columnconfigure(1, weight=1)
-        tk.Frame(editor, bg=UI_EMERALD, height=3).grid(row=0, column=0, columnspan=3, sticky="ew")
         tk.Label(editor, text="Your Bank Accounts", bg=UI_SURFACE, fg=UI_TEXT,
                  font=FONT_SUBHEADING).grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(10, 4))
@@ -24472,7 +24457,6 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         box_outer.grid(row=1, column=0, sticky="nsew")
         box_outer.rowconfigure(1, weight=1)
         box_outer.columnconfigure(0, weight=1)
-        tk.Frame(box_outer, bg=UI_AMETHYST, height=3).grid(row=0, column=0, sticky="ew")
         box_inner = tk.Frame(box_outer, bg=UI_SURFACE)
         box_inner.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
         box_inner.columnconfigure(0, weight=1)
@@ -24595,7 +24579,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(1, weight=1)
 
-        glow = tk.Frame(header, bg=UI_EMERALD, padx=2, pady=2)
+        glow = tk.Frame(header, bg=UI_BORDER, padx=2, pady=2)
         glow.grid(row=0, column=0, rowspan=2, padx=(0, SP_LG), sticky="n")
         inner = tk.Frame(glow, bg=UI_SURFACE)
         inner.pack()
@@ -24837,7 +24821,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             tk.Label(bubble, text=msg["text"], bg=UI_SURFACE2, fg=UI_TEXT,
                      font=FONT_SMALL, wraplength=520, justify="left").pack(anchor="e")
         else:
-            glow = tk.Frame(row, bg=UI_EMERALD, padx=1, pady=1)
+            glow = tk.Frame(row, bg=UI_BORDER, padx=1, pady=1)
             glow.pack(side="left", anchor="w")
             bubble = tk.Frame(glow, bg=UI_SURFACE, padx=SP_MD, pady=SP_SM)
             bubble.pack()
@@ -24864,7 +24848,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                    if e.widget is scrim else None)
 
         # Card (centered)
-        card_glow = tk.Frame(scrim, bg=UI_EMERALD, padx=2, pady=2)
+        card_glow = tk.Frame(scrim, bg=UI_BORDER, padx=2, pady=2)
         card_glow.place(relx=0.5, rely=0.5, anchor="center")
         card = tk.Frame(card_glow, bg=UI_BG, padx=SP_LG, pady=SP_LG)
         card.pack()
@@ -24875,7 +24859,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         header.grid(row=0, column=0, sticky="ew", pady=(0, SP_SM))
         header.columnconfigure(1, weight=1)
 
-        avatar_glow = tk.Frame(header, bg=UI_EMERALD, padx=2, pady=2)
+        avatar_glow = tk.Frame(header, bg=UI_BORDER, padx=2, pady=2)
         avatar_glow.grid(row=0, column=0, rowspan=2, padx=(0, SP_MD), sticky="n")
         avatar_inner = tk.Frame(avatar_glow, bg=UI_SURFACE)
         avatar_inner.pack()
@@ -25148,7 +25132,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         scrim.bind("<Button-1>", lambda e: self._hide_command_palette()
                    if e.widget is scrim else None)
 
-        glow = tk.Frame(scrim, bg=UI_ACCENT, padx=2, pady=2)
+        glow = tk.Frame(scrim, bg=UI_BORDER, padx=2, pady=2)
         glow.place(relx=0.5, rely=0.28, anchor="n")
         card = tk.Frame(glow, bg=UI_BG, padx=SP_LG, pady=SP_LG)
         card.pack()
@@ -25561,7 +25545,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             accent = PACK_ACCENTS[col_i]
             cost_icon = "Gold" if cost_type == "gold" else "Gems"
             # Glow border
-            glow = tk.Frame(packs_row, bg=accent, padx=1, pady=1)
+            glow = tk.Frame(packs_row, bg=UI_BORDER, padx=1, pady=1)
             glow.grid(row=0, column=col_i, sticky="nsew", padx=(0 if col_i == 0 else 8, 0))
             pcard = tk.Frame(glow, bg=UI_SURFACE, padx=16, pady=14)
             pcard.pack(fill="both", expand=True)
@@ -26204,7 +26188,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         self._category_drilldown_prev_escape = prev_escape
         self.bind("<Escape>", lambda _e: self._close_category_drilldown())
 
-        glow = tk.Frame(backdrop, bg=UI_GOLD, padx=2, pady=2)
+        glow = tk.Frame(backdrop, bg=UI_BORDER, padx=2, pady=2)
         glow.place(relx=0.5, rely=0.5, anchor="center")
         panel = tk.Frame(glow, bg=UI_SURFACE, width=720, height=560)
         panel.pack()
@@ -30841,16 +30825,10 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
 
     def _priority_pill(self, priority: str) -> str:
         key = (priority or "").strip().lower()
-        icon = {"essential": "\U0001f534", "important": "\U0001f7e0",
-                "optional": "\u26aa"}.get(key, "\u26aa")
-        return f"{icon} {priority}" if priority else icon
+        return priority or ""
 
     def _frequency_pill(self, freq: str) -> str:
-        key = (freq or "").strip().lower()
-        icon = {"weekly": "\U0001f535", "fortnightly": "\U0001f7e3",
-                "monthly": "\U0001f7e2", "quarterly": "\U0001f7e0", "yearly": "\U0001f7e1",
-                "one-off": "\u26aa", "one_off": "\u26aa"}.get(key, "\u26aa")
-        return f"{icon} {freq}" if freq else icon
+        return freq or ""
 
     _CATEGORY_ICON_MAP = [
         (("rent", "mortgage", "landlord"), "\U0001f3e0"),
@@ -31030,7 +31008,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
              "Kept liquid after allocation", UI_SAPPHIRE),
         ]
         for i, (title, val, sub, color) in enumerate(stat_cards):
-            glow = tk.Frame(stats, bg=color, padx=1, pady=1)
+            glow = tk.Frame(stats, bg=UI_BORDER, padx=1, pady=1)
             glow.grid(row=0, column=i, sticky="nsew", padx=2, pady=2)
             box = tk.Frame(glow, bg=UI_SURFACE2, padx=SP_SM, pady=SP_SM)
             box.pack(fill="both", expand=True)
@@ -31181,7 +31159,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             is_earned = name in earned_set
             r, c = divmod(i, cols)
             color = UI_GOLD if is_earned else UI_BORDER
-            glow = tk.Frame(host, bg=color, padx=1, pady=1)
+            glow = tk.Frame(host, bg=UI_BORDER, padx=1, pady=1)
             glow.grid(row=r, column=c, sticky="nsew", padx=2, pady=2)
             box = tk.Frame(glow, bg=UI_SURFACE2 if is_earned else UI_SURFACE,
                             padx=SP_SM, pady=SP_SM)
@@ -31686,7 +31664,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             list_host = tk.Frame(content, bg=UI_SURFACE)
             list_host.pack(fill="x", padx=SP_MD)
             for label, amt, acct, color in steps:
-                glow = tk.Frame(list_host, bg=color, padx=1, pady=1)
+                glow = tk.Frame(list_host, bg=UI_BORDER, padx=1, pady=1)
                 glow.pack(fill="x", pady=4)
                 row = tk.Frame(glow, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM)
                 row.pack(fill="x")
