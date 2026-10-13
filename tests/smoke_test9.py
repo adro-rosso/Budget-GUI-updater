@@ -37,7 +37,7 @@ def scrims(app):
 
 
 app = bg.BudgetApp(); app.state.onboarding_complete = True; app.state.tutorial_complete = True
-app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
+app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update(); app.focus_force(); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 today = date.today()
 
@@ -104,7 +104,7 @@ amt_lbls = [w for w in all_w(app._plan_host) if isinstance(w, tk.Label) and str(
 amt_lbls[0].event_generate("<Button-1>"); app.update()
 e = [w for w in all_w(app._plan_host) if isinstance(w, bg.ttk.Entry)]
 assert e, "inline entry expected"
-e[0].delete(0, tk.END); e[0].insert(0, "1,250"); e[0].event_generate("<Return>"); app.update()
+e[0].delete(0, tk.END); e[0].insert(0, "1,250"); app.focus_force(); e[0].focus_force(); e[0].event_generate("<Return>"); app.update()
 assert app.state.bills[0].amount == 1250.0
 # Paid from the Plan row rolls the due date forward
 due0 = app.state.bills[0].due_date
@@ -149,7 +149,7 @@ assert int(card.cget("height")) <= 640 - 32, card.cget("height")
 assert any(isinstance(w, tk.Canvas) for w in all_w(card)), "capped card should scroll its content"
 assert btn(sc, "Finish later"), "buttons must remain visible"
 btn(sc, "Finish later")[0].invoke(); app.update()
-app.geometry("1366x768+0+0"); app.update()
+app.geometry("1366x768+0+0"); app.focus_force(); app.update()
 
 # ── Focus mode hides the game layers and restores them ───────────────────────
 app._show_page("score"); app.update()

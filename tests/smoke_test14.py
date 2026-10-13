@@ -30,7 +30,7 @@ def wheel_at(app, widget, delta=-120):
 
 
 app = bg.BudgetApp(); app.state.onboarding_complete = True; app.state.tutorial_complete = True; app.state.starting_position_set = True
-app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
+app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update(); app.focus_force(); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 
 # ── Avatar page: the grid scrolls under the cursor ───────────────────────────

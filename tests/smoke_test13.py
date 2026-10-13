@@ -44,7 +44,7 @@ toasts = []
 
 today = date.today()
 app = bg.BudgetApp(); app.state.onboarding_complete = True; app.state.tutorial_complete = True; app.state.starting_position_set = True
-app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
+app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update(); app.focus_force(); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 _orig_toast = app._show_toast
 def _spy_toast(message, style="info", duration=3000, action_label="", action_cb=None):

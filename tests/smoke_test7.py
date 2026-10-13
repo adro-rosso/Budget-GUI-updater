@@ -130,7 +130,7 @@ assert app.state.investment_rules["investment_value"] == 20.0
 s2 = bg.AppState.from_dict(app.state.to_dict()); assert s2.investment_rules["investment_mode"] == "percent"
 # a fresh app in this folder loads the persisted rules
 app.destroy()
-app2 = bg.BudgetApp(); app2.update()
+app2 = bg.BudgetApp(); app2.focus_force(); app2.update()
 assert app2.rule_settings["investment_value"] == 20.0 and app2.invest_value_entry.get() == "20.0", app2.rule_settings
 # Gerald
 app2.gerald_assistant.handle("how much is rego?")

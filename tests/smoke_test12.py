@@ -51,7 +51,7 @@ def close_tops(app):
 
 today = date.today()
 app = bg.BudgetApp(); app.state.onboarding_complete = True; app.state.tutorial_complete = True
-app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
+app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update(); app.focus_force(); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 app._startup_progression_migration(); app.state.ui_prefs["unlock_all"] = True; app.refresh_today_tab(); app.update()
 g = app.state.game; eng = app.game_engine
@@ -147,7 +147,7 @@ close_tops(app)
 app._show_page("today"); app.update()
 g.pulse_progress = {}; g.pulse_last_date = (today - timedelta(days=1)).isoformat(); app.refresh_today_tab(); app.update()
 lbl(app._vault_host, "Food")[0].event_generate("<Button-1>"); app.update()
-app._pulse_amt_entry.insert(0, "7.25"); app._pulse_amt_entry.event_generate("<Return>"); app.update()
+app._pulse_amt_entry.insert(0, "7.25"); app.focus_force(); app._pulse_amt_entry.focus_force(); app._pulse_amt_entry.event_generate("<Return>"); app.update()
 jar = eng.challenge_fund("roundup"); assert jar.current_saved == 2.75 and jar.challenge_ticks == 1
 close_tops(app)
 app.save_state()

@@ -43,7 +43,7 @@ def tx(d, desc, out=0.0, inn=0.0, **kw):
 
 today = date.today()
 app = bg.BudgetApp(); app.state.onboarding_complete = True; app.state.tutorial_complete = True
-app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
+app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update(); app.focus_force(); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 
 # ── Auto-paid bills + undo last import ───────────────────────────────────────
@@ -95,7 +95,7 @@ nb = len(app.state.bills); app.add_bill(); app.update()
 assert len(app.state.bills) == nb and any("already have" in str(t.winfo_children()[1].cget("text")) if len(t.winfo_children()) > 1 else False for t in app._toast_stack) or True
 assert len(app.state.bills) == nb
 app.clear_bill_form(); app.bill_name.insert(0, "Phone"); app.bill_amount.insert(0, "45"); app.bill_due.insert(0, today.isoformat())
-app.bill_amount.focus_set(); app.update(); app.bill_amount.event_generate("<Return>"); app.update()
+app.bill_amount.focus_set(); app.update(); app.focus_force(); app.bill_amount.focus_force(); app.bill_amount.event_generate("<Return>"); app.update()
 assert len(app.state.bills) == nb + 1 and app.state.bills[-1].name == "Phone", "Enter should add the bill"
 # quick-add duplicate
 app._show_quick_add("bill"); app.update(); sc = scrims(app)[-1]
@@ -152,7 +152,7 @@ app._remember_window_prefs()
 assert app.state.ui_prefs["last_page"] == "homestead" and "x" in app.state.ui_prefs["window.geometry"]
 app.save_state()
 app.destroy()
-app2 = bg.BudgetApp(); app2.update(); time.sleep(0.4); app2.update()
+app2 = bg.BudgetApp(); app2.focus_force(); app2.update(); time.sleep(0.4); app2.update()
 assert app2.current_page_key == "homestead", app2.current_page_key
 assert str(app2.page_button_meta["settings"]["title"].cget("text")) == "Settings"
 app2.destroy()

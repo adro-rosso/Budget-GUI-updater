@@ -87,7 +87,7 @@ add_btn[0].invoke(); app.update()
 labels = texts(scrim)
 assert any("SUGGESTED MATCH" in t for t in labels), labels
 assert any("Suggested:  Groceries" in t for t in labels), labels
-scrim.event_generate("<Return>"); app.update()
+app.focus_force(); scrim.focus_force(); scrim.event_generate("<Return>"); app.update()
 
 # Done screen
 labels = texts(scrim)

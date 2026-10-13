@@ -54,7 +54,7 @@ bg._send_windows_toast = lambda t, b: True
 
 today = date.today(); yesterday = today - timedelta(days=1)
 app = bg.BudgetApp(); app.state.onboarding_complete = True; app.state.tutorial_complete = True
-app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
+app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update(); app.focus_force(); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 app._startup_progression_migration(); app.refresh_today_tab(); app.update()   # the saved file in prod already has onboarding_complete
 app.state.ui_prefs["unlock_all"] = True   # progressive unlock would hide the weekly panel on a fresh profile
@@ -72,7 +72,7 @@ assert any("DAILY PULSE" == t for t in texts(host)) and any("1 Yesterday" in t f
 
 # Beat 1: pick a category and log $12.50 for yesterday
 lbl(host, "Groceries")[0].event_generate("<Button-1>"); app.update()
-ent = app._pulse_amt_entry; ent.insert(0, "$12.50"); ent.event_generate("<Return>"); app.update()
+ent = app._pulse_amt_entry; ent.insert(0, "$12.50"); app.focus_force(); ent.focus_force(); ent.event_generate("<Return>"); app.update()
 assert app.state.transactions and app.state.transactions[-1].source_file == "pulse" and app.state.transactions[-1].money_out == 12.5
 assert app.state.transactions[-1].tx_date == yesterday and app.state.transactions[-1].category == "Groceries"
 assert g.last_real_action_date == today.isoformat()
@@ -192,7 +192,7 @@ app.destroy()
 # ── First-run day one: wizard finish → founder + free pack + beats pre-done ──
 tmp2 = tempfile.mkdtemp(prefix="budget_dayone_"); os.chdir(tmp2)
 bg.DATA_FILE = Path("budget_data.json")
-app2 = bg.BudgetApp(); app2.update(); time.sleep(0.4); app2.update()
+app2 = bg.BudgetApp(); app2.focus_force(); app2.update(); time.sleep(0.4); app2.update()
 assert not app2.state.game.day_one_done
 sc = app2._setup_wizard_scrim; assert sc is not None
 # jump through the wizard with 'Finish later' is not a finish; drive the real finish: add one bill then go to the last step

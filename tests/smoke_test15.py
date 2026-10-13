@@ -46,7 +46,7 @@ def tx(d, desc, out=0.0, inn=0.0, **kw):
 today = date.today()
 app = bg.BudgetApp(); app.state.onboarding_complete = True; app.state.tutorial_complete = True
 app.state.starting_position_set = True; app.state.starting_position_date = today.isoformat()
-app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update()
+app.geometry("1366x768+0+0"); app.update(); time.sleep(0.4); app.update(); app.focus_force(); app.update()
 if getattr(app, "_setup_wizard_scrim", None): app._setup_wizard_scrim.destroy(); app._setup_wizard_scrim = None
 app._startup_progression_migration(); app.refresh_today_tab(); app.update()
 app._celebrate = lambda *a, **k: None
@@ -140,7 +140,7 @@ tmp2 = tempfile.mkdtemp(prefix="budget_hist2_"); os.chdir(tmp2); bg.DATA_FILE = 
 s3 = bg.AppState(); s3.onboarding_complete = True; s3.tutorial_complete = True; s3.starting_position_set = True
 s3.incomes.append(bg.IncomeEntry(2000.0, today - timedelta(days=20), "Pay"))
 Path("budget_data.json").write_text(json.dumps(s3.to_dict()), encoding="utf-8")
-app2 = bg.BudgetApp(); app2.update(); time.sleep(0.3); app2.update()
+app2 = bg.BudgetApp(); app2.focus_force(); app2.update(); time.sleep(0.3); app2.update()
 assert app2._history_cutoff() == today - timedelta(days=20)
 # a pay 5 days ago is after the cutoff → it is a real new pay to confirm
 app2.latest_import = [tx(today - timedelta(days=5), "EMPLOYER PAY", inn=2000.0, matched_type="income", category="Income")]

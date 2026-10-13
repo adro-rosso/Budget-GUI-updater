@@ -174,6 +174,14 @@ app._show_statement_setup(); app.update(); sc = scrims(app)[-1]; audit(sc, "stat
 
 from datetime import date as _d2, timedelta as _td2
 from datetime import date as _d2, timedelta as _td2
+# Wizard: last step with empty accounts listed
+app._show_setup_wizard(); app.update(); sc = app._setup_wizard_scrim
+for _ in range(10):
+    nb = [w for w in all_w(sc) if isinstance(w, (bg.ttk.Button, tk.Button)) and str(w.cget("text")).startswith(("Next", "Skip for now"))]
+    if not nb or btn(sc, "Finish  ✓"): break
+    nb[0].invoke(); app.update()
+audit(sc, "wizard-plan"); btn(sc, "Finish later")[0].invoke(); app.update()
+
 # Reimbursement assign overlay + Today card
 _pe = bg.TransactionRecord(tx_date=_d2.today(), description="THE RIVER BISTRO", money_out=140.0, category="Food", fingerprint="re1", user_verified=True, needs_review=False, matched_type="discretionary")
 _pe.reimburse = "pending"; app.state.transactions.append(_pe)

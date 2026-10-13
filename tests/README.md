@@ -10,3 +10,5 @@ Smoke tests drive the real Tkinter app against a temporary data file (never `bud
 Tests stub Task Scheduler, the browser and Windows toasts. The window grabs focus while they run.
 
 Tests 9, 10 and 22 need keyboard focus and the real pointer (Enter-to-save, wheel routing). Run them on their own, not alongside the audit or another app window.
+
+Every test calls `app.focus_force()` after creating the window: when another app is in the foreground, `focus_set` alone gives no keyboard focus and synthetic Return keys are dropped.

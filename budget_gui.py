@@ -27082,7 +27082,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             return "Not finished yet — the wizard walks through bills, set-asides, goals, accounts and what you have now."
         total = sum(float(v) for v in bal.values())
         parts = [f"{self._account_label(k)} ${float(bal.get(k, 0.0)):,.0f}"
-                 for k in self._ACCOUNT_ORDER if float(bal.get(k, 0.0)) > 0]
+                 for k in self._ACCOUNT_ORDER]
         return f"Total ${total:,.0f}  ·  " + "  ·  ".join(parts) if parts else f"Total ${total:,.0f}"
 
     # ── Money plan setup wizard ──────────────────────────────────────────────
@@ -27790,21 +27790,26 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             _head("Your set-up transfers", "Do these once in your bank app so each account holds what it should.")
             bal = _planned_balances()
             colors = {"spending": UI_EMERALD, "bills": UI_RUBY, "savings": UI_SAPPHIRE, "invest": UI_AMETHYST}
+            why_zero = {"bills": "no bills set up yet, or nothing pre-funded on the previous step",
+                        "savings": "no money put toward set-asides or goals on the previous step",
+                        "invest": "nothing put toward investing on the previous step"}
             for k in self._ACCOUNT_ORDER:
                 amt = bal[k]
-                if amt <= 0 and k != "spending":
-                    continue
+                empty = amt <= 0 and k != "spending"
                 row = tk.Frame(content, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER)
                 row.pack(fill="x", pady=2)
-                tk.Frame(row, bg=colors[k], width=3).pack(side="left", fill="y")
+                tk.Frame(row, bg=colors[k] if not empty else UI_BORDER, width=3).pack(side="left", fill="y")
                 inner = tk.Frame(row, bg=UI_SURFACE2, padx=SP_MD, pady=SP_SM)
                 inner.pack(side="left", fill="x", expand=True)
                 verb = "KEEP" if k == "spending" else "HOLD"
-                tk.Label(inner, text=verb, bg=UI_SURFACE2, fg=colors[k], font=FONT_CAPTION_BOLD, width=5, anchor="w").pack(side="left")
-                tk.Label(inner, text=f"${amt:,.2f}", bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT, font=FONT_SUBHEADING).pack(side="left", padx=(SP_SM, SP_MD))
-                tk.Label(inner, text=f"in  {wz['acct'][k].get().strip()}", bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_BODY).pack(side="left")
-                ttk.Button(row, text="Copy", style="Ghost.TButton",
-                           command=lambda a=amt, n=wz['acct'][k].get().strip(): self._copy_amount_to_clipboard(a, n)).pack(side="right", padx=SP_SM)
+                tk.Label(inner, text=verb, bg=UI_SURFACE2, fg=colors[k] if not empty else UI_MUTED, font=FONT_CAPTION_BOLD, width=5, anchor="w").pack(side="left")
+                tk.Label(inner, text=f"${amt:,.2f}", bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT if not empty else UI_MUTED, font=FONT_SUBHEADING).pack(side="left", padx=(SP_SM, SP_MD))
+                tk.Label(inner, text=f"in  {wz['acct'][k].get().strip()}", bg=UI_SURFACE2, fg=UI_TEXT if not empty else UI_MUTED, font=FONT_BODY).pack(side="left")
+                if empty:
+                    tk.Label(inner, text="nothing to hold yet — " + why_zero.get(k, ""), bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left", padx=(SP_SM, 0))
+                else:
+                    ttk.Button(row, text="Copy", style="Ghost.TButton",
+                               command=lambda a=amt, n=wz['acct'][k].get().strip(): self._copy_amount_to_clipboard(a, n)).pack(side="right", padx=SP_SM)
             tk.Label(content, text=f"Safe to Spend starts at ${bal['spending']:,.2f}.", bg=UI_SURFACE,
                      fg=UI_EMERALD, font=FONT_BODY_BOLD).pack(anchor="w", pady=(SP_SM, 0))
 
