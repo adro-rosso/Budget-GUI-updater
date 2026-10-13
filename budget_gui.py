@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.13"
+APP_VERSION = "1.0.14"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -27152,7 +27152,8 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             "freq": tk.StringVar(value=self.state.pay_frequency or "fortnightly"),
             "income": tk.StringVar(value=f"{self.state.income_baseline:.0f}" if self.state.income_baseline else ""),
             "acct": {k: tk.StringVar(value=self._account_label(k)) for k in self._ACCOUNT_ORDER},
-            "total": tk.StringVar(value=f"{sum(acct_bal.values()):.2f}" if (self.state.starting_position_set and acct_bal) else ""),
+            "bal": {k: tk.StringVar(value=(f"{float(acct_bal.get(k, 0.0)):.2f}" if (self.state.starting_position_set and acct_bal and float(acct_bal.get(k, 0.0))) else ""))
+                    for k in self._ACCOUNT_ORDER},
             "alloc": {},
             "fund_mode": "auto",
             "goal_mode": "fixed",
@@ -27685,27 +27686,55 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 out[k] = val if val is not None else 0.0
             return out
 
+        def _bal_values() -> Dict[str, float]:
+            out = {}
+            for k, v in wz["bal"].items():
+                val = _money(v)
+                out[k] = val if val is not None else 0.0
+            return out
+
+        def _total_now() -> float:
+            return round(sum(_bal_values().values()), 2)
+
         def _render_money_now():
-            _gerald("Here's the important one. Don't worry about which account it's in today — tell me "
-                    "the total, then decide where you want each dollar to live.", "wink")
-            _head("How much do you have right now, in total?",
-                  "Add up every everyday and savings account (not super, not debt). Then put it where you want it.")
-            top = tk.Frame(content, bg=UI_SURFACE)
-            top.pack(fill="x", pady=(0, SP_SM))
-            tk.Label(top, text="Total cash  $", bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY_BOLD).pack(side="left")
-            total_e = ttk.Entry(top, textvariable=wz["total"], width=12, font=FONT_SUBHEADING)
-            total_e.pack(side="left", padx=(SP_XS, SP_LG))
+            _gerald("Here's the important one. What's sitting in each account today? Then tell me "
+                    "what each dollar is for — bills, set-asides, goals, investing — and I'll work out the moves.", "wink")
+            _head("What's in each account right now?",
+                  "Today's balance of each account (not super, not debt). Leave one blank if it's empty.")
+            colors = {"spending": UI_EMERALD, "bills": UI_RUBY, "savings": UI_SAPPHIRE, "invest": UI_AMETHYST}
+            grid = tk.Frame(content, bg=UI_SURFACE)
+            grid.pack(fill="x", pady=(0, SP_SM))
+            grid.columnconfigure(0, weight=1, uniform="acct")
+            grid.columnconfigure(1, weight=1, uniform="acct")
+            first_e = None
+            for n, k in enumerate(self._ACCOUNT_ORDER):
+                cell = tk.Frame(grid, bg=UI_SURFACE2, highlightthickness=1, highlightbackground=UI_BORDER)
+                cell.grid(row=n // 2, column=n % 2, sticky="ew", padx=(0, SP_SM) if n % 2 == 0 else 0, pady=(0, SP_XS))
+                tk.Frame(cell, bg=colors[k], width=3).pack(side="left", fill="y")
+                inner_c = tk.Frame(cell, bg=UI_SURFACE2, padx=SP_SM, pady=SP_XS)
+                inner_c.pack(side="left", fill="x", expand=True)
+                name = wz["acct"][k].get().strip() or self._account_label(k)
+                tk.Label(inner_c, text=name[:28], bg=UI_SURFACE2, fg=UI_TEXT, font=FONT_CAPTION_BOLD, anchor="w").pack(side="left")
+                e = ttk.Entry(inner_c, textvariable=wz["bal"][k], width=11, font=FONT_BODY, justify="right")
+                e.pack(side="right")
+                tk.Label(inner_c, text="$", bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_BODY).pack(side="right")
+                if first_e is None:
+                    first_e = e
             left_v = tk.StringVar()
-            left_lbl = tk.Label(top, textvariable=left_v, bg=UI_SURFACE, fg=UI_EMERALD, font=FONT_BODY_BOLD)
-            left_lbl.pack(side="left")
+            left_lbl = tk.Label(content, textvariable=left_v, bg=UI_SURFACE, fg=UI_EMERALD, font=FONT_BODY_BOLD,
+                                wraplength=wrap_w, justify="left")
+            left_lbl.pack(anchor="w", pady=(0, SP_SM))
 
             rows = _alloc_rows()
             for key, _k, _n, _d, _cap, saved, _c in rows:
                 if key not in wz["alloc"]:
                     wz["alloc"][key] = tk.StringVar(value=f"{saved:.2f}" if saved else "")
+            tk.Label(content, text="WHAT IS EACH DOLLAR FOR?", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+            tk.Label(content, text="Whatever you don't place stays as spending money. 'Suggest a split' uses the balances above.",
+                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(0, SP_XS))
             area = tk.Frame(content, bg=UI_SURFACE)
             area.pack(fill="both", expand=True)
-            inner, bind_wheel = self._overlay_scroll_area(area, 330)
+            inner, bind_wheel = self._overlay_scroll_area(area, 250)
             inner.columnconfigure(2, weight=1)
             for r, (key, kind, name, detail, cap, saved, color) in enumerate(rows):
                 tk.Frame(inner, bg=color, width=3).grid(row=r, column=0, sticky="ns", pady=(0, SP_XS))
@@ -27723,51 +27752,70 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             spend_name = wz["acct"]["spending"].get().strip() or "Everyday Account"
 
             def _upd(*_a):
-                total = _money(wz["total"])
-                if total is None:
-                    left_v.set("Total must be a number"); left_lbl.configure(fg=UI_RUBY); return
+                if any(_money(v) is None for v in wz["bal"].values()):
+                    left_v.set("One of the balances isn't a number"); left_lbl.configure(fg=UI_RUBY); return
+                total = _total_now()
                 left = round(total - sum(_alloc_values().values()), 2)
                 if left < 0:
-                    left_v.set(f"Over by ${-left:,.2f} — you've placed more than you have")
+                    left_v.set(f"Total ${total:,.2f}  ·  Over by ${-left:,.2f} — you've placed more than you have")
                     left_lbl.configure(fg=UI_RUBY)
                 else:
-                    left_v.set(f"${left:,.2f} left as spending money in {spend_name}")
+                    left_v.set(f"Total ${total:,.2f}  ·  ${left:,.2f} left as spending money in {spend_name}")
                     left_lbl.configure(fg=UI_EMERALD)
-            wz["total"].trace_add("write", _upd)
-            for v in wz["alloc"].values():
+            for v in list(wz["bal"].values()) + list(wz["alloc"].values()):
                 v.trace_add("write", _upd)
             _upd()
-            tk.Label(content,
-                     text="Tip: cover bills due before your next pay, top buffers up to their level, and "
-                          "leave the rest as spending money. Whatever you don't place stays as Safe to Spend.",
-                     bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION, wraplength=wrap_w, justify="left").pack(anchor="w", pady=(SP_SM, 0))
-            if not wz["total"].get():
-                total_e.focus_set()
+            if first_e is not None and not any(v.get().strip() for v in wz["bal"].values()):
+                first_e.focus_set()
 
             def _suggest():
-                total = _money(wz["total"]) or 0.0
-                pool = total
+                now = _bal_values()
+                total = _total_now()
+                placed = 0.0
+                inv = round(now["invest"], 2)
+                # Bills: spread the bills account across bills in due order. No bills account
+                # balance -> cover the ones due before next pay from whatever is there.
+                pool_b = now["bills"] if now["bills"] > 0 else None
                 horizon = date.today() + timedelta(days=self.engine.current_cycle_days() + 2)
                 for i, b in sorted(enumerate(self.state.bills), key=lambda x: x[1].due_date):
-                    take = round(min(b.amount, pool), 2) if b.due_date <= horizon else 0.0
-                    wz["alloc"]["bill:%d" % i].set(f"{take:.2f}" if take else "")
-                    pool -= take
-                for i, f in enumerate(self.state.funds):
-                    take = round(min(f.target_amount, pool), 2) if (f.contribution_mode == "buffer" and f.target_amount > 0) else 0.0
-                    wz["alloc"]["fund:%d" % i].set(f"{take:.2f}" if take else "")
-                    pool -= take
-                for i, _g in enumerate(self.state.goals):
-                    wz["alloc"]["goal:%d" % i].set("")
-                wz["alloc"]["invest"].set("")
-                self._show_toast("Suggested: bills due before next pay, buffers to level, rest as spending.", "info", 4000)
+                    if pool_b is not None:
+                        take = round(min(b.amount, pool_b), 2)
+                        pool_b -= take
+                    else:
+                        take = round(min(b.amount, max(total - inv - placed, 0.0)), 2) if b.due_date <= horizon else 0.0
+                    wz["alloc"]["bill:%d" % i].set(f"{take:.2f}" if take > 0 else "")
+                    placed += take
+                # Savings: the savings account fills buffers to level, then dated funds and goals
+                # toward their targets. No savings balance -> buffers only, from what is left.
+                pool_s = now["savings"] if now["savings"] > 0 else None
+                order = [("fund:%d" % i, f) for i, f in enumerate(self.state.funds) if f.contribution_mode == "buffer" and f.target_amount > 0]
+                order += [("fund:%d" % i, f) for i, f in enumerate(self.state.funds) if not (f.contribution_mode == "buffer" and f.target_amount > 0)]
+                order += [("goal:%d" % i, g) for i, g in enumerate(self.state.goals)]
+                for key, item in order:
+                    is_buffer = key.startswith("fund:") and item.contribution_mode == "buffer" and item.target_amount > 0
+                    cap = item.target_amount if item.target_amount > 0 else float("inf")
+                    if pool_s is not None:
+                        take = round(min(cap, pool_s), 2) if cap != float("inf") else 0.0
+                        pool_s -= take
+                    else:
+                        take = round(min(cap, max(total - inv - placed, 0.0)), 2) if is_buffer else 0.0
+                    wz["alloc"][key].set(f"{take:.2f}" if take > 0 else "")
+                    placed += take
+                if pool_s is not None and pool_s > 0.005:
+                    # leftover savings with no target to fill -> the first open-ended set-aside/goal keeps it
+                    for key, item in order:
+                        if item.target_amount <= 0:
+                            wz["alloc"][key].set(f"{pool_s:.2f}")
+                            break
+                wz["alloc"]["invest"].set(f"{inv:.2f}" if inv > 0 else "")
+                self._show_toast("Suggested from your balances: bills in due order, buffers to level, the rest as spending.", "info", 4000)
 
             def _next():
-                total = _money(wz["total"])
-                if total is None or total < 0:
-                    self._show_toast("Enter your total cash as a number.", "warning"); return
+                if any(_money(v) is None or (_money(v) or 0.0) < 0 for v in wz["bal"].values()):
+                    self._show_toast("Enter each account balance as a number.", "warning"); return
                 if any(_money(v) is None for v in wz["alloc"].values()):
                     self._show_toast("One of the amounts isn't a number.", "warning"); return
-                if sum(_alloc_values().values()) > total + 0.005:
+                if sum(_alloc_values().values()) > _total_now() + 0.005:
                     self._show_toast("You've placed more than you have — reduce something first.", "warning"); return
                 _go(1)
             _nav(next_cmd=_next, extra=lambda br: ttk.Button(br, text="Suggest a split", style="Secondary.TButton",
@@ -27776,7 +27824,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         # ── Step 6: plan ─────────────────────────────────────────────────
         def _planned_balances() -> Dict[str, float]:
             vals = _alloc_values()
-            total = _money(wz["total"]) or 0.0
+            total = _total_now()
             bills = sum(v for k, v in vals.items() if k.startswith("bill:"))
             savings = sum(v for k, v in vals.items() if k.startswith("fund:") or k.startswith("goal:"))
             invest = vals.get("invest", 0.0)
@@ -27784,11 +27832,28 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             return {"spending": round(spending, 2), "bills": round(bills, 2),
                     "savings": round(savings, 2), "invest": round(invest, 2)}
 
+        def _moves(now: Dict[str, float], planned: Dict[str, float]):
+            """Greedy transfers: accounts holding more than planned feed those holding less."""
+            surplus = [[k, round(float(now.get(k, 0.0)) - planned.get(k, 0.0), 2)] for k in self._ACCOUNT_ORDER]
+            givers = [s for s in surplus if s[1] > 0.005]
+            takers = [[k, -d] for k, d in surplus if d < -0.005]
+            out = []
+            for g in givers:
+                for t in takers:
+                    if g[1] <= 0.005 or t[1] <= 0.005:
+                        continue
+                    amt = round(min(g[1], t[1]), 2)
+                    out.append((g[0], t[0], amt))
+                    g[1] = round(g[1] - amt, 2); t[1] = round(t[1] - amt, 2)
+            return out
+
         def _render_plan():
             _gerald("That's your plan. Move the money below, and from here it's one pay at a time — "
                     "log it, check the split, make the transfers.", "wink")
             _head("Your set-up transfers", "Do these once in your bank app so each account holds what it should.")
             bal = _planned_balances()
+            now = _bal_values()
+            moves = _moves(now, bal)
             colors = {"spending": UI_EMERALD, "bills": UI_RUBY, "savings": UI_SAPPHIRE, "invest": UI_AMETHYST}
             why_zero = {"bills": "no bills set up yet, or nothing pre-funded on the previous step",
                         "savings": "no money put toward set-asides or goals on the previous step",
@@ -27805,11 +27870,30 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 tk.Label(inner, text=verb, bg=UI_SURFACE2, fg=colors[k] if not empty else UI_MUTED, font=FONT_CAPTION_BOLD, width=5, anchor="w").pack(side="left")
                 tk.Label(inner, text=f"${amt:,.2f}", bg=UI_SURFACE2, fg=UI_TEXT_BRIGHT if not empty else UI_MUTED, font=FONT_SUBHEADING).pack(side="left", padx=(SP_SM, SP_MD))
                 tk.Label(inner, text=f"in  {wz['acct'][k].get().strip()}", bg=UI_SURFACE2, fg=UI_TEXT if not empty else UI_MUTED, font=FONT_BODY).pack(side="left")
+                diff = round(amt - float(now.get(k, 0.0)), 2)
+                if abs(diff) >= 0.005:
+                    tk.Label(inner, text=f"has ${float(now.get(k, 0.0)):,.2f} today → {'add' if diff > 0 else 'take out'} ${abs(diff):,.2f}",
+                             bg=UI_SURFACE2, fg=UI_GOLD if diff > 0 else UI_MUTED, font=FONT_CAPTION).pack(side="left", padx=(SP_MD, 0))
                 if empty:
-                    tk.Label(inner, text="nothing to hold yet — " + why_zero.get(k, ""), bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION).pack(side="left", padx=(SP_SM, 0))
+                    tk.Label(inner, text="nothing to hold yet — " + why_zero.get(k, ""), bg=UI_SURFACE2, fg=UI_MUTED, font=FONT_CAPTION,
+                             wraplength=max(200, wrap_w - 330), justify="left").pack(side="left", padx=(SP_SM, 0))
                 else:
                     ttk.Button(row, text="Copy", style="Ghost.TButton",
                                command=lambda a=amt, n=wz['acct'][k].get().strip(): self._copy_amount_to_clipboard(a, n)).pack(side="right", padx=SP_SM)
+            if moves:
+                mv = tk.Frame(content, bg=UI_SURFACE)
+                mv.pack(fill="x", pady=(SP_SM, 0))
+                tk.Label(mv, text="MOVES TO MAKE", bg=UI_SURFACE, fg=UI_MUTED, font=FONT_CAPTION_BOLD).pack(anchor="w")
+                for src_k, dst_k, amt in moves:
+                    line = tk.Frame(mv, bg=UI_SURFACE)
+                    line.pack(fill="x")
+                    tk.Label(line, text=f"→ Move ${amt:,.2f} from {wz['acct'][src_k].get().strip()} to {wz['acct'][dst_k].get().strip()}",
+                             bg=UI_SURFACE, fg=UI_TEXT, font=FONT_BODY, anchor="w").pack(side="left")
+                    ttk.Button(line, text="Copy", style="Ghost.TButton",
+                               command=lambda a=amt, n=wz['acct'][dst_k].get().strip(): self._copy_amount_to_clipboard(a, n)).pack(side="left", padx=SP_SM)
+            elif any(v > 0 for v in now.values()):
+                tk.Label(content, text="Everything already sits where it should — nothing to move.", bg=UI_SURFACE,
+                         fg=UI_MUTED, font=FONT_CAPTION).pack(anchor="w", pady=(SP_SM, 0))
             tk.Label(content, text=f"Safe to Spend starts at ${bal['spending']:,.2f}.", bg=UI_SURFACE,
                      fg=UI_EMERALD, font=FONT_BODY_BOLD).pack(anchor="w", pady=(SP_SM, 0))
 

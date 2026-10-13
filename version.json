@@ -1,10 +1,15 @@
 {
-  "version": "1.0.13",
+  "version": "1.0.14",
   "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.13/BudgetPlanner.exe",
-  "sha256": "bbda468e58feeb97e769419d56f17437757efaaef4d9ad2a7a87206130b30ab4",
-  "notes": "Money plan wizard: the transfer step now lists all four accounts, with empty ones explained instead of hidden",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.14/BudgetPlanner.exe",
+  "sha256": "e68a0ecd204df82445e49c3809802d30d91f036ff6803fc96bb1e9920da916fd",
+  "notes": "Money plan wizard: 'Your money right now' asks for the balance of each of your four accounts (Everyday, Bills, Savings, Investment) instead of one total. 'Suggest a split' uses those balances, and the transfer step now shows what each account has today and the exact moves to make.",
   "history": [
+    {
+      "version": "1.0.14",
+      "date": "2026-10-13",
+      "notes": "Money plan wizard: 'Your money right now' asks for the balance of each of your four accounts (Everyday, Bills, Savings, Investment) instead of one total. 'Suggest a split' uses those balances, and the transfer step now shows what each account has today and the exact moves to make."
+    },
     {
       "version": "1.0.13",
       "date": "2026-10-13",
