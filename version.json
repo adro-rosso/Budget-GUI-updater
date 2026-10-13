@@ -1,10 +1,15 @@
 {
-  "version": "1.0.11",
+  "version": "1.0.12",
   "date": "2026-10-13",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.11/BudgetPlanner.exe",
-  "sha256": "dbd598ee3673cd68a7bc193dac08f5ffd514acd906958a596f49b6248423e7e0",
-  "notes": "Split one purchase across several categories: 'Split\u2026' on the sort card, or right-click any transaction; Analysis, the pie, the month report and pacts count each part",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.12/BudgetPlanner.exe",
+  "sha256": "76457a4c48f225588242556563f220b8c24087dd4b53926fa9369672fdf192fd",
+  "notes": "Reimbursements: mark an expense 'getting reimbursed', see it on Today until the money comes back, and assign any incoming amount to it in full or in part \u2014 spending nets off automatically",
   "history": [
+    {
+      "version": "1.0.12",
+      "date": "2026-10-13",
+      "notes": "Reimbursements: mark an expense 'getting reimbursed', see it on Today until the money comes back, and assign any incoming amount to it in full or in part \u2014 spending nets off automatically"
+    },
     {
       "version": "1.0.11",
       "date": "2026-10-13",
