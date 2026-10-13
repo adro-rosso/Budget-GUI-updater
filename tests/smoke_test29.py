@@ -95,13 +95,11 @@ sc = app._track_onboarding_scrim; ob = app._track_onboarding
 assert sc is not None and sc.winfo_exists()
 assert any("Let's see where your money goes." == t for t in texts(sc))
 btn(sc, "Monthly")[0].invoke(); app.update()
-ents = [w for w in all_w(sc) if isinstance(w, bg.ttk.Entry)]
-ents[0].insert(0, "5200"); app.update()
 btn(sc, "Next  →")[0].invoke(); app.update()
 assert any("Bring in a statement" == t for t in texts(sc)) and btn(sc, "Set up a full money plan instead →", tk.Label)
 btn(sc, "I'll log things as I go")[0].invoke(); app.update()
 st = app.state
-assert st.onboarding_complete and st.setup_mode == "track" and st.pay_frequency == "monthly" and st.income_baseline == 5200.0
+assert st.onboarding_complete and st.setup_mode == "track" and st.pay_frequency == "monthly"
 assert st.starting_position_date == today.isoformat() and not st.starting_position_set
 assert app._track_onboarding_scrim is None
 # day-one head start opened the free pack reveal (a grabbing Toplevel) — close it like a user would

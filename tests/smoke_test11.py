@@ -215,7 +215,13 @@ g2 = app2.state.game
 assert app2.state.onboarding_complete and g2.day_one_done and "x_founder" in g2.cards_owned, (app2.state.onboarding_complete, g2.day_one_done)
 assert len(g2.cards_owned) >= 4 and g2.packs_opened == 1 and g2.season_xp >= 30 and g2.vault_force_tier == "gold"
 assert g2.pulse_progress.get("spend") and g2.pulse_progress.get("sort")
-time.sleep(2.6); app2.update()
+# the pack waits for a quiet screen (overlays such as the tier-up card are closed by the user), then 2.3 s
+t0 = time.time()
+while time.time() - t0 < 8.0 and not (getattr(app2, "_pack_win", None) is not None and app2._pack_win.winfo_exists()):
+    for w_ in list(app2.winfo_children()):
+        if isinstance(w_, tk.Frame) and w_.winfo_manager() == "place" and str(w_.cget("bg")) == bg.UI_HERO:
+            w_.destroy()
+    app2.update(); time.sleep(0.2)
 assert getattr(app2, "_pack_win", None) is not None and app2._pack_win.winfo_exists(), "free pack should be revealing"
 app2._pack_win.destroy(); app2.update(); time.sleep(0.7); app2.update()
 app2.destroy()

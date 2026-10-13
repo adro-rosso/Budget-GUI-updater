@@ -89,14 +89,14 @@ assert app._history_cutoff() == today   # last logged pay is before today
 time.sleep(0.9); app.update()
 sc = scrims(app)[-1]
 tt = texts(sc)
-assert any("SET UP FROM YOUR STATEMENT" == t for t in tt), tt[:5]
+assert any("CONFIRM WHAT I FOUND" == t for t in tt), tt[:5]
 w = app._statement_setup_widgets
 assert w["rhythm"]["count"] == 3 and w["rhythm"]["freq"] == "fortnightly" and w["rhythm"]["typical"] == 2400.0
 names = [b["name"].lower() for b in w["bills"]]
 assert any("netflix" in n for n in names) and not any("rent" == n for n in names), names   # Rent exists already; Netflix is new
 assert w["mix"] and w["mix"]["rows"] and abs(sum(p for _, p in w["mix"]["rows"]) - 100.0) < 0.2, w["mix"]
 st.pay_frequency = "weekly"
-btn(sc, "Use this rhythm  ✓")[0].invoke(); app.update()
+btn(sc, "Yes, that's my pay  ✓")[0].invoke(); app.update()
 assert st.pay_frequency == "fortnightly" and st.income_baseline == 2400.0
 nb = len(st.bills)
 btn(sc, "Add the ticked ones as bills  ✓")[0].invoke(); app.update()
@@ -105,7 +105,7 @@ assert any("netflix" in r.keyword for r in st.advanced_match_rules), [r.keyword 
 mix_btn = [b for b in all_w(sc) if isinstance(b, bg.ttk.Button) and str(b.cget("text")).startswith("Start my target from")]
 mix_btn[0].invoke(); app.update()
 assert st.expense_target_order and abs(sum(st.expense_target_pct) - 100.0) < 0.2 and not st.target_is_locked
-btn(sc, "Done")[0].invoke(); app.update()
+btn(sc, "Done  ✓")[0].invoke(); app.update()
 assert st.ui_prefs["statement_setup.done"] and not scrims(app)
 
 # Confirming today's pay still allocates (it is new)

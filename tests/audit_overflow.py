@@ -182,7 +182,7 @@ for n_, desc, out_, inn_, mt, cat in [(38, "ACME PAY", 0.0, 2400.0, "income", "I
                                       (33, "COLES", 120.0, 0.0, "discretionary", "Groceries"), (31, "SHELL", 70.0, 0.0, "discretionary", "Fuel")]:
     app.state.transactions.append(bg.TransactionRecord(tx_date=_t - _td(days=n_), description=desc, money_out=out_, money_in=inn_, fingerprint=f"a{n_}{desc}", matched_type=mt, category=cat, user_verified=True, needs_review=False))
 app.state.incomes.append(bg.IncomeEntry(2400.0, _t - _td(days=38), "Acme")); app.state.incomes.append(bg.IncomeEntry(2400.0, _t - _td(days=24), "Acme"))
-app._show_statement_setup(); app.update(); sc = scrims(app)[-1]; audit(sc, "statement-setup"); btn(sc, "Done")[0].invoke(); app.update()
+app._show_statement_setup(); app.update(); sc = scrims(app)[-1]; audit(sc, "statement-setup"); btn(sc, "Done  ✓")[0].invoke(); app.update()
 
 from datetime import date as _d2, timedelta as _td2
 from datetime import date as _d2, timedelta as _td2
