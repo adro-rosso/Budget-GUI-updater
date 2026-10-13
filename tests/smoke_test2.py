@@ -64,12 +64,13 @@ scrim = app._setup_wizard_scrim
 for _ in range(5):
     btn = find(scrim, bg.ttk.Button, "Next  →") or find(scrim, bg.ttk.Button, "Skip for now  →")
     btn[0].invoke(); app.update()
-assert any("How much do you have right now" in t for t in texts(scrim)), texts(scrim)[:8]
+assert any("What's in each account right now" in t for t in texts(scrim)), texts(scrim)[:8]
 ents = find(scrim, bg.ttk.Entry)
-ents[0].insert(0, "4900"); ents[1].delete(0, tk.END); ents[1].insert(0, "800"); app.update()
+ents[0].insert(0, "4900"); ents[4].delete(0, tk.END); ents[4].insert(0, "800"); app.update()   # 0-3 = accounts, 4 = Rent
 assert any("$4,100.00 left as spending money" in t for t in texts(scrim)), texts(scrim)
 find(scrim, bg.ttk.Button, "Next  →")[0].invoke(); app.update()
 assert any("Your set-up transfers" in t for t in texts(scrim))
+assert any(t.startswith("→ Move $800.00 from") for t in texts(scrim)), [t for t in texts(scrim) if "Move" in t]
 find(scrim, bg.ttk.Button, "Finish  ✓")[0].invoke(); app.update()
 assert app.state.starting_position_set
 assert app.state.account_balances["spending"] == 4100.0 and app.state.account_balances["bills"] == 800.0

@@ -149,23 +149,23 @@ find(wz, bg.ttk.Button, "Next  →")[0].invoke(); app.update()
 assert app.state.transfer_accounts["spending"]["name"] == "Up Everyday"
 
 # Step 5: money now
-assert any("How much do you have right now" in t for t in texts(wz))
+assert any("What's in each account right now" in t for t in texts(wz))
 e = entries(wz)
-e[0].insert(0, "3000")
+e[0].insert(0, "3000")   # everything in Up Everyday; 0-3 = accounts, 4+ = items
 find(wz, bg.ttk.Button, "Suggest a split")[0].invoke(); app.update()
 vals = {k: v.get() for k, v in app.__dict__.get("_x", {}).items()}  # placeholder
 e = entries(wz)
 # rows: bill Electricity (due in 10d) , bill Car rego (200d), funds x3, goals x2, invest
-assert e[1].get() == "240.00", [x.get() for x in e]
-assert e[2].get() == "", [x.get() for x in e]
-assert e[3].get() == "600.00", [x.get() for x in e]   # buffer to level
+assert e[4].get() == "240.00", [x.get() for x in e]
+assert e[5].get() == "", [x.get() for x in e]
+assert e[6].get() == "600.00", [x.get() for x in e]   # buffer to level
 assert any("left as spending money in Up Everyday" in t for t in texts(wz))
 # over-allocate → blocked
-e[4].insert(0, "5000"); app.update()
+e[7].insert(0, "5000"); app.update()
 assert any("Over by" in t for t in texts(wz))
 find(wz, bg.ttk.Button, "Next  →")[0].invoke(); app.update()
-assert any("How much do you have right now" in t for t in texts(wz)), "should stay on step when over-allocated"
-e = entries(wz); e[4].delete(0, tk.END); e[6].insert(0, "500"); app.update()   # 500 into emergency fund goal
+assert any("What's in each account right now" in t for t in texts(wz)), "should stay on step when over-allocated"
+e = entries(wz); e[7].delete(0, tk.END); e[9].insert(0, "500"); app.update()   # 500 into emergency fund goal
 find(wz, bg.ttk.Button, "Next  →")[0].invoke(); app.update()
 
 # Step 6: plan
@@ -192,7 +192,8 @@ wz = app._setup_wizard_scrim
 for _ in range(5):
     find(wz, bg.ttk.Button, "Next  →")[0].invoke(); app.update()
 e = entries(wz)
-assert e[0].get() == "3000.00" and e[1].get() == "240.00" and e[3].get() == "600.00", [x.get() for x in e]
+# account balances come back as planned (Everyday 1660 / Bills 240 / Savings 1100 / Invest blank), items as saved
+assert [x.get() for x in e[:4]] == ["1660.00", "240.00", "1100.00", ""] and e[4].get() == "240.00" and e[6].get() == "600.00", [x.get() for x in e]
 find(wz, bg.ttk.Button, "Finish later")[0].invoke(); app.update()
 assert app._setup_wizard_scrim is None
 
