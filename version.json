@@ -1,10 +1,15 @@
 {
-  "version": "1.0.9",
-  "date": "2026-10-11",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.9/BudgetPlanner.exe",
-  "sha256": "3d6ef11e6fd8803b1a4c39b85c2b44eec1b39f7de0e9223c9049ba0978714640",
-  "notes": "Calmer Today: the Pulse collapses to a strip once done, pacts and the monthly event fold into one section, a single quick-action row with a More menu, systems reveal themselves as you go (Settings can show everything), fewer stacked toasts and celebrations",
+  "version": "1.0.10",
+  "date": "2026-10-13",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.10/BudgetPlanner.exe",
+  "sha256": "b38ac2b9d5bb6ec0d66878bd8abf052816c0338aa3f38a8245758327dc5a4216",
+  "notes": "Sort queue: the overview now scrolls and lists every merchant (click one to start there); cards scroll so 'Make it a recurring bill' shows its fields on smaller screens",
   "history": [
+    {
+      "version": "1.0.10",
+      "date": "2026-10-13",
+      "notes": "Sort queue: the overview now scrolls and lists every merchant (click one to start there); cards scroll so 'Make it a recurring bill' shows its fields on smaller screens"
+    },
     {
       "version": "1.0.9",
       "date": "2026-10-11",
