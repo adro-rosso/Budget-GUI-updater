@@ -1,10 +1,15 @@
 {
-  "version": "1.0.24",
+  "version": "1.0.25",
   "date": "2026-10-14",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.24/BudgetPlanner.exe",
-  "sha256": "56cc7018a41e645145ada809c3275bd43a795f056e4eded63e73823b0c292be2",
-  "notes": "Today, rebuilt calm: four cards (Safe to Spend, This week vs your typical week, your four account balances, Homestead), the Do-this-now strip, the money-flow bar, and two closed sections \u2014 Daily Pulse & rewards, and Plan & upcoming \u2014 with everything else behind 'details'. New: 'Your accounts now' (enter what's in Everyday, Bills, Savings and Investment; Safe to Spend starts from Everyday; offered after your first statement, on the Accounts card and under More). 'Unknown' is a standard category for small amounts that fit nowhere.",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.25/BudgetPlanner.exe",
+  "sha256": "3d928cd9ff9967610c8b29c4f6a4ea7fb3c59feec865376fc30fc0a83c39b289",
+  "notes": "Two fixes: the 'Verify N transactions' prompt no longer counts your pays (incoming rows are confirmed on Today or kept as history, never 'to verify'), and the Coin Catcher starts on the first arrow press and takes the arrows from anywhere on the Score page \u2014 no need to click the play area first.",
   "history": [
+    {
+      "version": "1.0.25",
+      "date": "2026-10-14",
+      "notes": "Two fixes: the 'Verify N transactions' prompt no longer counts your pays (incoming rows are confirmed on Today or kept as history, never 'to verify'), and the Coin Catcher starts on the first arrow press and takes the arrows from anywhere on the Score page \u2014 no need to click the play area first."
+    },
     {
       "version": "1.0.24",
       "date": "2026-10-14",

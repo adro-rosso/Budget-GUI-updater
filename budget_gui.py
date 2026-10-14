@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.24"
+APP_VERSION = "1.0.25"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -14495,6 +14495,11 @@ class BudgetApp(tk.Tk):
         self._cc_canvas.bind("<Configure>", self._cc_on_resize)
         self._cc_canvas.bind("<Button-1>", lambda _e: self._cc_canvas.focus_set())
         # Key bindings: bind on the canvas so they only fire while canvas has focus.
+        for seq, key_, down_ in (("<KeyPress-Left>", "left", True), ("<KeyRelease-Left>", "left", False),
+                                 ("<KeyPress-Right>", "right", True), ("<KeyRelease-Right>", "right", False),
+                                 ("<KeyPress-a>", "left", True), ("<KeyRelease-a>", "left", False),
+                                 ("<KeyPress-d>", "right", True), ("<KeyRelease-d>", "right", False)):
+            self.bind_all(seq, lambda _e, k=key_, d=down_: self._cc_global_key(k, d), add="+")
         for seq in ("<KeyPress-Left>", "<KeyPress-a>", "<KeyPress-A>"):
             self._cc_canvas.bind(seq, lambda _e: self._cc_set_pressed("left", True))
         for seq in ("<KeyRelease-Left>", "<KeyRelease-a>", "<KeyRelease-A>"):
@@ -14515,7 +14520,7 @@ class BudgetApp(tk.Tk):
                  bg=UI_WARNING_SOFT, fg=UI_MUTED,
                  font=FONT_SMALL).pack(side="left", padx=(SP_MD, 0))
 
-        self._cc_status_var = tk.StringVar(value="Click the play area, then Start. Catch coins, dodge impulse buys.")
+        self._cc_status_var = tk.StringVar(value="Press ← or → (or Start). Catch coins, dodge impulse buys.")
         tk.Label(box, textvariable=self._cc_status_var,
                  bg=UI_WARNING_SOFT, fg=UI_MUTED,
                  font=FONT_SMALL).grid(row=3, column=0, sticky="w", pady=(SP_XS, 0))
@@ -14549,6 +14554,24 @@ class BudgetApp(tk.Tk):
 
     def _cc_set_pressed(self, key: str, down: bool):
         self._cc_pressed[key] = down
+        if down and not getattr(self, "_cc_running", False):
+            try:
+                self.start_cc_round()   # a first press on ← / → starts the round
+            except Exception:
+                pass
+
+    def _cc_global_key(self, key: str, down: bool):
+        """Route ← / → (and A / D) from anywhere on the Score page to the Coin Catcher,
+        unless the user is typing in a field."""
+        if getattr(self, "current_page_key", "") != "score" or getattr(self, "_active_arcade_game", None) != "coin":
+            return
+        try:
+            f = self.focus_get()
+        except Exception:
+            f = None
+        if isinstance(f, (tk.Entry, ttk.Entry, tk.Text, ttk.Combobox)):
+            return
+        self._cc_set_pressed(key, down)
 
     def _cc_on_resize(self, _e=None):
         c = self._cc_canvas
@@ -17191,7 +17214,7 @@ class BudgetApp(tk.Tk):
 
         verified = len([tx for tx in self.state.transactions if tx.user_verified])
         committed = len(self.state.transactions)
-        pending_review = len([tx for tx in self.state.transactions if tx.needs_review and not tx.user_verified]) + len([tx for tx in self.latest_import if tx.needs_review and not tx.user_verified])
+        pending_review = len([tx for tx in self.state.transactions if tx.direction() == "out" and tx.needs_review and not tx.user_verified]) + len([tx for tx in self.latest_import if tx.direction() == "out" and tx.needs_review and not tx.user_verified])
 
         savings_rate = 0.0
         if income_total > 0:
@@ -21187,6 +21210,9 @@ class BudgetApp(tk.Tk):
         profiles their Founder card."""
         eng = self.game_engine
         g = self.state.game
+        for _t in self.state.transactions:   # older profiles: committed incoming rows were left 'to verify'
+            if _t.direction() == "in" and _t.needs_review and not _t.user_verified:
+                _t.user_verified, _t.needs_review = True, False
         eng.ensure_pulse()
         eng.ensure_weekly()
         g.level = eng.level_from_score(g.total_score)
@@ -30185,6 +30211,10 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
             if tx.matched_type == "income" and tx.fingerprint and tx.fingerprint not in pending_set and not self._is_historical(tx):
                 new_pending.append(tx.fingerprint)
                 pending_set.add(tx.fingerprint)
+            if tx.direction() == "in":
+                # Incoming rows are confirmed on Today (or recorded as history) — they are never 'to verify'.
+                tx.user_verified = True
+                tx.needs_review = False
         self.state.transactions.extend(batch)
         if new_pending:
             self.state.pending_income_confirmations.extend(new_pending)
@@ -31382,7 +31412,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         }
 
     def _next_actions_snapshot(self) -> dict:
-        pending_review = len([tx for tx in self.state.transactions if tx.needs_review and not tx.user_verified]) + len([tx for tx in self.latest_import if tx.needs_review and not tx.user_verified])
+        pending_review = len([tx for tx in self.state.transactions if tx.direction() == "out" and tx.needs_review and not tx.user_verified]) + len([tx for tx in self.latest_import if tx.direction() == "out" and tx.needs_review and not tx.user_verified])
         pace = self.calculate_daily_safe_spend()
         forecast = self.calculate_cashflow_forecast()
         health = self.calculate_financial_health_score()
