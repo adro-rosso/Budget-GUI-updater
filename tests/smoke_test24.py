@@ -111,6 +111,9 @@ app.latest_import[0].user_verified = True; app.latest_import[0].needs_review = F
 app.latest_import.append(app.matcher.match(tx(today, "WORK EXPENSES PAYOUT", inn=59.0)))
 app._toast_stack.clear()
 app.commit_imported_transactions(); app.update()
+t0 = time.time()   # the offer is scheduled 1.5 s after the commit
+while time.time() - t0 < 2.5:
+    app.update(); time.sleep(0.1)
 labels = [str(w.cget("text")) for t_ in app._toast_stack if t_.winfo_exists() for w in all_w(t_) if isinstance(w, tk.Label)]
 assert any("Assign" == l for l in labels), labels
 # income confirmation card offers the reimbursement path

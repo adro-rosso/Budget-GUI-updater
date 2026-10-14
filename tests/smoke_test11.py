@@ -210,8 +210,13 @@ for _ in range(8):
     if not nb: break
     t_ = str(nb[0].cget("text")); nb[0].invoke(); app2.update()
     if t_.startswith("Finish  ✓"): break
-app2.update(); time.sleep(0.3); app2.update()
 g2 = app2.state.game
+t0 = time.time()   # the head start waits for a quiet screen (overlays closed), then runs
+while time.time() - t0 < 6.0 and not g2.day_one_done:
+    for w_ in list(app2.winfo_children()):
+        if isinstance(w_, tk.Frame) and w_.winfo_manager() == "place" and str(w_.cget("bg")) == bg.UI_HERO:
+            w_.destroy()
+    app2.update(); time.sleep(0.2)
 assert app2.state.onboarding_complete and g2.day_one_done and "x_founder" in g2.cards_owned, (app2.state.onboarding_complete, g2.day_one_done)
 assert len(g2.cards_owned) >= 4 and g2.packs_opened == 1 and g2.season_xp >= 30 and g2.vault_force_tier == "gold"
 assert g2.pulse_progress.get("spend") and g2.pulse_progress.get("sort")
