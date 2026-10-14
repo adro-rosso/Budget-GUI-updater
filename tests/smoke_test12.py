@@ -146,6 +146,7 @@ assert eng.challenge_active("roundup")
 close_tops(app)
 app._show_page("today"); app.update()
 g.pulse_progress = {}; g.pulse_last_date = (today - timedelta(days=1)).isoformat(); app.refresh_today_tab(); app.update()
+app._expand_section("today.progress"); app.update()   # the Pulse lives in a closed section; clicks need it mapped
 lbl(app._vault_host, "Food")[0].event_generate("<Button-1>"); app.update()
 app._pulse_amt_entry.insert(0, "7.25"); app.focus_force(); app._pulse_amt_entry.focus_force(); app._pulse_amt_entry.event_generate("<Return>"); app.update()
 jar = eng.challenge_fund("roundup"); assert jar.current_saved == 2.75 and jar.challenge_ticks == 1

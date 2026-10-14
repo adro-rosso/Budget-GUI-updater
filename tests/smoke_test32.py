@@ -109,10 +109,18 @@ assert not opened and not getattr(app, "_tutorial_overlay", None), "tour must no
 tt = texts(ss)
 assert any(t == "IS THIS YOUR PAY?" for t in tt) and any(t.startswith("$2,400.00 fortnightly from Acme") for t in tt), [t for t in tt if "$" in t][:5]
 assert any(t == "YOUR BALANCE" for t in tt) and any(t.startswith(f"${closing:,.2f} after the last row") for t in tt), [t for t in tt if "after" in t]
+assert "Unknown" in app.state.expense_categories
 btn(ss, "Yes, that's my pay  ✓")[0].invoke(); app.update()
 assert app.state.pay_frequency == "fortnightly" and app.state.income_baseline == 2400.0
-btn(ss, "Yes, use it  ✓")[0].invoke(); app.update()
-assert app.state.account_balances.get("spending") == closing and app.state.last_safe_to_spend == closing
+btn(ss, "Enter my accounts  ✓")[0].invoke(); app.update()
+acc = app._accounts_now
+assert acc["vars"]["spending"][1].get() == f"{closing:.2f}", "Everyday is prefilled with the statement's closing balance"
+acc["vars"]["bills"][1].set("1200"); acc["vars"]["savings"][1].set("5000"); acc["vars"]["invest"][1].set("")
+acc["save"](); app.update()
+assert app.state.account_balances == {"spending": closing, "bills": 1200.0, "savings": 5000.0, "invest": 0.0}, app.state.account_balances
+assert app.state.last_safe_to_spend == closing and app._accounts_now_scrim is None
+app.refresh_today_tab(); app.update()
+assert any(t == f"${closing:,.0f}" for t in texts(app._accounts_card_host)), texts(app._accounts_card_host)
 assert any("Netflix" == t.split("  ·")[0] for t in tt), [t for t in tt if "Netflix" in t]
 btn(ss, "Done  ✓")[0].invoke(); app.update()
 # now the screen is quiet: pack first, then (after it closes) the tour

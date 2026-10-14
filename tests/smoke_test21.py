@@ -72,7 +72,7 @@ assert not btn(app.today_tab, "Open Perk Shop"), "moved into More"
 
 # ── Pulse compact once done ──────────────────────────────────────────────────
 eng.pulse_mark_beat("spend"); eng.pulse_mark_beat("sort"); eng.open_vault(force_tier="gold")
-app.refresh_today_tab(); app.update()
+app._expand_section("today.progress"); app.refresh_today_tab(); app.update()
 tt = texts(app._vault_host)
 assert any(t.startswith("✓ Done · 1-day run") and "Gold" in t for t in tt), tt
 assert not any("Next:" == t for t in tt), "full done-state should be hidden until 'details'"

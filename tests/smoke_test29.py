@@ -120,6 +120,7 @@ tt = texts(app._today_get_started_steps_host)
 assert tt and any("Bring in a statement" == t for t in tt) and any("Optional: a full money plan" == t for t in tt), tt
 assert not any("Add your bills" in t for t in tt)
 st.pay_frequency = "fortnightly"
+st.ui_prefs["today.flow_details"] = True   # typical week, learning line and the per-pay split sit behind 'details'
 build_history(st)
 app.refresh_all_views(); app.update()
 assert not ov.winfo_ismapped(), "any data hides the checklist"

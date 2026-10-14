@@ -87,10 +87,10 @@ for a in ("_setup_wizard_scrim", "_track_onboarding_scrim"):
     if s_: s_.destroy(); setattr(app, a, None)
 app._celebrate = lambda *a, **k: None; app._show_tier_up_card = lambda *a, **k: None
 app._replace_state(st); app.state.onboarding_complete = True; app.state.tutorial_complete = True
-st = app.state
+st = app.state; st.ui_prefs["today.flow_details"] = True
 app._show_page("today"); app.refresh_all_views(); app.update()
 ft = texts(app._flow_host)
-assert any(t.startswith("This week so far: $300") and "Groceries is running hot" in t for t in ft), [t for t in ft if "week" in t]
+assert app.today_week_var.get() == "$300" and "Groceries running hot" in app.today_week_sub_var.get(), (app.today_week_var.get(), app.today_week_sub_var.get())
 assert any(t.startswith("Each $2,400 pay") for t in ft) and any(t.startswith("hold $700 for bills") for t in ft) and any("to savings" in t for t in ft), ft
 assert any(t.startswith("Put $") and t.endswith("aside") for t in ft)
 # daily pace falls back to the typical day; the envelope shows once a plan exists

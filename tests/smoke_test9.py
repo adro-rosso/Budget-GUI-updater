@@ -157,7 +157,7 @@ app._toggle_focus_mode(); app.update()
 assert app.state.ui_prefs["focus_mode"] is True
 assert app.nav_buttons["score"].winfo_manager() == "" and app.nav_buttons["homestead"].winfo_manager() == ""
 assert app.current_page_key == "today"
-assert app._hook_row.winfo_manager() == "" and app._today_hero_cards[3].winfo_manager() == ""
+assert app._today_progress_wrap.winfo_manager() == "" and app._today_hero_cards[3].winfo_manager() == ""
 assert "on" in str(app._focus_btn.cget("text"))
 app._toggle_focus_mode(); app.update()
 assert app.nav_buttons["score"].winfo_manager() == "grid" and app._hook_row.winfo_manager() == "pack"

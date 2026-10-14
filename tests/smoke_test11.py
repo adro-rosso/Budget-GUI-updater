@@ -67,6 +67,7 @@ assert g.pulse_progress.get("spend") and g.pulse_progress.get("sort")
 g.pulse_progress = {}; g.vault_force_tier = ""; g.last_real_action_date = ""
 app.latest_import = [app.matcher.match(tx(yesterday, "MYSTERY SHOP 42", 18.5))]
 app.refresh_today_tab(); app.update()
+app._expand_section("today.progress"); app.update()   # the Pulse lives in a closed section; clicks need it mapped
 host = app._vault_host
 assert any("DAILY PULSE" == t for t in texts(host)) and any("1 Yesterday" in t for t in texts(host)), texts(host)
 
