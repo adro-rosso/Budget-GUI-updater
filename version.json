@@ -1,10 +1,15 @@
 {
-  "version": "1.0.23",
+  "version": "1.0.24",
   "date": "2026-10-14",
-  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.23/BudgetPlanner.exe",
-  "sha256": "8a9da96de508ae9c18c5338286b53c2be6c3cd11e34cee031ef42f08e83702ca",
-  "notes": "Snappier and tidier: resizing the window and switching pages is now immediate (hidden pages no longer take part in layout, and two resize handlers that forced full layout passes are gone \u2014 a resize went from several seconds to a fraction of one). The welcome pack and the level celebration wait until the file picker is closed and the statement is sorted, so nothing opens over the folder window any more.",
+  "download_url": "https://github.com/adro-rosso/Budget-GUI-updater/releases/download/v1.0.24/BudgetPlanner.exe",
+  "sha256": "56cc7018a41e645145ada809c3275bd43a795f056e4eded63e73823b0c292be2",
+  "notes": "Today, rebuilt calm: four cards (Safe to Spend, This week vs your typical week, your four account balances, Homestead), the Do-this-now strip, the money-flow bar, and two closed sections \u2014 Daily Pulse & rewards, and Plan & upcoming \u2014 with everything else behind 'details'. New: 'Your accounts now' (enter what's in Everyday, Bills, Savings and Investment; Safe to Spend starts from Everyday; offered after your first statement, on the Accounts card and under More). 'Unknown' is a standard category for small amounts that fit nowhere.",
   "history": [
+    {
+      "version": "1.0.24",
+      "date": "2026-10-14",
+      "notes": "Today, rebuilt calm: four cards (Safe to Spend, This week vs your typical week, your four account balances, Homestead), the Do-this-now strip, the money-flow bar, and two closed sections \u2014 Daily Pulse & rewards, and Plan & upcoming \u2014 with everything else behind 'details'. New: 'Your accounts now' (enter what's in Everyday, Bills, Savings and Investment; Safe to Spend starts from Everyday; offered after your first statement, on the Accounts card and under More). 'Unknown' is a standard category for small amounts that fit nowhere."
+    },
     {
       "version": "1.0.23",
       "date": "2026-10-14",
