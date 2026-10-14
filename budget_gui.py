@@ -50,7 +50,7 @@ DATA_FILE = _load_data_location()
 # ── Auto-update config ────────────────────────────────────────────────────────
 # Bump this on each release. AppUpdater compares remote manifest's "version"
 # field against this; if remote > local, the user is offered the new build.
-APP_VERSION = "1.0.22"
+APP_VERSION = "1.0.23"
 
 # URL to a JSON manifest describing the latest build. Leave empty to disable
 # the auto-update check entirely (useful for forks / private builds).
@@ -12748,6 +12748,12 @@ class BudgetApp(tk.Tk):
     def _draw_gradient(canvas, color_top, color_bot, width=800, height=200):
         """Draw a vertical gradient on a canvas using thin horizontal lines."""
         canvas.delete("gradient")
+        if color_top == color_bot:
+            try:
+                canvas.configure(bg=color_top)
+            except tk.TclError:
+                pass
+            return
         r1, g1, b1 = int(color_top[1:3], 16), int(color_top[3:5], 16), int(color_top[5:7], 16)
         r2, g2, b2 = int(color_bot[1:3], 16), int(color_bot[3:5], 16), int(color_bot[5:7], 16)
         steps = max(height // 2, 1)
@@ -13234,6 +13240,14 @@ class BudgetApp(tk.Tk):
             return
         self.current_page_key = key
         self._update_nav_badges()
+        self._refresh_if_dirty(key)   # a page that changed while hidden catches up before it is shown
+        # Only the current page is managed: hidden pages take no part in layout, so a resize
+        # or a change on one page no longer re-lays-out all eleven of them.
+        for pk, fr in self.page_frames.items():
+            if pk != key and fr.winfo_manager():
+                fr.grid_remove()
+        if not self.page_frames[key].winfo_manager():
+            self.page_frames[key].grid()
         self.page_frames[key].tkraise()
         if key == "today" and hasattr(self, "_today_get_started_overlay"):
             # Setup changes elsewhere (e.g. adding a bill) must show up in the
@@ -13466,13 +13480,10 @@ class BudgetApp(tk.Tk):
         tb_win = tb_canvas.create_window(0, 0, window=tb_content, anchor="nw")
         tb_content.columnconfigure(1, weight=1)
         def _tb_resize(e):
-            self._draw_gradient(tb_canvas, UI_HERO, UI_HERO, e.width, e.height)
             tb_canvas.itemconfigure(tb_win, width=e.width)
-            tb_canvas.tag_lower("gradient")
         def _tb_content_resize(_e=None):
-            tb_content.update_idletasks()
             req_h = tb_content.winfo_reqheight()
-            if req_h > 0 and req_h != tb_canvas.winfo_height():
+            if req_h > 0 and req_h != int(tb_canvas.cget("height")):
                 tb_canvas.configure(height=req_h)
         tb_canvas.bind("<Configure>", _tb_resize)
         tb_content.bind("<Configure>", _tb_content_resize)
@@ -17625,13 +17636,17 @@ class BudgetApp(tk.Tk):
         """
         if canvas is None:
             return
-        canvas.delete("all")
         try:
-            canvas.update_idletasks()
+            canvas.delete("all")
+            cw, chh = int(canvas.winfo_width() or 0), int(canvas.winfo_height() or 0)
         except tk.TclError:
             return
-        w = max(int(canvas.winfo_width() or 0), 120)
-        h = max(int(canvas.winfo_height() or 0), 30)
+        if cw <= 1:
+            cw = int(canvas.winfo_reqwidth() or 0)
+        if chh <= 1:
+            chh = int(canvas.winfo_reqheight() or 0)
+        w = max(cw, 120)
+        h = max(chh, 30)
         pad_x, pad_y = 4, 4
         inner_w = w - 2 * pad_x
         inner_h = h - 2 * pad_y
@@ -19121,19 +19136,32 @@ class BudgetApp(tk.Tk):
             tk.Label(line, text=k, bg=UI_SURFACE, fg=UI_TEXT, font=FONT_SMALL_BOLD, width=14, anchor="w").pack(side="left")
             tk.Label(line, text=v, bg=UI_SURFACE, fg=UI_MUTED, font=FONT_SMALL, wraplength=640, justify="left").pack(side="left", fill="x")
 
-    def refresh_homestead_tab(self):
+    def _sync_homestead_tier(self):
+        """Snapshot the Homestead and award a new tier (companion, celebration, card) — runs on
+        every refresh regardless of which page is open; the page itself refreshes lazily."""
         snap = self.homestead.snapshot()
         self._homestead_snap = snap
         awarded = self.game_engine.check_homestead_tiers(snap["tier"])
         if awarded:
             names = ", ".join(AVATAR_ITEMS.get(i, {}).get("name", i) for i in awarded)
             self.save_state()
-            try:
-                self.refresh_character_tab()
-            except Exception:
-                pass
+            if getattr(self, "current_page_key", "") == "character":
+                try:
+                    self.refresh_character_tab()
+                except Exception:
+                    pass
+            else:
+                if not hasattr(self, "_dirty_pages"):
+                    self._dirty_pages = set()
+                self._dirty_pages.add("character")
             self.after(300, lambda t=snap["tier"], n=names: self._celebrate(f"Homestead Tier {t}!", f"{n} joins you", UI_AMETHYST))
             self.after(2000, lambda t=snap["tier"], ids=list(awarded): self._show_tier_up_card(t, ids))
+        if hasattr(self, "today_homestead_var"):
+            self.today_homestead_var.set(f"Tier {snap['tier']} of 5")
+        return snap
+
+    def refresh_homestead_tab(self):
+        snap = self._sync_homestead_tier()
         self._homestead_tier_var.set(f"TIER {snap['tier']} / 5  ·  {self.rank_name_for_level(self.state.game.level, self.state.game.prestige_level)}")
         if hasattr(self, "today_homestead_var"):
             self.today_homestead_var.set(f"Tier {snap['tier']} of 5")
@@ -26812,15 +26840,18 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
                 btn.configure(bg=UI_SURFACE2, fg=UI_MUTED)
         self._refresh_char_grid()
 
-    def _refresh_char_grid(self):
-        """Rebuild the item browser grid based on current filter."""
-        for w in self._char_grid_frame.winfo_children():
-            w.destroy()
-
+    def _refresh_char_grid(self, force: bool = False):
+        """Rebuild the item browser grid based on current filter — only when something it shows changed."""
         g = self.state.game
         owned = set(g.character_items_owned or [])
         equipped = dict(g.character_equipped or {})
         filt = self._char_filter_var.get()
+        sig = (tuple(sorted(owned)), tuple(sorted(equipped.items())), filt, g.total_score >= 0 and g.gems, g.total_score)
+        if not force and getattr(self, "_char_grid_sig", None) == sig and self._char_grid_frame.winfo_children():
+            return
+        self._char_grid_sig = sig
+        for w in self._char_grid_frame.winfo_children():
+            w.destroy()
 
         # Update filter pill styles
         for v, btn in self._char_filter_btns.items():
@@ -28056,6 +28087,8 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         except tk.TclError:
             return False
         if getattr(self, "_tutorial_overlay", None) or getattr(self, "_followup_pending", False):
+            return True
+        if getattr(self, "_dialog_open", 0) > 0:
             return True
         if getattr(self, "_review_queue_scrim", None) is not None:
             return True
@@ -29727,11 +29760,15 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
 
     def import_pdf_transactions(self):
         last_dir = self.state.ui_prefs.get("import.last_dir") or ""
-        path_str = filedialog.askopenfilename(
-            title="Select a bank statement (PDF, CSV or OFX)",
-            initialdir=last_dir if isinstance(last_dir, str) and last_dir and Path(last_dir).is_dir() else None,
-            filetypes=[("Bank statements", "*.pdf *.csv *.ofx *.qfx"), ("PDF", "*.pdf"),
-                       ("CSV", "*.csv"), ("OFX / QFX", "*.ofx *.qfx"), ("All files", "*.*")])
+        self._dialog_open = getattr(self, "_dialog_open", 0) + 1
+        try:
+            path_str = filedialog.askopenfilename(
+                title="Select a bank statement (PDF, CSV or OFX)",
+                initialdir=last_dir if isinstance(last_dir, str) and last_dir and Path(last_dir).is_dir() else None,
+                filetypes=[("Bank statements", "*.pdf *.csv *.ofx *.qfx"), ("PDF", "*.pdf"),
+                           ("CSV", "*.csv"), ("OFX / QFX", "*.ofx *.qfx"), ("All files", "*.*")])
+        finally:
+            self._dialog_open = max(0, getattr(self, "_dialog_open", 1) - 1)
         if not path_str:
             return
         self.state.ui_prefs["import.last_dir"] = str(Path(path_str).parent)
@@ -29740,9 +29777,11 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
     def _import_statement_path(self, path_str: str):
         """Import one statement file (PDF / CSV / OFX) — from the dialog, a
         dropped download, or Gerald."""
+        self._followup_pending = True   # parsing, then the sort queue opens: keep the screen busy meanwhile
         try:
             imported, qa = self.importer.extract_any(Path(path_str))
         except Exception as exc:
+            self._followup_pending = False
             messagebox.showerror("Import failed", str(exc)); return
         self.state.last_import_date = date.today().isoformat()
         self._log_engagement("import")
@@ -30191,6 +30230,7 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
     def open_review_queue(self, *, after_import: bool = False):
         """Step-through overlay: overview of what wasn't recognised, then one card
         per merchant where a single click assigns a category and moves on."""
+        self._followup_pending = False
         if not self.latest_import:
             self._show_toast("Import a bank statement first.", "warning")
             return
@@ -31541,12 +31581,39 @@ ul{{padding-left:18px;font-size:13px}}.badges{{margin-top:16px;color:#c9a24a;fon
         }
 
     # refresh
+    # Pages whose refresh is expensive (hundreds of widgets) and that are rarely the one on
+    # screen when data changes: they refresh when opened instead (see _show_page).
+    _LAZY_PAGES = {"character": "refresh_character_tab", "collection": "refresh_collection", "homestead": "refresh_homestead_tab"}
+
     def refresh_all_views(self):
-        self.refresh_today_tab(); self.refresh_review_tab(); self.refresh_income_history(); self.refresh_transactions_tab(); self.refresh_rules_tab(); self.refresh_bills(); self.refresh_funds(); self.refresh_goals(); self.refresh_investments_text(); self.refresh_game_text(); self.refresh_collection(); self.refresh_character_tab()
-        if hasattr(self, "_homestead_canvas"):
-            self.refresh_homestead_tab()
+        if hasattr(self, "homestead") and hasattr(self, "game_engine"):
+            try:
+                self._sync_homestead_tier()
+            except Exception:
+                pass
+        self.refresh_today_tab(); self.refresh_review_tab(); self.refresh_income_history(); self.refresh_transactions_tab(); self.refresh_rules_tab(); self.refresh_bills(); self.refresh_funds(); self.refresh_goals(); self.refresh_investments_text(); self.refresh_game_text()
+        if not hasattr(self, "_dirty_pages"):
+            self._dirty_pages = set()
+        cur = getattr(self, "current_page_key", "today")
+        for key, fn in self._LAZY_PAGES.items():
+            if key == "homestead":
+                if cur == "homestead" and hasattr(self, "_homestead_canvas"):
+                    self.refresh_homestead_tab()
+                continue   # _show_page already refreshes the Homestead every time it opens
+            if key == cur:
+                getattr(self, fn)()
+            else:
+                self._dirty_pages.add(key)
         if hasattr(self, "_plan_host"):
             self.refresh_plan_tab()
+
+    def _refresh_if_dirty(self, key: str):
+        dirty = getattr(self, "_dirty_pages", None)
+        if dirty and key in dirty:
+            dirty.discard(key)
+            fn = self._LAZY_PAGES.get(key)
+            if fn and hasattr(self, fn):
+                getattr(self, fn)()
 
     def rank_name_for_level(self, level: int, prestige: int = 0) -> str:
         if prestige >= 3:
